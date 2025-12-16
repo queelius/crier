@@ -1,6 +1,6 @@
 # Crier
 
-Cross-post your content to dev.to, Hashnode, Medium, Bluesky, Mastodon, and more.
+Cross-post your content to dev.to, Ghost, WordPress, Hashnode, Medium, Bluesky, Mastodon, Threads, Telegram, Discord, and more.
 
 Like a town crier announcing your content to the world.
 
@@ -8,12 +8,6 @@ Like a town crier announcing your content to the world.
 
 ```bash
 pip install crier
-
-# With Twitter/X support
-pip install crier[twitter]
-
-# All optional dependencies
-pip install crier[all]
 ```
 
 ## Quick Start
@@ -44,22 +38,38 @@ crier update devto 12345 --file updated-post.md
 | **dev.to** | `api_key` | Full article support |
 | **Hashnode** | `token` or `token:publication_id` | Full article support |
 | **Medium** | `integration_token` | Publish only (no edit/list) |
+| **Ghost** | `https://site.com:key_id:key_secret` | Full article support |
+| **WordPress** | `site.wordpress.com:token` or `https://site.com:user:app_pass` | Full article support |
+| **Buttondown** | `api_key` | Newsletter publishing |
 | **Bluesky** | `handle:app_password` | Short posts with link cards |
 | **Mastodon** | `instance:access_token` | Toots with hashtags |
+| **Threads** | `user_id:access_token` | Short posts (no edit support) |
+| **Telegram** | `bot_token:chat_id` | Channel/group posts |
+| **Discord** | `webhook_url` | Server announcements |
 | **LinkedIn** | `access_token` | Requires API access |
-| **Twitter/X** | `key:secret:token:token_secret` | Requires Elevated access |
+| **Twitter/X** | `any` (copy-paste mode) | Generates tweet for manual posting |
 
 ### Platform Notes
 
-**Blog Platforms** (dev.to, Hashnode, Medium):
+**Blog Platforms** (dev.to, Hashnode, Medium, Ghost, WordPress):
 - Full markdown article publishing
 - Preserves front matter (title, description, tags, canonical_url)
 - Best for long-form content
 
-**Social Platforms** (Bluesky, Mastodon, LinkedIn, Twitter):
+**Newsletter Platforms** (Buttondown):
+- Publishes to email subscribers
+- Full markdown support
+- Great for content repurposing
+
+**Social Platforms** (Bluesky, Mastodon, LinkedIn, Twitter, Threads):
 - Creates short posts with link to canonical URL
 - Uses title + description + hashtags from tags
 - Best for announcing new content
+
+**Announcement Channels** (Telegram, Discord):
+- Posts to channels/servers
+- Good for community announcements
+- Discord uses webhook embeds
 
 ## Configuration
 
@@ -134,8 +144,50 @@ crier platforms                         # List available platforms
 3. Use format: `instance.social:your-access-token`
 
 ### Twitter/X
-Requires Twitter Developer account with Elevated access (complex setup).
-Consider using Bluesky or Mastodon instead.
+Uses copy-paste mode - generates formatted tweet text for manual posting.
+No API setup required. Just set any placeholder value:
+```bash
+crier config set twitter.api_key manual
+```
+
+### Ghost
+1. Go to Settings → Integrations → Add custom integration
+2. Copy the Admin API Key (format: `key_id:key_secret`)
+3. Use format: `https://yourblog.com:key_id:key_secret`
+
+### WordPress
+**WordPress.com:**
+1. Go to https://developer.wordpress.com/apps/
+2. Create an app and get OAuth token
+3. Use format: `yoursite.wordpress.com:access_token`
+
+**Self-hosted WordPress:**
+1. Go to Users → Profile → Application Passwords
+2. Create a new application password
+3. Use format: `https://yoursite.com:username:app_password`
+
+### Buttondown
+1. Go to https://buttondown.email/settings/programming
+2. Copy your API key
+3. Use format: `api_key`
+
+### Threads
+1. Create a Meta Developer account at https://developers.facebook.com/
+2. Create an app with Threads API access
+3. Get your user_id and access_token
+4. Use format: `user_id:access_token`
+
+### Telegram
+1. Message @BotFather to create a bot and get the bot token
+2. Add your bot as admin to your channel
+3. Get your channel's chat_id (e.g., `@yourchannel` or numeric ID)
+4. Use format: `bot_token:chat_id`
+
+### Discord
+1. Go to Server Settings → Integrations → Webhooks
+2. Create a new webhook for your announcement channel
+3. Copy the webhook URL
+4. Use the full URL as the API key
 
 ## License
 

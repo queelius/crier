@@ -7,14 +7,13 @@ from .mastodon import Mastodon
 from .hashnode import Hashnode
 from .medium import Medium
 from .linkedin import LinkedIn
-
-# Twitter requires optional dependency
-try:
-    from .twitter import Twitter
-    _twitter_available = True
-except ImportError:
-    Twitter = None  # type: ignore
-    _twitter_available = False
+from .ghost import Ghost
+from .buttondown import Buttondown
+from .telegram import Telegram
+from .discord import Discord
+from .threads import Threads
+from .wordpress import WordPress
+from .twitter import Twitter
 
 # Registry of available platforms
 PLATFORMS: dict[str, type[Platform]] = {
@@ -24,10 +23,14 @@ PLATFORMS: dict[str, type[Platform]] = {
     "hashnode": Hashnode,
     "medium": Medium,
     "linkedin": LinkedIn,
+    "ghost": Ghost,
+    "buttondown": Buttondown,
+    "telegram": Telegram,
+    "discord": Discord,
+    "threads": Threads,
+    "wordpress": WordPress,
+    "twitter": Twitter,
 }
-
-if _twitter_available and Twitter is not None:
-    PLATFORMS["twitter"] = Twitter
 
 
 def get_platform(name: str) -> type[Platform]:
@@ -48,6 +51,12 @@ __all__ = [
     "Hashnode",
     "Medium",
     "LinkedIn",
+    "Ghost",
+    "Buttondown",
+    "Telegram",
+    "Discord",
+    "Threads",
+    "WordPress",
     "Twitter",
     "PLATFORMS",
     "get_platform",
