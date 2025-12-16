@@ -87,9 +87,10 @@ class Hashnode(Platform):
         slug = "".join(c if c.isalnum() or c == " " else "" for c in slug)
         slug = "-".join(slug.split())[:100]
 
+        # Use publishPost mutation (new API)
         query = """
-        mutation CreatePost($input: CreatePostInput!) {
-            createPost(input: $input) {
+        mutation PublishPost($input: PublishPostInput!) {
+            publishPost(input: $input) {
                 post {
                     id
                     url
@@ -109,8 +110,8 @@ class Hashnode(Platform):
         }
 
         if article.tags:
-            # Hashnode uses tag IDs, but we can try tag names
-            variables["input"]["tags"] = [{"name": tag} for tag in article.tags[:5]]
+            # Hashnode uses tag slugs
+            variables["input"]["tags"] = [{"slug": tag.lower().replace(" ", "-"), "name": tag} for tag in article.tags[:5]]
 
         if article.canonical_url:
             variables["input"]["originalArticleURL"] = article.canonical_url
@@ -128,7 +129,7 @@ class Hashnode(Platform):
                 error=error_msg,
             )
 
-        post = result.get("data", {}).get("createPost", {}).get("post", {})
+        post = result.get("data", {}).get("publishPost", {}).get("post", {})
         return PublishResult(
             success=True,
             platform=self.name,

@@ -47,15 +47,24 @@ def parse_markdown_file(path: str | Path) -> Article:
     # Extract common fields from front matter
     title = front_matter.get("title", path.stem)
     description = front_matter.get("description")
-    tags = front_matter.get("tags", [])
+    raw_tags = front_matter.get("tags", [])
     canonical_url = front_matter.get("canonical_url")
     published = front_matter.get("published", True)
+
+    # Handle tags as list or comma-separated string
+    if isinstance(raw_tags, list):
+        tags = raw_tags
+    elif isinstance(raw_tags, str):
+        # Split comma-separated tags and strip whitespace
+        tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+    else:
+        tags = []
 
     return Article(
         title=title,
         body=body,
         description=description,
-        tags=tags if isinstance(tags, list) else [tags],
+        tags=tags,
         canonical_url=canonical_url,
         published=published,
     )
