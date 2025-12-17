@@ -36,6 +36,7 @@ nav:
     - Configuration: guides/configuration.md
     - Publication Tracking: guides/tracking.md
     - Backfill & Audit: guides/backfill.md
+    - GitHub Actions: guides/github-action.md
   - Reference:
     - CLI Commands: reference/cli.md
     - Front Matter: reference/front-matter.md
