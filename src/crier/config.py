@@ -61,3 +61,54 @@ def set_api_key(platform: str, api_key: str) -> None:
 
     config["platforms"][platform]["api_key"] = api_key
     save_config(config)
+
+
+def get_profile(name: str) -> list[str] | None:
+    """Get a profile (list of platforms) by name.
+
+    Profiles can reference other profiles for composition.
+    """
+    config = load_config()
+    profiles = config.get("profiles", {})
+
+    if name not in profiles:
+        return None
+
+    platforms = profiles[name]
+
+    # Expand nested profile references
+    expanded = []
+    for item in platforms:
+        if item in profiles:
+            # This is a reference to another profile
+            nested = get_profile(item)
+            if nested:
+                expanded.extend(nested)
+        else:
+            expanded.append(item)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    result = []
+    for p in expanded:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+
+    return result
+
+
+def set_profile(name: str, platforms: list[str]) -> None:
+    """Set a profile in config file."""
+    config = load_config()
+    if "profiles" not in config:
+        config["profiles"] = {}
+
+    config["profiles"][name] = platforms
+    save_config(config)
+
+
+def get_all_profiles() -> dict[str, list[str]]:
+    """Get all defined profiles."""
+    config = load_config()
+    return config.get("profiles", {})

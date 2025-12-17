@@ -1,0 +1,90 @@
+# Crier Auto-Publish Workflow
+#
+# Copy this to your content repo at .github/workflows/crier-publish.yml
+# Then set up the required secrets in your repo settings.
+#
+# Required secrets (set in GitHub repo Settings > Secrets):
+#   CRIER_DEVTO_API_KEY - Your dev.to API key
+#   CRIER_BLUESKY_API_KEY - handle.bsky.social:app-password
+#   CRIER_MASTODON_API_KEY - instance.social:access-token
+#   (add others as needed)
+
+name: Auto-Publish Content
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'posts/**/*.md'
+      - 'content/**/*.md'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for registry
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Crier
+        run: pip install crier
+
+      - name: Configure platforms
+        env:
+          CRIER_DEVTO_API_KEY: ${{ secrets.CRIER_DEVTO_API_KEY }}
+          CRIER_BLUESKY_API_KEY: ${{ secrets.CRIER_BLUESKY_API_KEY }}
+          CRIER_MASTODON_API_KEY: ${{ secrets.CRIER_MASTODON_API_KEY }}
+          CRIER_HASHNODE_API_KEY: ${{ secrets.CRIER_HASHNODE_API_KEY }}
+        run: |
+          echo "Configured platforms:"
+          crier platforms
+
+      - name: Audit content
+        env:
+          CRIER_DEVTO_API_KEY: ${{ secrets.CRIER_DEVTO_API_KEY }}
+          CRIER_BLUESKY_API_KEY: ${{ secrets.CRIER_BLUESKY_API_KEY }}
+          CRIER_MASTODON_API_KEY: ${{ secrets.CRIER_MASTODON_API_KEY }}
+          CRIER_HASHNODE_API_KEY: ${{ secrets.CRIER_HASHNODE_API_KEY }}
+        run: |
+          # Audit posts directory (adjust path as needed)
+          if [ -d "posts" ]; then
+            crier audit ./posts || true
+          elif [ -d "content" ]; then
+            crier audit ./content || true
+          fi
+
+      - name: Publish missing content
+        env:
+          CRIER_DEVTO_API_KEY: ${{ secrets.CRIER_DEVTO_API_KEY }}
+          CRIER_BLUESKY_API_KEY: ${{ secrets.CRIER_BLUESKY_API_KEY }}
+          CRIER_MASTODON_API_KEY: ${{ secrets.CRIER_MASTODON_API_KEY }}
+          CRIER_HASHNODE_API_KEY: ${{ secrets.CRIER_HASHNODE_API_KEY }}
+        run: |
+          # Backfill any missing publications
+          if [ -d "posts" ]; then
+            crier backfill ./posts --yes || true
+          elif [ -d "content" ]; then
+            crier backfill ./content --yes || true
+          fi
+
+      - name: Commit registry updates
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Add registry if it exists
+          if [ -d ".crier" ]; then
+            git add .crier/
+            git diff --staged --quiet || git commit -m "Update crier publication registry
+
+            🤖 Auto-updated by Crier GitHub Action"
+            git push
+          fi

@@ -1,0 +1,55 @@
+site_name: Crier
+site_description: Cross-post your content everywhere
+site_url: https://queelius.github.io/crier
+repo_url: https://github.com/queelius/crier
+repo_name: queelius/crier
+
+theme:
+  name: material
+  palette:
+    primary: indigo
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Platforms:
+    - Overview: platforms/index.md
+    - dev.to: platforms/devto.md
+    - Ghost: platforms/ghost.md
+    - WordPress: platforms/wordpress.md
+    - Hashnode: platforms/hashnode.md
+    - Medium: platforms/medium.md
+    - Bluesky: platforms/bluesky.md
+    - Mastodon: platforms/mastodon.md
+    - Threads: platforms/threads.md
+    - Telegram: platforms/telegram.md
+    - Discord: platforms/discord.md
+    - Buttondown: platforms/buttondown.md
+    - LinkedIn: platforms/linkedin.md
+    - Twitter: platforms/twitter.md
+  - Guides:
+    - Configuration: guides/configuration.md
+    - Publication Tracking: guides/tracking.md
+    - Backfill & Audit: guides/backfill.md
+  - Reference:
+    - CLI Commands: reference/cli.md
+    - Front Matter: reference/front-matter.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
