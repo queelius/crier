@@ -8,21 +8,48 @@ import yaml
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "crier"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
+LOCAL_CONFIG_FILE = Path(".crier") / "config.yaml"
 
 
 def get_config_path() -> Path:
-    """Get the configuration file path."""
+    """Get the global configuration file path."""
     return Path(os.environ.get("CRIER_CONFIG", DEFAULT_CONFIG_FILE))
 
 
-def load_config() -> dict[str, Any]:
-    """Load configuration from file."""
-    config_path = get_config_path()
-    if not config_path.exists():
-        return {}
+def get_local_config_path() -> Path:
+    """Get the local (repo) configuration file path."""
+    return LOCAL_CONFIG_FILE
 
-    with open(config_path) as f:
-        return yaml.safe_load(f) or {}
+
+def load_config() -> dict[str, Any]:
+    """Load configuration, merging local and global configs.
+
+    Local config (.crier/config.yaml) takes precedence for content_paths and profiles.
+    Global config (~/.config/crier/config.yaml) is used for API keys.
+    Environment variables override everything for API keys.
+    """
+    config: dict[str, Any] = {}
+
+    # Load global config first (for API keys)
+    global_path = get_config_path()
+    if global_path.exists():
+        with open(global_path) as f:
+            config = yaml.safe_load(f) or {}
+
+    # Merge local config (for content_paths, profiles)
+    local_path = get_local_config_path()
+    if local_path.exists():
+        with open(local_path) as f:
+            local_config = yaml.safe_load(f) or {}
+            # Local content_paths and profiles override global
+            if "content_paths" in local_config:
+                config["content_paths"] = local_config["content_paths"]
+            if "profiles" in local_config:
+                # Merge profiles, local takes precedence
+                config.setdefault("profiles", {})
+                config["profiles"].update(local_config["profiles"])
+
+    return config
 
 
 def save_config(config: dict[str, Any]) -> None:
@@ -112,3 +139,54 @@ def get_all_profiles() -> dict[str, list[str]]:
     """Get all defined profiles."""
     config = load_config()
     return config.get("profiles", {})
+
+
+def get_content_paths() -> list[str]:
+    """Get configured content paths.
+
+    Returns list of directories to scan for content.
+    Can be relative or absolute paths.
+    """
+    config = load_config()
+    return config.get("content_paths", [])
+
+
+def _save_local_config(config_data: dict[str, Any]) -> None:
+    """Save configuration to local .crier/config.yaml."""
+    local_path = get_local_config_path()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing local config
+    existing: dict[str, Any] = {}
+    if local_path.exists():
+        with open(local_path) as f:
+            existing = yaml.safe_load(f) or {}
+
+    # Merge new data
+    existing.update(config_data)
+
+    with open(local_path, "w") as f:
+        yaml.dump(existing, f, default_flow_style=False)
+
+
+def set_content_paths(paths: list[str]) -> None:
+    """Set content paths in repo-local config (.crier/config.yaml)."""
+    _save_local_config({"content_paths": paths})
+
+
+def add_content_path(path: str) -> None:
+    """Add a content path to repo-local config."""
+    paths = get_content_paths()
+    if path not in paths:
+        paths.append(path)
+    set_content_paths(paths)
+
+
+def remove_content_path(path: str) -> bool:
+    """Remove a content path from repo-local config. Returns True if removed."""
+    paths = get_content_paths()
+    if path in paths:
+        paths.remove(path)
+        set_content_paths(paths)
+        return True
+    return False

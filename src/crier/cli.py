@@ -7,7 +7,10 @@ from rich.console import Console
 from rich.table import Table
 
 from . import __version__
-from .config import get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles
+from .config import (
+    get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles,
+    get_content_paths, add_content_path, remove_content_path, set_content_paths,
+)
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
 from .registry import (
@@ -20,6 +23,51 @@ from .registry import (
 )
 
 console = Console()
+
+
+def _has_valid_front_matter(file_path: Path) -> bool:
+    """Check if a file has valid front matter with a title."""
+    try:
+        article = parse_markdown_file(str(file_path))
+        return bool(article.title)
+    except Exception:
+        return False
+
+
+def _find_content_files(explicit_path: str | None = None) -> list[Path]:
+    """Find content files to process.
+
+    Args:
+        explicit_path: If provided, scan this path. Otherwise use content_paths config.
+
+    Returns:
+        List of Path objects for files with valid front matter.
+    """
+    files: list[Path] = []
+
+    if explicit_path:
+        # Explicit path provided - use it
+        path_obj = Path(explicit_path)
+        if path_obj.is_file():
+            files = [path_obj]
+        else:
+            files = list(path_obj.glob("**/*.md"))
+    else:
+        # Use configured content_paths
+        content_paths = get_content_paths()
+        if not content_paths:
+            return []
+
+        for content_path in content_paths:
+            path_obj = Path(content_path)
+            if path_obj.is_file():
+                files.append(path_obj)
+            elif path_obj.is_dir():
+                files.extend(path_obj.glob("**/*.md"))
+
+    # Filter to only files with valid front matter
+    valid_files = [f for f in files if _has_valid_front_matter(f)]
+    return valid_files
 
 
 @click.group()
@@ -487,6 +535,63 @@ def profile_delete(name: str):
     console.print(f"[green]Profile '{name}' deleted.[/green]")
 
 
+@config.group()
+def content():
+    """Manage content paths for scanning."""
+    pass
+
+
+@content.command(name="add")
+@click.argument("path")
+def content_add(path: str):
+    """Add a content path.
+
+    Example: crier config content add content/posts
+    """
+    add_content_path(path)
+    console.print(f"[green]Added content path: {path}[/green]")
+
+
+@content.command(name="remove")
+@click.argument("path")
+def content_remove(path: str):
+    """Remove a content path."""
+    if remove_content_path(path):
+        console.print(f"[green]Removed content path: {path}[/green]")
+    else:
+        console.print(f"[red]Content path not found: {path}[/red]")
+
+
+@content.command(name="show")
+def content_show():
+    """Show configured content paths."""
+    paths = get_content_paths()
+
+    if not paths:
+        console.print("[yellow]No content paths configured.[/yellow]")
+        console.print("[dim]Add one with: crier config content add <path>[/dim]")
+        return
+
+    console.print("[bold]Content Paths:[/bold]")
+    for p in paths:
+        path_obj = Path(p)
+        if path_obj.exists():
+            console.print(f"  [green]✓[/green] {p}")
+        else:
+            console.print(f"  [red]✗[/red] {p} [dim](not found)[/dim]")
+
+
+@content.command(name="set")
+@click.argument("paths", nargs=-1, required=True)
+def content_set(paths: tuple[str, ...]):
+    """Set content paths (replaces existing).
+
+    Example: crier config content set content/posts content/blog
+    """
+    set_content_paths(list(paths))
+    console.print(f"[green]Content paths set to: {', '.join(paths)}[/green]")
+
+
 @cli.command()
 def platforms():
     """List available platforms."""
@@ -512,10 +617,9 @@ def platforms():
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None):
     """Audit content to see what's missing from platforms.
 
-    PATH can be a file or directory. If directory, scans for .md files.
+    PATH can be a file or directory. If not provided, uses configured content_paths.
+    Only files with valid front matter (title) are included.
     """
-    import glob as glob_module
-
     # Determine which platforms to check
     check_platforms: list[str] = []
 
@@ -537,24 +641,19 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         console.print("[yellow]No platforms configured.[/yellow]")
         return
 
-    # Find files to audit
-    if path is None:
-        path = "."
-
-    path_obj = Path(path)
-    if path_obj.is_file():
-        files = [path_obj]
-    else:
-        # Scan for markdown files
-        files = list(path_obj.glob("**/*.md"))
-        # Exclude common non-content files
-        files = [f for f in files if not any(
-            part.startswith('.') or part in ('node_modules', 'venv', '__pycache__')
-            for part in f.parts
-        )]
+    # Find content files
+    files = _find_content_files(path)
 
     if not files:
-        console.print(f"[yellow]No markdown files found in {path}[/yellow]")
+        if path:
+            console.print(f"[yellow]No content files found in {path}[/yellow]")
+        else:
+            content_paths = get_content_paths()
+            if not content_paths:
+                console.print("[yellow]No content paths configured.[/yellow]")
+                console.print("[dim]Add one with: crier config content add <path>[/dim]")
+            else:
+                console.print(f"[yellow]No content files found in configured paths: {', '.join(content_paths)}[/yellow]")
         return
 
     console.print(f"\n[bold]Content Audit[/bold]")
@@ -579,7 +678,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             return str(fp)
 
     for file_path in sorted(files):
-        row = [get_display_path(file_path) if path_obj.is_dir() else file_path.name]
+        row = [get_display_path(file_path)]
 
         for platform in check_platforms:
             if is_published(file_path, platform):
@@ -602,26 +701,25 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     console.print(f"  Missing: [yellow]{missing_count}[/yellow]")
 
     if missing_count > 0:
-        console.print(f"\n[dim]Run 'crier backfill {path}' to publish missing content.[/dim]")
+        backfill_cmd = f"crier backfill {path}" if path else "crier backfill"
+        console.print(f"\n[dim]Run '{backfill_cmd}' to publish missing content.[/dim]")
 
 
 @cli.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("path", type=click.Path(exists=True), required=False)
 @click.option("--to", "-t", "platform_filter", multiple=True,
               help="Only publish to specific platform(s)")
 @click.option("--profile", "-p", "profile_name",
               help="Only publish to platforms in a profile")
 @click.option("--dry-run", is_flag=True, help="Preview what would be published")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
-def backfill(path: str, platform_filter: tuple[str, ...], profile_name: str | None,
+def backfill(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
              dry_run: bool, yes: bool):
     """Publish content that's missing from platforms.
 
-    PATH can be a file or directory. If directory, scans for .md files.
-    Only publishes to platforms where the content hasn't been published yet.
+    PATH can be a file or directory. If not provided, uses configured content_paths.
+    Only files with valid front matter (title) are included.
     """
-    import glob as glob_module
-
     # Determine which platforms to publish to
     target_platforms: list[str] = []
 
@@ -643,19 +741,19 @@ def backfill(path: str, platform_filter: tuple[str, ...], profile_name: str | No
         console.print("[yellow]No platforms configured.[/yellow]")
         return
 
-    # Find files to backfill
-    path_obj = Path(path)
-    if path_obj.is_file():
-        files = [path_obj]
-    else:
-        files = list(path_obj.glob("**/*.md"))
-        files = [f for f in files if not any(
-            part.startswith('.') or part in ('node_modules', 'venv', '__pycache__')
-            for part in f.parts
-        )]
+    # Find content files
+    files = _find_content_files(path)
 
     if not files:
-        console.print(f"[yellow]No markdown files found in {path}[/yellow]")
+        if path:
+            console.print(f"[yellow]No content files found in {path}[/yellow]")
+        else:
+            content_paths = get_content_paths()
+            if not content_paths:
+                console.print("[yellow]No content paths configured.[/yellow]")
+                console.print("[dim]Add one with: crier config content add <path>[/dim]")
+            else:
+                console.print(f"[yellow]No content files found in configured paths: {', '.join(content_paths)}[/yellow]")
         return
 
     # Find what needs to be published
@@ -692,7 +790,7 @@ def backfill(path: str, platform_filter: tuple[str, ...], profile_name: str | No
             return str(fp)
 
     for file_path, platforms in by_file.items():
-        rel_path = get_display_path(file_path) if path_obj.is_dir() else file_path.name
+        rel_path = get_display_path(file_path)
         table.add_row(rel_path, ", ".join(platforms))
 
     console.print(table)
