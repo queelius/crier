@@ -570,8 +570,16 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     missing_count = 0
     published_count = 0
 
+    def get_display_path(fp: Path) -> str:
+        """Get a display-friendly path, handling both absolute and relative paths."""
+        try:
+            return str(fp.relative_to(Path.cwd()))
+        except ValueError:
+            # Path is not relative to cwd, just use as-is
+            return str(fp)
+
     for file_path in sorted(files):
-        row = [str(file_path.relative_to(Path.cwd()) if path_obj.is_dir() else file_path.name)]
+        row = [get_display_path(file_path) if path_obj.is_dir() else file_path.name]
 
         for platform in check_platforms:
             if is_published(file_path, platform):
@@ -676,8 +684,15 @@ def backfill(path: str, platform_filter: tuple[str, ...], profile_name: str | No
     table.add_column("File", style="cyan")
     table.add_column("Missing Platforms", style="yellow")
 
+    def get_display_path(fp: Path) -> str:
+        """Get a display-friendly path, handling both absolute and relative paths."""
+        try:
+            return str(fp.relative_to(Path.cwd()))
+        except ValueError:
+            return str(fp)
+
     for file_path, platforms in by_file.items():
-        rel_path = str(file_path.relative_to(Path.cwd())) if path_obj.is_dir() else file_path.name
+        rel_path = get_display_path(file_path) if path_obj.is_dir() else file_path.name
         table.add_row(rel_path, ", ".join(platforms))
 
     console.print(table)
