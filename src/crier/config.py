@@ -8,7 +8,8 @@ import yaml
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "crier"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
-LOCAL_CONFIG_FILE = Path(".crier") / "config.yaml"
+LOCAL_CONFIG_DIR = ".crier"
+LOCAL_CONFIG_FILE = "config.yaml"
 
 
 def get_config_path() -> Path:
@@ -16,9 +17,32 @@ def get_config_path() -> Path:
     return Path(os.environ.get("CRIER_CONFIG", DEFAULT_CONFIG_FILE))
 
 
-def get_local_config_path() -> Path:
-    """Get the local (repo) configuration file path."""
-    return LOCAL_CONFIG_FILE
+def get_local_config_path(base_path: Path | None = None) -> Path:
+    """Get the local (repo) configuration file path.
+
+    Searches upward from base_path (or cwd) for a .crier directory,
+    similar to how git finds .git directories.
+    Returns the path where it would be created if not found.
+    """
+    if base_path is None:
+        base_path = Path.cwd()
+
+    # Search upward for existing .crier directory
+    current = base_path.resolve()
+    while current != current.parent:
+        config_dir = current / LOCAL_CONFIG_DIR
+        if config_dir.exists():
+            return config_dir / LOCAL_CONFIG_FILE
+        current = current.parent
+
+    # Not found, use current directory
+    return base_path / LOCAL_CONFIG_DIR / LOCAL_CONFIG_FILE
+
+
+def find_local_config() -> Path | None:
+    """Find existing local config by traversing upward. Returns None if not found."""
+    path = get_local_config_path()
+    return path if path.exists() else None
 
 
 def load_config() -> dict[str, Any]:
@@ -76,6 +100,77 @@ def get_api_key(platform: str) -> str | None:
     # Fall back to config file
     config = load_config()
     return config.get("platforms", {}).get(platform, {}).get("api_key")
+
+
+def is_manual_mode_key(api_key: str | None) -> bool:
+    """Check if an API key value indicates manual mode should be used.
+
+    Returns True if the key is explicitly set to "manual" (case-insensitive),
+    meaning the platform is configured for copy-paste mode without API access.
+    Returns False for None, empty string, or any other value.
+    """
+    if api_key is None:
+        return False
+    return api_key.lower() == "manual"
+
+
+def is_platform_configured(platform: str) -> bool:
+    """Check if a platform is configured (has any api_key entry, even if empty).
+
+    This distinguishes between:
+    - Platform not in config at all (not configured, user doesn't want to use it)
+    - Platform in config with empty/manual key (configured for manual mode)
+    - Platform in config with real key (configured for API mode)
+    """
+    # Check environment variable first
+    env_key = f"CRIER_{platform.upper()}_API_KEY"
+    if os.environ.get(env_key) is not None:
+        return True
+
+    # Check config file - platform section must exist with api_key
+    config = load_config()
+    platform_config = config.get("platforms", {}).get(platform, {})
+    return "api_key" in platform_config
+
+
+def get_api_key_source(platform: str) -> str | None:
+    """Get the source of an API key.
+
+    Returns:
+        "env" if from environment variable
+        "global" if from global config file
+        None if not set
+    """
+    env_key = f"CRIER_{platform.upper()}_API_KEY"
+    if os.environ.get(env_key):
+        return "env"
+
+    global_path = get_config_path()
+    if global_path.exists():
+        with open(global_path) as f:
+            global_config = yaml.safe_load(f) or {}
+        if global_config.get("platforms", {}).get(platform, {}).get("api_key"):
+            return "global"
+
+    return None
+
+
+def load_global_config() -> dict[str, Any]:
+    """Load only the global config (without merging local)."""
+    global_path = get_config_path()
+    if global_path.exists():
+        with open(global_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def load_local_config() -> dict[str, Any]:
+    """Load only the local config (without merging global)."""
+    local_path = get_local_config_path()
+    if local_path.exists():
+        with open(local_path) as f:
+            return yaml.safe_load(f) or {}
+    return {}
 
 
 def set_api_key(platform: str, api_key: str) -> None:

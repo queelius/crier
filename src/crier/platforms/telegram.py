@@ -18,6 +18,7 @@ class Telegram(Platform):
     """
 
     name = "telegram"
+    max_content_length = 4096  # Telegram message character limit
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -53,6 +54,14 @@ class Telegram(Platform):
     def publish(self, article: Article) -> PublishResult:
         """Send a message to Telegram channel."""
         message = self._format_message(article)
+
+        # Check content length
+        if error := self._check_content_length(message):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
         data = {
             "chat_id": self.chat_id,

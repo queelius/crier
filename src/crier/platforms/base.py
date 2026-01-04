@@ -30,15 +30,47 @@ class PublishResult:
     article_id: str | None = None
     url: str | None = None
     error: str | None = None
+    # Manual mode fields - when set, CLI should handle confirmation flow
+    requires_confirmation: bool = False
+    manual_content: str | None = None
+    compose_url: str | None = None
 
 
 class Platform(ABC):
     """Abstract base class for publishing platforms."""
 
     name: str = "base"
+    # Character limit for content (None means no limit)
+    max_content_length: int | None = None
+    # URL for manual compose page (e.g., https://twitter.com/compose/tweet)
+    compose_url: str | None = None
 
     def __init__(self, api_key: str):
         self.api_key = api_key
+
+    def format_for_manual(self, article: Article) -> str:
+        """Format article content for manual posting.
+
+        Override in subclasses for platform-specific formatting.
+        Default: returns full body for long-form platforms.
+        """
+        return article.body
+
+    def _check_content_length(self, content: str) -> str | None:
+        """Check if content exceeds platform limit.
+
+        Returns error message if too long, None if OK.
+        """
+        if self.max_content_length is None:
+            return None
+
+        if len(content) > self.max_content_length:
+            return (
+                f"Content too long for {self.name}: {len(content)} characters "
+                f"(limit: {self.max_content_length}). "
+                f"Use --rewrite to provide a shorter version for {self.name}."
+            )
+        return None
 
     @abstractmethod
     def publish(self, article: Article) -> PublishResult:

@@ -4,31 +4,58 @@ Cross-post your content to dev.to, Ghost, WordPress, Hashnode, Medium, Bluesky, 
 
 Like a town crier announcing your content to the world.
 
+## Getting Started
+
+### Quick Setup
+
+```bash
+pip install crier
+cd your-blog
+crier init
+```
+
+The `init` command walks you through:
+- Creating the `.crier/` registry directory
+- Detecting your content directories
+- Configuring platforms with API keys
+
+### How It Works
+
+1. **Your markdown posts** with YAML front matter are the source of truth
+2. **`.crier/registry.yaml`** tracks what's published where
+3. **`crier audit`** shows what's missing or changed
+4. **`crier publish`** or `audit --publish` publishes content
+
+```bash
+# See what needs publishing
+crier audit
+
+# Publish a file to a platform
+crier publish post.md --to devto
+
+# Publish to multiple platforms
+crier publish post.md --to devto --to bluesky --to mastodon
+
+# Bulk publish missing content (interactive)
+crier audit --publish
+```
+
+### With Claude Code
+
+Crier is designed to work with Claude Code for AI-assisted publishing.
+Install the skill with `crier skill install`, then just ask Claude naturally:
+
+- "Cross-post my latest article to all platforms"
+- "What articles haven't been published to Bluesky?"
+- "Publish this post to Mastodon with a good announcement"
+
+Claude automatically detects when to use the crier skill and follows
+the workflow: audit, select, publish (with rewrites for short-form platforms).
+
 ## Installation
 
 ```bash
 pip install crier
-```
-
-## Quick Start
-
-```bash
-# Configure your API keys
-crier config set devto.api_key YOUR_API_KEY
-crier config set bluesky.api_key "handle.bsky.social:app-password"
-crier config set mastodon.api_key "mastodon.social:access-token"
-
-# Publish a markdown file
-crier publish post.md --to devto
-
-# Publish to multiple platforms at once
-crier publish post.md --to devto --to bluesky --to mastodon
-
-# List your articles
-crier list devto
-
-# Update an existing article
-crier update devto 12345 --file updated-post.md
 ```
 
 ## Supported Platforms
@@ -71,6 +98,40 @@ crier update devto 12345 --file updated-post.md
 - Good for community announcements
 - Discord uses webhook embeds
 
+### Manual Mode
+
+For platforms with restrictive API access (Medium, LinkedIn, Twitter/X), you can use manual (copy-paste) mode:
+
+```bash
+# Explicit manual mode with --manual flag
+crier publish post.md --to medium --manual
+crier publish post.md --to linkedin --manual
+
+# Skip auto-opening browser
+crier publish post.md --to twitter --manual --no-browser
+```
+
+**Auto-manual mode**: If you configure a platform's API key to `"manual"`, crier automatically uses manual mode:
+
+```bash
+# Configure platform for manual mode (no API key needed)
+crier config set twitter.api_key manual
+crier config set linkedin.api_key manual
+
+# Now these automatically use manual mode without --manual flag
+crier publish post.md --to twitter
+crier publish post.md --to linkedin
+```
+
+Manual mode workflow:
+1. Formats content for the platform
+2. Copies it to your clipboard
+3. Opens the compose page in your browser
+4. Asks if you successfully posted
+5. Records to registry only if you confirm
+
+This ensures the registry accurately reflects what's actually published.
+
 ## Configuration
 
 API keys can be set via:
@@ -111,12 +172,16 @@ Your content here...
 ## Commands
 
 ```bash
-crier publish FILE [--to PLATFORM]...  # Publish to platform(s)
-crier update PLATFORM ID --file FILE   # Update existing article
+crier init                              # Interactive setup wizard
+crier publish FILE --to PLATFORM        # Publish to platform(s)
+crier publish FILE --to PLATFORM --manual  # Manual copy-paste mode
+crier audit                             # See what's missing/changed
+crier audit --publish                   # Bulk publish interactively
+crier status [FILE]                     # Show publication status
 crier list PLATFORM                     # List your articles
-crier config set KEY VALUE              # Set configuration
 crier config show                       # Show configuration
-crier platforms                         # List available platforms
+crier config set KEY VALUE              # Set configuration
+crier doctor                            # Verify API keys work
 ```
 
 ## Getting API Keys

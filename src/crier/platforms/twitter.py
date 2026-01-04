@@ -1,7 +1,7 @@
-"""Twitter/X platform implementation (copy-paste mode).
+"""Twitter/X platform implementation (manual/copy-paste mode).
 
 Twitter's API requires complex OAuth setup and elevated access.
-This implementation generates tweet text for manual posting instead.
+This implementation generates tweet text for manual posting with confirmation.
 """
 
 from typing import Any
@@ -10,22 +10,24 @@ from .base import Article, Platform, PublishResult
 
 
 class Twitter(Platform):
-    """Twitter/X copy-paste mode.
+    """Twitter/X manual mode.
 
-    Instead of posting via API, generates formatted tweet text
-    that you can copy and paste into Twitter manually.
+    Generates formatted tweet text that you copy and paste into Twitter.
+    The CLI will ask for confirmation before recording to registry.
 
     No API key required - use any placeholder value.
     """
 
     name = "twitter"
+    max_content_length = 280  # Twitter character limit
+    compose_url = "https://twitter.com/compose/tweet"
 
     def __init__(self, api_key: str):
-        """API key is ignored - this is copy-paste mode."""
+        """API key is ignored - this is manual mode."""
         super().__init__(api_key)
 
-    def _format_tweet(self, article: Article) -> str:
-        """Format article as a tweet (280 char limit)."""
+    def format_for_manual(self, article: Article) -> str:
+        """Format article as a tweet for manual posting."""
         parts = [article.title]
 
         if article.tags:
@@ -35,63 +37,51 @@ class Twitter(Platform):
         if article.canonical_url:
             parts.append(article.canonical_url)
 
-        text = "\n\n".join(parts)
-
-        # Twitter limit is 280 chars
-        if len(text) > 280:
-            # URLs count as ~23 chars after t.co shortening
-            url_len = 23 if article.canonical_url else 0
-            hashtags_text = " ".join(f"#{tag.replace('-', '_')}" for tag in article.tags[:2]) if article.tags else ""
-            hashtags_len = len(hashtags_text) + 2 if hashtags_text else 0
-
-            max_title = 280 - url_len - hashtags_len - 6  # 6 for newlines and "..."
-            truncated_title = article.title[:max_title] + "..."
-
-            parts = [truncated_title]
-            if hashtags_text:
-                parts.append(hashtags_text)
-            if article.canonical_url:
-                parts.append(article.canonical_url)
-            text = "\n\n".join(parts)
-
-        return text
+        return "\n\n".join(parts)
 
     def publish(self, article: Article) -> PublishResult:
-        """Generate tweet text for manual posting.
+        """Return manual mode result for CLI to handle confirmation.
 
-        Prints the formatted tweet to console for copy-pasting.
+        The CLI will display the content, copy to clipboard, open browser,
+        and ask user to confirm before recording to registry.
         """
-        tweet = self._format_tweet(article)
+        tweet = self.format_for_manual(article)
 
-        # Print the tweet with clear formatting for copying
-        print("\n" + "=" * 50)
-        print("COPY THIS TWEET:")
-        print("=" * 50)
-        print(tweet)
-        print("=" * 50)
-        print(f"({len(tweet)} characters)")
-        print("Post at: https://twitter.com/compose/tweet")
-        print("=" * 50 + "\n")
+        # Check content length
+        if error := self._check_content_length(tweet):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
+        # Return result that signals CLI to handle manual confirmation
         return PublishResult(
             success=True,
             platform=self.name,
-            article_id="manual",
-            url="https://twitter.com/compose/tweet",
+            article_id=None,  # Will be set after user confirms
+            url=None,  # User provides after posting
+            requires_confirmation=True,
+            manual_content=tweet,
+            compose_url=self.compose_url,
         )
 
     def update(self, article_id: str, article: Article) -> PublishResult:
-        """Generate updated tweet text."""
-        return self.publish(article)
+        """Twitter doesn't support editing - generate new tweet."""
+        return PublishResult(
+            success=False,
+            platform=self.name,
+            error="Twitter doesn't support editing tweets. Delete and repost manually.",
+        )
 
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Not available in copy-paste mode."""
+        """Not available in manual mode."""
         return []
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
-        """Not available in copy-paste mode."""
+        """Not available in manual mode."""
         return None
 
     def delete(self, article_id: str) -> bool:
-        """Not available in copy-paste mode."""
+        """Not available in manual mode."""
         raise NotImplementedError("Manual mode - delete tweets at twitter.com")

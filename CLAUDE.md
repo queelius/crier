@@ -26,20 +26,18 @@ ruff check src/
 
 # Format check
 ruff format --check src/
-
-# Build and serve docs locally
-mkdocs serve
 ```
 
 ## Architecture
 
 **CLI Layer** (`cli.py`): Click-based commands that orchestrate the workflow:
-- `publish` — Publish to platforms (supports `--dry-run`, `--profile`)
+- `init` — Interactive setup wizard
+- `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`)
 - `status` — Show publication status for files
-- `audit` — Check what's missing from platforms
-- `backfill` — Publish missing content
+- `audit` — Check what's missing from platforms (supports `--publish` for bulk operations)
 - `doctor` — Validate API keys
-- `config` — Manage API keys and profiles
+- `config` — Manage API keys, profiles, and content paths
+- `skill` — Manage Claude Code skill installation (`install`, `uninstall`, `status`, `show`)
 
 **Platform Abstraction** (`platforms/`):
 - `base.py`: Abstract `Platform` class defining the interface (`publish`, `update`, `list_articles`, `get_article`, `delete`) and core data classes (`Article`, `PublishResult`)
@@ -58,24 +56,23 @@ mkdocs serve
 
 **Converters** (`converters/markdown.py`): Parses markdown files with YAML front matter into `Article` objects.
 
+**Skill** (`skill.py`): Claude Code skill installation. Installs `SKILL.md` to `~/.claude/skills/crier/` for Claude Code integration.
+
 ## Key Features
 
 - **Dry run mode**: Preview before publishing with `--dry-run`
 - **Publishing profiles**: Group platforms (e.g., `--profile blogs`)
 - **Publication tracking**: Registry tracks what's published where
-- **Audit & backfill**: Find and publish missing content
+- **Audit & publish**: Find and publish missing content with `audit --publish`
+- **Manual mode**: Copy-paste mode for platforms without API access (`--manual` or `api_key: manual`)
+- **Rewrites**: Custom short-form content with `--rewrite` for social platforms
 - **Doctor**: Validate all API keys work
 
 ## Adding a New Platform
 
 1. Create `platforms/newplatform.py` implementing the `Platform` abstract class
 2. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
-3. Add documentation in `docs/platforms/newplatform.md`
-4. Update README.md with API key format
-
-## Documentation
-
-Documentation is in `docs/` using MkDocs with Material theme. Deployed to GitHub Pages via `.github/workflows/docs.yml`.
+3. Update README.md with API key format
 
 ## Testing Notes
 

@@ -1,10 +1,9 @@
 """LinkedIn platform implementation.
 
-NOTE: LinkedIn API access requires a Company Page or approved Marketing Developer Platform access.
-This is more complex than other platforms. For most users, sharing via web interface is easier.
+Supports both API mode and manual mode.
 
-This implementation provides a basic structure but may need adjustments based on your
-specific LinkedIn API access level.
+NOTE: LinkedIn API access requires a Company Page or approved Marketing Developer Platform access.
+For most users, manual mode (--manual flag) is the easier option.
 """
 
 from typing import Any
@@ -17,12 +16,15 @@ from .base import Article, Platform, PublishResult
 class LinkedIn(Platform):
     """LinkedIn publishing platform.
 
-    Requires OAuth 2.0 access token with w_member_social scope.
+    API mode: Requires OAuth 2.0 access token with w_member_social scope.
     api_key format: "access_token" or "access_token:person_urn"
+
+    Manual mode: Use --manual flag to generate content for copy-paste.
     """
 
     name = "linkedin"
     base_url = "https://api.linkedin.com/v2"
+    compose_url = "https://www.linkedin.com/feed/?shareActive=true"
 
     def __init__(self, api_key: str, person_urn: str | None = None):
         super().__init__(api_key)
@@ -38,6 +40,25 @@ class LinkedIn(Platform):
             "Content-Type": "application/json",
             "X-Restli-Protocol-Version": "2.0.0",
         }
+
+    def format_for_manual(self, article: Article) -> str:
+        """Format article for manual posting to LinkedIn.
+
+        LinkedIn posts work best with a short intro, hashtags, and a link.
+        """
+        parts = [article.title]
+
+        if article.description:
+            parts.append(article.description)
+
+        if article.tags:
+            hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
+            parts.append(hashtags)
+
+        if article.canonical_url:
+            parts.append(article.canonical_url)
+
+        return "\n\n".join(parts)
 
     def _get_person_urn(self) -> str | None:
         """Get the authenticated user's URN."""

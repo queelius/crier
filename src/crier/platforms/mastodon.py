@@ -15,6 +15,7 @@ class Mastodon(Platform):
     """
 
     name = "mastodon"
+    max_content_length = 500  # Default Mastodon limit (some instances allow more)
 
     def __init__(self, api_key: str, instance: str | None = None):
         """Initialize with access token and instance.
@@ -58,9 +59,13 @@ class Mastodon(Platform):
 
         text = "\n\n".join(text_parts)
 
-        # Truncate to 500 chars (default Mastodon limit, some instances higher)
-        if len(text) > 500:
-            text = text[:497] + "..."
+        # Check content length
+        if error := self._check_content_length(text):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
         data = {
             "status": text,
@@ -97,8 +102,14 @@ class Mastodon(Platform):
             text_parts.append(article.canonical_url)
 
         text = "\n\n".join(text_parts)
-        if len(text) > 500:
-            text = text[:497] + "..."
+
+        # Check content length
+        if error := self._check_content_length(text):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
         resp = requests.put(
             f"{self.instance}/api/v1/statuses/{article_id}",

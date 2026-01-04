@@ -18,6 +18,7 @@ class Threads(Platform):
 
     name = "threads"
     base_url = "https://graph.threads.net/v1.0"
+    max_content_length = 500  # Threads character limit
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -28,7 +29,7 @@ class Threads(Platform):
         self.access_token = parts[1]
 
     def _format_post(self, article: Article) -> str:
-        """Format article for Threads (500 char limit)."""
+        """Format article for Threads."""
         parts = [article.title]
 
         if article.description:
@@ -41,22 +42,19 @@ class Threads(Platform):
             hashtags = " ".join(f"#{tag.replace('-', '_')}" for tag in article.tags[:3])
             parts.append(f"\n\n{hashtags}")
 
-        text = "".join(parts)
-
-        # Threads has 500 char limit
-        if len(text) > 500:
-            # Truncate description to fit
-            available = 500 - len(article.title) - 50  # Leave room for URL and tags
-            if article.canonical_url:
-                text = f"{article.title}\n\n🔗 {article.canonical_url}"
-            else:
-                text = article.title[:500]
-
-        return text
+        return "".join(parts)
 
     def publish(self, article: Article) -> PublishResult:
         """Publish a post to Threads (two-step process)."""
         text = self._format_post(article)
+
+        # Check content length
+        if error := self._check_content_length(text):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
         # Step 1: Create media container
         create_params = {

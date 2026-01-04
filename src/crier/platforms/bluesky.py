@@ -17,6 +17,7 @@ class Bluesky(Platform):
 
     name = "bluesky"
     base_url = "https://bsky.social/xrpc"
+    max_content_length = 300  # Bluesky character limit
 
     def __init__(self, api_key: str, handle: str | None = None):
         """Initialize with app password and handle.
@@ -67,13 +68,6 @@ class Bluesky(Platform):
 
         Creates a post with the article title/description and canonical URL.
         """
-        if not self._create_session():
-            return PublishResult(
-                success=False,
-                platform=self.name,
-                error="Failed to authenticate with Bluesky",
-            )
-
         # Create post text: title + description + URL
         text_parts = [article.title]
         if article.description:
@@ -83,9 +77,20 @@ class Bluesky(Platform):
 
         text = "\n\n".join(text_parts)
 
-        # Truncate to 300 chars (Bluesky limit)
-        if len(text) > 300:
-            text = text[:297] + "..."
+        # Check content length
+        if error := self._check_content_length(text):
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
+
+        if not self._create_session():
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error="Failed to authenticate with Bluesky",
+            )
 
         record = {
             "$type": "app.bsky.feed.post",
@@ -156,15 +161,22 @@ class Bluesky(Platform):
 
         if resp.status_code == 200:
             data = resp.json()
-            return [
-                {
-                    "id": item.get("post", {}).get("uri"),
-                    "title": item.get("post", {}).get("record", {}).get("text", "")[:50],
+            results = []
+            for item in data.get("feed", []):
+                post = item.get("post", {})
+                uri = post.get("uri", "")
+                # Convert AT URI to web URL
+                # at://did:plc:xxx/app.bsky.feed.post/yyy -> https://bsky.app/profile/handle/post/yyy
+                post_id = uri.split("/")[-1] if uri else ""
+                author_handle = post.get("author", {}).get("handle", self.handle)
+                url = f"https://bsky.app/profile/{author_handle}/post/{post_id}" if post_id else ""
+                results.append({
+                    "id": uri,
+                    "title": post.get("record", {}).get("text", "")[:50],
                     "published": True,
-                    "url": "",
-                }
-                for item in data.get("feed", [])
-            ]
+                    "url": url,
+                })
+            return results
         return []
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:

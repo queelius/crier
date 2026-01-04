@@ -1,4 +1,7 @@
-"""Medium platform implementation."""
+"""Medium platform implementation.
+
+Supports both API mode (with integration token) and manual mode.
+"""
 
 from typing import Any
 
@@ -10,12 +13,15 @@ from .base import Article, Platform, PublishResult
 class Medium(Platform):
     """Medium publishing platform.
 
-    Requires a Medium integration token.
+    API mode: Requires a Medium integration token.
     Get yours at: https://medium.com/me/settings/security
+
+    Manual mode: Use --manual flag to generate content for copy-paste.
     """
 
     name = "medium"
     base_url = "https://api.medium.com/v1"
+    compose_url = "https://medium.com/new-story"
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -24,6 +30,30 @@ class Medium(Platform):
             "Content-Type": "application/json",
         }
         self._user_id: str | None = None
+
+    def format_for_manual(self, article: Article) -> str:
+        """Format article for manual posting to Medium.
+
+        Returns markdown with front matter stripped since Medium
+        supports markdown directly in their editor.
+        """
+        parts = [f"# {article.title}"]
+
+        if article.description:
+            parts.append(f"*{article.description}*")
+
+        parts.append("")  # blank line
+        parts.append(article.body)
+
+        if article.tags:
+            parts.append("")
+            parts.append("---")
+            parts.append(f"Tags: {', '.join(article.tags[:5])}")
+
+        if article.canonical_url:
+            parts.append(f"Originally published at: {article.canonical_url}")
+
+        return "\n".join(parts)
 
     def _get_user_id(self) -> str | None:
         """Get the authenticated user's ID."""

@@ -46,8 +46,6 @@ htmlcov/
 # Local config (contains API keys)
 config.yaml
 
-# MkDocs build output
-site/
 
 # Build artifacts
 dist/

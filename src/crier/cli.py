@@ -10,16 +10,21 @@ from . import __version__
 from .config import (
     get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles,
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
+    is_manual_mode_key, is_platform_configured,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
+from .platforms.base import Article
 from .registry import (
     record_publication,
-    get_post_status,
-    get_all_posts,
     get_registry_path,
     is_published,
     has_content_changed,
+    get_file_content_hash,
+    get_publication_info,
+    get_platform_publications,
+    get_article_by_file,
+    get_all_articles,
 )
 
 console = Console()
@@ -32,6 +37,23 @@ def _has_valid_front_matter(file_path: Path) -> bool:
         return bool(article.title)
     except Exception:
         return False
+
+
+def _is_in_content_paths(file_path: Path) -> bool:
+    """Check if a file is within configured content_paths."""
+    content_paths = get_content_paths()
+    if not content_paths:
+        return False
+
+    file_resolved = file_path.resolve()
+    for content_path in content_paths:
+        path_obj = Path(content_path).resolve()
+        try:
+            file_resolved.relative_to(path_obj)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _find_content_files(explicit_path: str | None = None) -> list[Path]:
@@ -78,6 +100,201 @@ def cli():
 
 
 @cli.command()
+def init():
+    """Initialize crier for your project.
+
+    Sets up the registry, detects content directories, and helps
+    configure platforms for cross-posting.
+    """
+    import questionary
+    from .registry import REGISTRY_DIR, REGISTRY_FILE
+
+    console.print("\n[bold]Welcome to Crier![/bold]")
+    console.print("Let's set up cross-posting for your project.\n")
+
+    # Step 1: Create .crier directory
+    registry_dir = Path.cwd() / REGISTRY_DIR
+    registry_file = registry_dir / REGISTRY_FILE
+
+    if registry_file.exists():
+        console.print(f"[green]✓[/green] Registry already exists: {registry_file}")
+    else:
+        registry_dir.mkdir(parents=True, exist_ok=True)
+        # Create empty registry
+        registry_file.write_text("version: 2\narticles: {}\n")
+        console.print(f"[green]✓[/green] Created registry: {registry_file}")
+
+    console.print()
+
+    # Step 2: Detect content directories
+    console.print("[bold]Step 1: Content Directories[/bold]")
+    console.print("[dim]Where are your markdown posts?[/dim]\n")
+
+    # Look for common content directory patterns
+    candidates = []
+    for pattern in ["content", "posts", "articles", "blog", "_posts", "src/content"]:
+        path = Path.cwd() / pattern
+        if path.is_dir():
+            # Count markdown files
+            md_files = list(path.glob("**/*.md"))
+            if md_files:
+                candidates.append((str(path.relative_to(Path.cwd())), len(md_files)))
+
+    current_paths = get_content_paths()
+    if current_paths:
+        console.print(f"[dim]Currently configured: {', '.join(current_paths)}[/dim]\n")
+
+    if candidates:
+        choices = [
+            questionary.Choice(
+                title=f"{path}/ ({count} markdown files)",
+                value=path,
+                checked=path in current_paths,
+            )
+            for path, count in candidates
+        ]
+
+        selected = questionary.checkbox(
+            "Select directories to scan for content:",
+            choices=choices,
+        ).ask()
+
+        if selected is None:
+            console.print("[yellow]Setup cancelled.[/yellow]")
+            return
+
+        if selected:
+            set_content_paths(selected)
+            console.print(f"[green]✓[/green] Content paths: {', '.join(selected)}")
+        else:
+            console.print("[dim]No content paths selected. You can add them later with:[/dim]")
+            console.print("[dim]  crier config content add <directory>[/dim]")
+    else:
+        console.print("[yellow]No content directories found.[/yellow]")
+        console.print("[dim]You can add them later with: crier config content add <directory>[/dim]")
+
+    console.print()
+
+    # Step 3: Platform configuration
+    console.print("[bold]Step 2: Platform Configuration[/bold]")
+    console.print("[dim]Which platforms do you want to publish to?[/dim]\n")
+
+    # Group platforms by category
+    categories = {
+        "Blog Platforms": ["devto", "hashnode", "medium", "ghost", "wordpress"],
+        "Social Media": ["bluesky", "mastodon", "twitter", "threads", "linkedin"],
+        "Newsletters": ["buttondown"],
+        "Announcements": ["telegram", "discord"],
+    }
+
+    # Build choices showing configured status
+    choices = []
+    for category, platform_names in categories.items():
+        # Only include platforms that are registered
+        available = [p for p in platform_names if p in PLATFORMS]
+        if available:
+            for p in available:
+                is_configured = bool(get_api_key(p))
+                status = " [green](configured)[/green]" if is_configured else ""
+                choices.append(questionary.Choice(
+                    title=f"{p} ({category.split()[0].lower()}){status}",
+                    value=p,
+                    checked=is_configured,
+                ))
+
+    selected_platforms = questionary.checkbox(
+        "Select platforms to configure:",
+        choices=choices,
+    ).ask()
+
+    if selected_platforms is None:
+        console.print("[yellow]Setup cancelled.[/yellow]")
+        return
+
+    # Configure each selected platform
+    for platform in selected_platforms:
+        existing_key = get_api_key(platform)
+        if existing_key:
+            update = questionary.confirm(
+                f"{platform} is already configured. Update API key?",
+                default=False,
+            ).ask()
+            if not update:
+                continue
+
+        # Platform-specific prompts
+        if platform == "bluesky":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Get an app password at: https://bsky.app/settings/app-passwords[/dim]")
+            handle = questionary.text("Bluesky handle (e.g., user.bsky.social):").ask()
+            password = questionary.password("App password:").ask()
+            if handle and password:
+                set_api_key(platform, f"{handle}:{password}")
+                console.print(f"[green]✓[/green] {platform} configured")
+        elif platform == "mastodon":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Create an access token in Preferences > Development[/dim]")
+            instance = questionary.text("Instance URL (e.g., https://mastodon.social):").ask()
+            token = questionary.password("Access token:").ask()
+            if instance and token:
+                set_api_key(platform, f"{instance}:{token}")
+                console.print(f"[green]✓[/green] {platform} configured")
+        elif platform == "devto":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Get your API key at: https://dev.to/settings/extensions[/dim]")
+            key = questionary.password("DEV.to API key:").ask()
+            if key:
+                set_api_key(platform, key)
+                console.print(f"[green]✓[/green] {platform} configured")
+        elif platform == "hashnode":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Get your API key at: https://hashnode.com/settings/developer[/dim]")
+            key = questionary.password("Hashnode API key:").ask()
+            pub_id = questionary.text("Publication ID (from your publication settings):").ask()
+            if key and pub_id:
+                set_api_key(platform, f"{key}:{pub_id}")
+                console.print(f"[green]✓[/green] {platform} configured")
+        elif platform == "telegram":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Get a bot token from @BotFather[/dim]")
+            token = questionary.password("Bot token:").ask()
+            chat_id = questionary.text("Chat ID (channel or group):").ask()
+            if token and chat_id:
+                set_api_key(platform, f"{token}:{chat_id}")
+                console.print(f"[green]✓[/green] {platform} configured")
+        elif platform == "discord":
+            console.print(f"\n[bold]{platform}[/bold]")
+            console.print("[dim]Create a webhook in channel settings[/dim]")
+            webhook = questionary.password("Webhook URL:").ask()
+            if webhook:
+                set_api_key(platform, webhook)
+                console.print(f"[green]✓[/green] {platform} configured")
+        else:
+            # Generic API key prompt
+            console.print(f"\n[bold]{platform}[/bold]")
+            key = questionary.password(f"{platform} API key:").ask()
+            if key:
+                set_api_key(platform, key)
+                console.print(f"[green]✓[/green] {platform} configured")
+
+    console.print()
+
+    # Step 4: Summary and next steps
+    console.print("[bold]Setup Complete![/bold]\n")
+    console.print("Next steps:")
+    console.print("  1. Run [cyan]crier audit[/cyan] to see what can be published")
+    console.print("  2. Run [cyan]crier publish <file> --to <platform>[/cyan] to publish content")
+    console.print("  3. Run [cyan]crier doctor[/cyan] to verify your API keys work")
+    console.print()
+
+    # Mention Claude Code integration
+    console.print("[dim]Using Claude Code? Install the crier skill with:[/dim]")
+    console.print("[dim]  crier skill install[/dim]")
+    console.print("[dim]Then just ask Claude to cross-post your content![/dim]")
+    console.print()
+
+
+@cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--to", "-t", "platform_args", multiple=True,
               help="Platform(s) to publish to (can specify multiple)")
@@ -85,8 +302,30 @@ def cli():
               help="Use a predefined profile (group of platforms)")
 @click.option("--draft", is_flag=True, help="Publish as draft")
 @click.option("--dry-run", is_flag=True, help="Preview what would be published without actually publishing")
-def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None, draft: bool, dry_run: bool):
-    """Publish a markdown file to one or more platforms."""
+@click.option("--manual", is_flag=True,
+              help="Use manual mode: generate content for copy-paste instead of API")
+@click.option("--no-browser", is_flag=True,
+              help="Don't auto-open browser in manual mode")
+@click.option("--rewrite", "rewrite_content", default=None,
+              help="Use custom content instead of article body (for short-form platforms)")
+@click.option("--rewrite-file", "rewrite_file", default=None, type=click.Path(exists=True),
+              help="Read rewrite content from a file")
+@click.option("--rewrite-author", "rewrite_author", default=None,
+              help="Label for who wrote the rewrite (e.g., 'claude-code')")
+def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
+            draft: bool, dry_run: bool, manual: bool, no_browser: bool,
+            rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None):
+    """Publish a markdown file to one or more platforms.
+
+    For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
+    custom content that fits the platform's character limit.
+
+    Use --manual to generate content for copy-paste instead of using APIs.
+    This is useful for platforms with restrictive API access (Medium, LinkedIn).
+    """
+    import webbrowser
+    import pyperclip
+    from rich.panel import Panel
     # Resolve platforms from --to and --profile
     platforms: list[str] = []
 
@@ -101,9 +340,15 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if platform_args:
         platforms.extend(platform_args)
 
-    # Default to devto if nothing specified
+    # Require explicit platform selection
     if not platforms:
-        platforms = ["devto"]
+        console.print("[red]Error: No platform specified.[/red]")
+        console.print("[dim]Use --to <platform> or --profile <name> to specify where to publish.[/dim]")
+        console.print("[dim]Examples:[/dim]")
+        console.print("[dim]  crier publish article.md --to devto[/dim]")
+        console.print("[dim]  crier publish article.md --to bluesky --to mastodon[/dim]")
+        console.print("[dim]  crier publish article.md --profile social[/dim]")
+        raise SystemExit(1)
 
     # Remove duplicates while preserving order
     seen = set()
@@ -118,6 +363,42 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     if draft:
         article.published = False
+
+    # Handle rewrite content
+    is_rewritten = False
+    posted_content = None
+    if rewrite_file:
+        with open(rewrite_file) as f:
+            rewrite_content = f.read().strip()
+    if rewrite_content:
+        is_rewritten = True
+        posted_content = rewrite_content
+        # Create a modified article with the rewritten content
+        article = Article(
+            title=article.title,
+            body=rewrite_content,  # Use rewritten content as body
+            description=article.description,
+            tags=article.tags,
+            canonical_url=article.canonical_url,
+            published=article.published,
+            cover_image=article.cover_image,
+        )
+
+    # Require canonical_url for registry tracking
+    if not article.canonical_url:
+        console.print("[yellow]Warning: No canonical_url in front matter.[/yellow]")
+        console.print("[dim]Publications won't be tracked properly without canonical_url.[/dim]")
+        console.print()
+
+    # Warn if file is outside content_paths
+    file_path = Path(file)
+    if not _is_in_content_paths(file_path):
+        content_paths = get_content_paths()
+        if content_paths:
+            console.print("[yellow]Note: This file is not in your configured content_paths.[/yellow]")
+            console.print("[dim]It will be tracked in the registry, but `crier audit` won't find it.[/dim]")
+            console.print("[dim]To include it in audits, run: crier config content add <directory>[/dim]")
+            console.print()
 
     # Dry run: show what would be published
     if dry_run:
@@ -173,7 +454,14 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     for platform_name in platforms:
         api_key = get_api_key(platform_name)
-        if not api_key:
+
+        # Determine if we should use manual mode:
+        # 1. Explicitly requested with --manual flag
+        # 2. API key is empty string or "manual" (configured for manual mode)
+        use_manual = manual or is_manual_mode_key(api_key)
+
+        # Check if platform is configured at all
+        if not api_key and not is_platform_configured(platform_name):
             results.append({
                 "platform": platform_name,
                 "success": False,
@@ -185,11 +473,113 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
         try:
             platform_cls = get_platform(platform_name)
-            platform = platform_cls(api_key)
 
-            console.print(f"[dim]Publishing to {platform_name}...[/dim]")
-            result = platform.publish(article)
+            # For manual mode with no real API key, we still need a platform instance
+            # Pass a dummy key since we won't be making API calls
+            effective_key = api_key if api_key and not is_manual_mode_key(api_key) else "manual"
+            platform = platform_cls(effective_key)
 
+            # Handle manual mode (--manual flag or auto-detected from key)
+            if use_manual:
+                manual_content = platform.format_for_manual(article)
+                compose_url = platform.compose_url or f"https://{platform_name}.com"
+
+                # Check content length if applicable
+                if platform.max_content_length and len(manual_content) > platform.max_content_length:
+                    results.append({
+                        "platform": platform_name,
+                        "success": False,
+                        "error": f"Content too long: {len(manual_content)} chars (limit: {platform.max_content_length})",
+                        "url": None,
+                        "id": None,
+                    })
+                    continue
+
+                # Create a result that requires confirmation
+                result = type("Result", (), {
+                    "success": True,
+                    "requires_confirmation": True,
+                    "manual_content": manual_content,
+                    "compose_url": compose_url,
+                    "article_id": None,
+                    "url": None,
+                    "error": None,
+                })()
+            else:
+                console.print(f"[dim]Publishing to {platform_name}...[/dim]")
+                result = platform.publish(article)
+
+            # Handle manual mode confirmation flow
+            if result.requires_confirmation:
+                console.print()
+                console.print(Panel(
+                    result.manual_content,
+                    title=f"[bold]Copy this to {platform_name}[/bold]",
+                    subtitle=f"{len(result.manual_content)} characters",
+                ))
+
+                # Copy to clipboard
+                try:
+                    pyperclip.copy(result.manual_content)
+                    console.print("[green]✓ Copied to clipboard[/green]")
+                except Exception:
+                    console.print("[yellow]Could not copy to clipboard (install xclip/xsel on Linux)[/yellow]")
+
+                console.print(f"[dim]Compose at: {result.compose_url}[/dim]")
+
+                # Open browser unless --no-browser
+                if not no_browser:
+                    webbrowser.open(result.compose_url)
+                    console.print("[dim]Browser opened[/dim]")
+
+                # Ask for confirmation
+                console.print()
+                posted = click.confirm(f"Did you successfully post to {platform_name}?", default=False)
+
+                if posted:
+                    post_url = click.prompt(
+                        "Enter the post URL (or press enter to skip)",
+                        default="",
+                        show_default=False,
+                    )
+
+                    # Record to registry
+                    if article.canonical_url:
+                        content_hash = get_file_content_hash(Path(file))
+                        record_publication(
+                            canonical_url=article.canonical_url,
+                            platform=platform_name,
+                            article_id="manual",
+                            url=post_url or None,
+                            title=article.title,
+                            source_file=file,
+                            content_hash=content_hash,
+                            rewritten=is_rewritten,
+                            rewrite_author=rewrite_author if is_rewritten else None,
+                            posted_content=posted_content if is_rewritten else None,
+                        )
+
+                    results.append({
+                        "platform": platform_name,
+                        "success": True,
+                        "error": None,
+                        "url": post_url or "(manual)",
+                        "id": "manual",
+                    })
+                    console.print(f"[green]✓ Recorded publication to {platform_name}[/green]")
+                else:
+                    results.append({
+                        "platform": platform_name,
+                        "success": False,
+                        "error": "User cancelled",
+                        "url": None,
+                        "id": None,
+                    })
+                    console.print(f"[yellow]Not recorded in registry[/yellow]")
+
+                continue  # Skip normal result handling
+
+            # Normal (non-manual) result handling
             results.append({
                 "platform": platform_name,
                 "success": result.success,
@@ -199,14 +589,19 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             })
 
             # Record successful publication to registry
-            if result.success:
+            if result.success and article.canonical_url:
+                content_hash = get_file_content_hash(Path(file))
                 record_publication(
-                    file_path=file,
+                    canonical_url=article.canonical_url,
                     platform=platform_name,
                     article_id=result.article_id,
                     url=result.url,
                     title=article.title,
-                    canonical_url=article.canonical_url,
+                    source_file=file,
+                    content_hash=content_hash,
+                    rewritten=is_rewritten,
+                    rewrite_author=rewrite_author if is_rewritten else None,
+                    posted_content=posted_content if is_rewritten else None,
                 )
 
         except Exception as e:
@@ -249,74 +644,128 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         console.print(f"\n[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
 
 
-@cli.command()
-@click.argument("platform")
-@click.argument("article_id")
-@click.option("--file", "-f", type=click.Path(exists=True), required=True,
-              help="Markdown file with updated content")
-def update(platform: str, article_id: str, file: str):
-    """Update an existing article on a platform."""
-    api_key = get_api_key(platform)
-    if not api_key:
-        console.print(f"[red]No API key configured for {platform}[/red]")
-        return
-
-    article = parse_markdown_file(file)
-
-    try:
-        platform_cls = get_platform(platform)
-        plat = platform_cls(api_key)
-
-        console.print(f"[blue]Updating article {article_id} on {platform}...[/blue]")
-        result = plat.update(article_id, article)
-
-        if result.success:
-            console.print(f"[green]Updated![/green] {result.url}")
-        else:
-            console.print(f"[red]Failed:[/red] {result.error}")
-
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-
-
 @cli.command(name="list")
 @click.argument("platform")
 @click.option("--limit", "-n", default=10, help="Number of articles to show")
-def list_articles(platform: str, limit: int):
-    """List your articles on a platform."""
-    api_key = get_api_key(platform)
-    if not api_key:
-        console.print(f"[red]No API key configured for {platform}[/red]")
-        return
+@click.option("--verbose", "-v", is_flag=True, help="Show all columns")
+@click.option("--remote", "-r", is_flag=True, help="Query platform API instead of registry")
+@click.option(
+    "--format",
+    "-f",
+    "output_format",
+    type=click.Choice(["table", "urls", "json"]),
+    default="table",
+    help="Output format: table (default), urls (one per line), json",
+)
+def list_articles(platform: str, limit: int, verbose: bool, remote: bool, output_format: str):
+    """List your crossposted articles on a platform.
 
-    try:
-        platform_cls = get_platform(platform)
-        plat = platform_cls(api_key)
+    By default, shows articles from your local registry (what you've published).
+    Use --remote to query the platform's API directly.
+    """
+    import json as json_module
 
-        articles = plat.list_articles(limit)
-
-        if not articles:
-            console.print("No articles found.")
+    if remote:
+        # Query platform API directly (old behavior)
+        api_key = get_api_key(platform)
+        if not api_key:
+            console.print(f"[red]No API key configured for {platform}[/red]")
             return
 
-        table = Table(title=f"Articles on {platform}")
-        table.add_column("ID", style="cyan")
-        table.add_column("Title", style="green")
-        table.add_column("Published", style="yellow")
-        table.add_column("URL", style="blue")
+        try:
+            platform_cls = get_platform(platform)
+            plat = platform_cls(api_key)
+            articles = plat.list_articles(limit)
 
-        for article in articles:
+            if not articles:
+                console.print(f"No articles found on {platform}.")
+                return
+
+            # JSON output
+            if output_format == "json":
+                print(json_module.dumps(articles, indent=2))
+                return
+
+            # URLs only output
+            if output_format == "urls":
+                for article in articles:
+                    url = article.get("url", "")
+                    if url:
+                        print(url)
+                return
+
+            # Table output
+            table = Table(title=f"Articles on {platform} (remote)")
+            table.add_column("Title", style="green")
+            table.add_column("URL", style="blue", no_wrap=True)
+
+            for article in articles[:limit]:
+                table.add_row(
+                    article.get("title", "")[:60],
+                    article.get("url", ""),
+                )
+
+            console.print(table)
+
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+        return
+
+    # Default: read from registry (what YOU have published)
+    publications = get_platform_publications(platform)
+
+    if not publications:
+        console.print(f"No articles published to {platform} in registry.")
+        console.print("[dim]Use --remote to query the platform API directly.[/dim]")
+        return
+
+    # Sort by published_at descending
+    publications.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+    publications = publications[:limit]
+
+    # JSON output
+    if output_format == "json":
+        print(json_module.dumps(publications, indent=2))
+        return
+
+    # URLs only output
+    if output_format == "urls":
+        for pub in publications:
+            url = pub.get("platform_url", "")
+            if url:
+                print(url)
+        return
+
+    # Table output
+    table = Table(title=f"Your publications to {platform}")
+
+    if verbose:
+        table.add_column("Title", style="green", max_width=35)
+        table.add_column("Source", style="cyan", max_width=30)
+        table.add_column("Platform URL", style="blue")
+        table.add_column("Rewritten", style="yellow", max_width=10)
+
+        for pub in publications:
+            rewritten = "Yes" if pub.get("rewritten") else ""
+            if pub.get("rewrite_author"):
+                rewritten = pub.get("rewrite_author")
             table.add_row(
-                str(article.get("id", "")),
-                article.get("title", "")[:50],
-                str(article.get("published", "")),
-                article.get("url", ""),
+                (pub.get("title") or "")[:35],
+                (pub.get("source_file") or "")[:30],
+                pub.get("platform_url", ""),
+                rewritten,
+            )
+    else:
+        table.add_column("Title", style="green")
+        table.add_column("Platform URL", style="blue", no_wrap=True)
+
+        for pub in publications:
+            table.add_row(
+                (pub.get("title") or "")[:50],
+                pub.get("platform_url", ""),
             )
 
-        console.print(table)
-
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
+    console.print(table)
 
 
 @cli.command()
@@ -335,11 +784,22 @@ def doctor():
 
     healthy = 0
     unhealthy = 0
+    manual_count = 0
 
     for name in PLATFORMS:
         api_key = get_api_key(name)
 
-        if not api_key:
+        # Check if configured for manual mode
+        if is_manual_mode_key(api_key):
+            table.add_row(
+                name,
+                "[blue]📋 Manual mode[/blue]",
+                "Copy-paste (no API)"
+            )
+            manual_count += 1
+            continue
+
+        if not api_key and not is_platform_configured(name):
             table.add_row(
                 name,
                 "[dim]○ Not configured[/dim]",
@@ -384,7 +844,7 @@ def doctor():
     console.print(table)
 
     # Summary
-    total_configured = healthy + unhealthy
+    total_configured = healthy + unhealthy + manual_count
     console.print(f"\n[bold]Summary:[/bold]")
     console.print(f"  Configured: {total_configured}/{len(PLATFORMS)} platforms")
 
@@ -392,14 +852,17 @@ def doctor():
         console.print(f"  [red]Unhealthy: {unhealthy}[/red]")
     if healthy > 0:
         console.print(f"  [green]Healthy: {healthy}[/green]")
+    if manual_count > 0:
+        console.print(f"  [blue]Manual mode: {manual_count}[/blue]")
 
     if unhealthy > 0:
         console.print(f"\n[yellow]Tip: Check your API keys for failing platforms.[/yellow]")
-    elif healthy > 0:
-        console.print(f"\n[green]All configured platforms are healthy![/green]")
+    elif healthy > 0 or manual_count > 0:
+        console.print(f"\n[green]All configured platforms are ready![/green]")
     else:
         console.print(f"\n[dim]No platforms configured yet.[/dim]")
         console.print(f"[dim]Run: crier config set <platform>.api_key YOUR_KEY[/dim]")
+        console.print(f"[dim]Or for manual mode: crier config set <platform>.api_key manual[/dim]")
 
 
 @cli.group()
@@ -427,39 +890,114 @@ def config_set(key: str, value: str):
 @config.command(name="show")
 def config_show():
     """Show current configuration (hides API keys)."""
-    cfg = load_config()
+    from .config import (
+        get_config_path, get_local_config_path, get_api_key_source,
+        load_global_config, load_local_config,
+    )
 
-    if not cfg:
+    # Show paths first
+    console.print("\n[bold]Configuration Paths[/bold]")
+
+    global_path = get_config_path()
+    global_status = "[green]found[/green]" if global_path.exists() else "[dim]not found[/dim]"
+    console.print(f"  Global config: {global_path} ({global_status})")
+
+    local_path = get_local_config_path()
+    local_status = "[green]found[/green]" if local_path.exists() else "[dim]not found[/dim]"
+    console.print(f"  Local config:  {local_path} ({local_status})")
+
+    registry_path = get_registry_path()
+    registry_status = "[green]found[/green]" if registry_path.exists() else "[dim]not found[/dim]"
+    console.print(f"  Registry:      {registry_path} ({registry_status})")
+    console.print()
+
+    cfg = load_config()
+    global_cfg = load_global_config()
+    local_cfg = load_local_config()
+
+    if not cfg and not global_cfg and not local_cfg:
         console.print("No configuration found.")
-        console.print(f"Config file: ~/.config/crier/config.yaml")
         return
 
-    # Show platforms
+    # Show content paths with source
+    content_paths = get_content_paths()
+    if content_paths:
+        # Determine source
+        source = "local" if local_cfg.get("content_paths") else "global"
+        console.print(f"[bold]Content Paths[/bold] [dim](from {source} config)[/dim]")
+        for p in content_paths:
+            path_obj = Path(p)
+            if path_obj.exists():
+                console.print(f"  [green]✓[/green] {p}")
+            else:
+                console.print(f"  [red]✗[/red] {p} [dim](not found)[/dim]")
+        console.print()
+
+    # Show platforms with source
     table = Table(title="Configured Platforms")
     table.add_column("Platform", style="cyan")
     table.add_column("API Key", style="green")
+    table.add_column("Source", style="dim")
 
     platforms = cfg.get("platforms", {})
     for name, settings in platforms.items():
-        api_key = settings.get("api_key", "")
-        # Mask the API key
-        masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "****"
-        table.add_row(name, masked)
+        api_key = get_api_key(name)  # Get actual key (may be from env)
+        if api_key:
+            masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "****"
+        else:
+            masked = "[dim]not set[/dim]"
+
+        source = get_api_key_source(name)
+        source_display = {
+            "env": "[yellow]env var[/yellow]",
+            "global": "global",
+            None: "[dim]—[/dim]",
+        }.get(source, source)
+
+        table.add_row(name, masked, source_display)
 
     console.print(table)
 
-    # Show profiles
-    profiles = cfg.get("profiles", {})
-    if profiles:
+    # Show profiles with source
+    global_profiles = global_cfg.get("profiles", {})
+    local_profiles = local_cfg.get("profiles", {})
+    all_profiles = cfg.get("profiles", {})
+
+    if all_profiles:
         console.print()
         profile_table = Table(title="Profiles")
         profile_table.add_column("Name", style="cyan")
         profile_table.add_column("Platforms", style="green")
+        profile_table.add_column("Source", style="dim")
 
-        for name, plats in profiles.items():
-            profile_table.add_row(name, ", ".join(plats))
+        for name, plats in all_profiles.items():
+            # Determine source
+            if name in local_profiles:
+                source = "local"
+            elif name in global_profiles:
+                source = "global"
+            else:
+                source = "—"
+
+            profile_table.add_row(name, ", ".join(plats), source)
 
         console.print(profile_table)
+
+    # Show all available platforms
+    console.print()
+    available_table = Table(title="Available Platforms")
+    available_table.add_column("Platform", style="cyan")
+    available_table.add_column("Status")
+
+    for name in PLATFORMS:
+        api_key = get_api_key(name)
+        if api_key:
+            status = "[green]Configured[/green]"
+        else:
+            status = "[dim]Not configured[/dim]"
+        available_table.add_row(name, status)
+
+    console.print(available_table)
 
 
 @config.group()
@@ -593,32 +1131,24 @@ def content_set(paths: tuple[str, ...]):
 
 
 @cli.command()
-def platforms():
-    """List available platforms."""
-    table = Table(title="Available Platforms")
-    table.add_column("Name", style="cyan")
-    table.add_column("Status", style="green")
-
-    for name in PLATFORMS:
-        api_key = get_api_key(name)
-        status = "Configured" if api_key else "Not configured"
-        style = "green" if api_key else "yellow"
-        table.add_row(name, f"[{style}]{status}[/{style}]")
-
-    console.print(table)
-
-
-@cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
 @click.option("--to", "-t", "platform_filter", multiple=True,
               help="Only check specific platform(s)")
 @click.option("--profile", "-p", "profile_name",
               help="Only check platforms in a profile")
-def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None):
+@click.option("--publish", is_flag=True, help="Publish missing content (interactive selection)")
+@click.option("--yes", "-y", is_flag=True, help="Publish all missing without prompting")
+@click.option("--dry-run", is_flag=True, help="Show what would be published without actually publishing")
+def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
+          publish: bool, yes: bool, dry_run: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
     Only files with valid front matter (title) are included.
+
+    Use --publish to interactively select which missing items to publish.
+    Use --publish --yes to publish all missing items without prompting.
+    Use --publish --dry-run to preview what would be published.
     """
     # Determine which platforms to check
     check_platforms: list[str] = []
@@ -659,164 +1189,195 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     console.print(f"\n[bold]Content Audit[/bold]")
     console.print(f"[dim]Checking {len(files)} file(s) against {len(check_platforms)} platform(s)[/dim]\n")
 
-    # Build audit table
-    table = Table(title=f"Audit Results")
+    # Build audit table and track actionable items
+    table = Table(title="Audit Results")
     table.add_column("File", style="cyan")
 
     for platform in check_platforms:
         table.add_column(platform, justify="center")
 
-    missing_count = 0
-    published_count = 0
+    uptodate_count = 0
+    dirty_count = 0
+    # Track actionable items: (file_path, platform, canonical_url, title, action)
+    # action is "publish" for missing or "update" for dirty
+    missing_items: list[tuple[Path, str, str, str]] = []
+    dirty_items: list[tuple[Path, str, str, str]] = []
 
     def get_display_path(fp: Path) -> str:
         """Get a display-friendly path, handling both absolute and relative paths."""
         try:
             return str(fp.relative_to(Path.cwd()))
         except ValueError:
-            # Path is not relative to cwd, just use as-is
             return str(fp)
 
     for file_path in sorted(files):
         row = [get_display_path(file_path)]
 
+        # Get canonical_url and title from the article
+        try:
+            article = parse_markdown_file(str(file_path))
+            canonical_url = article.canonical_url
+            title = article.title
+        except Exception:
+            canonical_url = None
+            title = file_path.name
+
+        # Calculate current content hash for dirty detection
+        current_hash = get_file_content_hash(file_path) if canonical_url else None
+
         for platform in check_platforms:
-            if is_published(file_path, platform):
-                row.append("[green]✓[/green]")
-                published_count += 1
+            if canonical_url and is_published(canonical_url, platform):
+                # Check if content has changed (dirty)
+                if current_hash and has_content_changed(canonical_url, current_hash, platform):
+                    row.append("[yellow]⚠[/yellow]")
+                    dirty_count += 1
+                    dirty_items.append((file_path, platform, canonical_url, title))
+                else:
+                    row.append("[green]✓[/green]")
+                    uptodate_count += 1
             else:
-                row.append("[yellow]✗[/yellow]")
-                missing_count += 1
+                row.append("[red]✗[/red]")
+                if canonical_url:  # Only track if we have a canonical_url
+                    missing_items.append((file_path, platform, canonical_url, title))
 
         table.add_row(*row)
 
     console.print(table)
 
+    # Legend
+    console.print("[dim]Legend: ✓ up-to-date  ⚠ changed  ✗ missing[/dim]")
+
     # Summary
-    total = len(files) * len(check_platforms)
     console.print(f"\n[bold]Summary:[/bold]")
     console.print(f"  Files: {len(files)}")
     console.print(f"  Platforms checked: {len(check_platforms)}")
-    console.print(f"  Published: [green]{published_count}[/green]")
-    console.print(f"  Missing: [yellow]{missing_count}[/yellow]")
+    console.print(f"  Up-to-date: [green]{uptodate_count}[/green]")
+    console.print(f"  Changed: [yellow]{dirty_count}[/yellow]")
+    console.print(f"  Missing: [red]{len(missing_items)}[/red]")
 
-    if missing_count > 0:
-        backfill_cmd = f"crier backfill {path}" if path else "crier backfill"
-        console.print(f"\n[dim]Run '{backfill_cmd}' to publish missing content.[/dim]")
-
-
-@cli.command()
-@click.argument("path", type=click.Path(exists=True), required=False)
-@click.option("--to", "-t", "platform_filter", multiple=True,
-              help="Only publish to specific platform(s)")
-@click.option("--profile", "-p", "profile_name",
-              help="Only publish to platforms in a profile")
-@click.option("--dry-run", is_flag=True, help="Preview what would be published")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
-def backfill(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
-             dry_run: bool, yes: bool):
-    """Publish content that's missing from platforms.
-
-    PATH can be a file or directory. If not provided, uses configured content_paths.
-    Only files with valid front matter (title) are included.
-    """
-    # Determine which platforms to publish to
-    target_platforms: list[str] = []
-
-    if profile_name:
-        profile_platforms = get_profile(profile_name)
-        if profile_platforms is None:
-            console.print(f"[red]Unknown profile: {profile_name}[/red]")
-            return
-        target_platforms.extend(profile_platforms)
-
-    if platform_filter:
-        target_platforms.extend(platform_filter)
-
-    # Default to all configured platforms
-    if not target_platforms:
-        target_platforms = [name for name in PLATFORMS if get_api_key(name)]
-
-    if not target_platforms:
-        console.print("[yellow]No platforms configured.[/yellow]")
+    actionable_count = len(missing_items) + len(dirty_items)
+    if actionable_count == 0:
+        console.print("\n[green]All content is up-to-date![/green]")
         return
 
-    # Find content files
-    files = _find_content_files(path)
-
-    if not files:
-        if path:
-            console.print(f"[yellow]No content files found in {path}[/yellow]")
-        else:
-            content_paths = get_content_paths()
-            if not content_paths:
-                console.print("[yellow]No content paths configured.[/yellow]")
-                console.print("[dim]Add one with: crier config content add <path>[/dim]")
-            else:
-                console.print(f"[yellow]No content files found in configured paths: {', '.join(content_paths)}[/yellow]")
+    if not publish and not dry_run:
+        console.print(f"\n[dim]Use --publish to publish missing and update changed content.[/dim]")
+        console.print(f"[dim]Use --publish --dry-run to preview what would be published.[/dim]")
         return
 
-    # Find what needs to be published
-    to_publish: list[tuple[Path, str]] = []  # (file, platform)
+    # Build combined list with action type: (file_path, platform, canonical_url, title, action)
+    # action is "publish" for missing or "update" for dirty
+    actionable_items: list[tuple[Path, str, str, str, str]] = []
+    for item in missing_items:
+        actionable_items.append((*item, "publish"))
+    for item in dirty_items:
+        actionable_items.append((*item, "update"))
 
-    for file_path in files:
-        for platform in target_platforms:
-            if not is_published(file_path, platform):
-                to_publish.append((file_path, platform))
-
-    if not to_publish:
-        console.print("[green]Everything is already published![/green]")
-        return
-
-    console.print(f"\n[bold]Backfill Preview[/bold]")
-    console.print(f"[dim]Found {len(to_publish)} missing publication(s)[/dim]\n")
-
-    # Group by file for display
-    by_file: dict[Path, list[str]] = {}
-    for file_path, platform in to_publish:
-        if file_path not in by_file:
-            by_file[file_path] = []
-        by_file[file_path].append(platform)
-
-    table = Table(title="Pending Publications")
-    table.add_column("File", style="cyan")
-    table.add_column("Missing Platforms", style="yellow")
-
-    def get_display_path(fp: Path) -> str:
-        """Get a display-friendly path, handling both absolute and relative paths."""
-        try:
-            return str(fp.relative_to(Path.cwd()))
-        except ValueError:
-            return str(fp)
-
-    for file_path, platforms in by_file.items():
-        rel_path = get_display_path(file_path)
-        table.add_row(rel_path, ", ".join(platforms))
-
-    console.print(table)
-
+    # Dry run mode - show what would be published without doing it
     if dry_run:
-        console.print("\n[dim]Dry run - no changes made.[/dim]")
+        console.print(f"\n[bold]Dry Run Preview[/bold]")
+        console.print("[dim]No changes will be made[/dim]\n")
+
+        if not actionable_items:
+            console.print("[green]Nothing to publish - all content is up-to-date![/green]")
+            return
+
+        preview_table = Table(title="Would Process")
+        preview_table.add_column("Action", style="cyan", width=8)
+        preview_table.add_column("Title", style="green")
+        preview_table.add_column("Platform", style="blue")
+        preview_table.add_column("Body", justify="right")
+        preview_table.add_column("Notes", style="dim")
+
+        for file_path, platform, canonical_url, title, action in actionable_items:
+            try:
+                article = parse_markdown_file(str(file_path))
+                body_len = len(article.body)
+
+                # Check for content length issues
+                platform_cls = get_platform(platform)
+                max_len = platform_cls.max_content_length
+                if max_len and body_len > max_len:
+                    notes = f"[yellow]⚠ Exceeds {max_len} char limit - needs --rewrite[/yellow]"
+                else:
+                    notes = ""
+
+                action_label = "[green]NEW[/green]" if action == "publish" else "[yellow]UPDATE[/yellow]"
+                preview_table.add_row(
+                    action_label,
+                    title[:40] + ("..." if len(title) > 40 else ""),
+                    platform,
+                    f"{body_len:,}",
+                    notes,
+                )
+            except Exception as e:
+                preview_table.add_row(
+                    action.upper(),
+                    title[:40],
+                    platform,
+                    "?",
+                    f"[red]Error: {e}[/red]",
+                )
+
+        console.print(preview_table)
+
+        new_count = sum(1 for _, _, _, _, a in actionable_items if a == "publish")
+        update_count = len(actionable_items) - new_count
+        console.print(f"\n[bold]Would process:[/bold] {new_count} new, {update_count} updates")
+        console.print("\n[dim]Run without --dry-run to actually publish.[/dim]")
         return
 
-    # Confirm
-    if not yes:
-        console.print()
-        if not click.confirm(f"Publish {len(to_publish)} item(s)?"):
+    # Publishing mode - handle both missing (new) and dirty (update) items
+    console.print()
+
+    if yes:
+        # Do all without prompting
+        selected_items = actionable_items
+    else:
+        # Interactive checkbox selection
+        import questionary
+
+        choices = [
+            questionary.Choice(
+                title=f"{title[:40]}{'...' if len(title) > 40 else ''} → {platform} [{'NEW' if action == 'publish' else 'UPDATE'}]",
+                value=(file_path, platform, canonical_url, title, action),
+                checked=True,  # Default to selected
+            )
+            for file_path, platform, canonical_url, title, action in actionable_items
+        ]
+
+        selected_items = questionary.checkbox(
+            "Select items to publish/update (space to toggle, enter to confirm):",
+            choices=choices,
+        ).ask()
+
+        if selected_items is None:
             console.print("[dim]Cancelled.[/dim]")
             return
 
-    # Do the publishing
-    console.print()
+        if not selected_items:
+            console.print("[dim]No items selected.[/dim]")
+            return
+
+    # Do the publishing/updating
+    new_count = sum(1 for _, _, _, _, action in selected_items if action == "publish")
+    update_count = len(selected_items) - new_count
+    console.print(f"\n[bold]Processing {len(selected_items)} item(s) ({new_count} new, {update_count} updates)...[/bold]\n")
+
     success_count = 0
     fail_count = 0
 
-    for file_path, platform in to_publish:
+    for file_path, platform, canonical_url, title, action in selected_items:
         article = parse_markdown_file(str(file_path))
         api_key = get_api_key(platform)
 
         if not api_key:
-            console.print(f"[red]✗ {file_path.name} → {platform}: Not configured[/red]")
+            console.print(f"[red]✗ {title[:30]} → {platform}: Not configured[/red]")
+            fail_count += 1
+            continue
+
+        if not article.canonical_url:
+            console.print(f"[yellow]⚠ {title[:30]}: No canonical_url, skipping[/yellow]")
             fail_count += 1
             continue
 
@@ -824,284 +1385,83 @@ def backfill(path: str | None, platform_filter: tuple[str, ...], profile_name: s
             platform_cls = get_platform(platform)
             plat = platform_cls(api_key)
 
-            console.print(f"[dim]Publishing {file_path.name} → {platform}...[/dim]")
-            result = plat.publish(article)
+            if action == "publish":
+                # New publication
+                console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
+                result = plat.publish(article)
+                action_verb = "Published"
+            else:
+                # Update existing publication
+                pub_info = get_publication_info(canonical_url, platform)
+                if not pub_info or not pub_info.get("article_id"):
+                    console.print(f"[yellow]⚠ {title[:30]} → {platform}: No article_id in registry, skipping[/yellow]")
+                    fail_count += 1
+                    continue
+
+                article_id = pub_info["article_id"]
+                console.print(f"[dim]Updating {title[:30]} → {platform}...[/dim]")
+                result = plat.update(article_id, article)
+                action_verb = "Updated"
 
             if result.success:
-                console.print(f"[green]✓ {file_path.name} → {platform}[/green]")
+                console.print(f"[green]✓ {title[:30]} → {platform} ({action_verb.lower()})[/green]")
+                content_hash = get_file_content_hash(file_path)
                 record_publication(
-                    file_path=str(file_path),
+                    canonical_url=article.canonical_url,
                     platform=platform,
                     article_id=result.article_id,
                     url=result.url,
                     title=article.title,
-                    canonical_url=article.canonical_url,
+                    source_file=str(file_path),
+                    content_hash=content_hash,
                 )
                 success_count += 1
             else:
-                console.print(f"[red]✗ {file_path.name} → {platform}: {result.error}[/red]")
+                console.print(f"[red]✗ {title[:30]} → {platform}: {result.error}[/red]")
                 fail_count += 1
 
         except Exception as e:
-            console.print(f"[red]✗ {file_path.name} → {platform}: {e}[/red]")
+            console.print(f"[red]✗ {title[:30]} → {platform}: {e}[/red]")
             fail_count += 1
 
-    # Summary
+    # Final summary
     console.print()
     if fail_count == 0:
-        console.print(f"[green]All {success_count} publication(s) succeeded![/green]")
+        console.print(f"[green]All {success_count} operation(s) succeeded![/green]")
     else:
         console.print(f"[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
 
 
-WORKFLOW_TEMPLATE = """\
-# Crier Auto-Publish Workflow
-#
-# Automatically cross-posts content when you push to main/master.
-# API keys are stored as GitHub Secrets.
-
-name: Auto-Publish Content
-
-on:
-  push:
-    branches: [main, master]
-    paths:
-      - 'posts/**/*.md'
-      - 'content/**/*.md'
-  workflow_dispatch:  # Allow manual trigger
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Crier
-        run: pip install crier
-
-      - name: Audit and publish
-        env:
-{env_block}
-        run: |
-          echo "=== Configured Platforms ==="
-          crier platforms
-
-          echo "=== Audit ==="
-          if [ -d "posts" ]; then
-            crier audit ./posts || true
-          elif [ -d "content" ]; then
-            crier audit ./content || true
-          fi
-
-          echo "=== Publishing ==="
-          if [ -d "posts" ]; then
-            crier backfill ./posts --yes || true
-          elif [ -d "content" ]; then
-            crier backfill ./content --yes || true
-          fi
-
-      - name: Commit registry updates
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-
-          if [ -d ".crier" ]; then
-            git add .crier/
-            git diff --staged --quiet || git commit -m "Update crier publication registry
-
-            🤖 Auto-updated by Crier GitHub Action"
-            git push
-          fi
-"""
-
-
-@cli.command(name="init-action")
-@click.option("--content-path", "-c", default=None,
-              help="Path to content (default: posts/ or content/)")
-@click.option("--dry-run", is_flag=True, help="Show what would be done without making changes")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
-def init_action(content_path: str | None, dry_run: bool, yes: bool):
-    """Set up GitHub Action workflow and secrets for auto-publishing.
-
-    This command will:
-    1. Create .github/workflows/crier-publish.yml
-    2. Set GitHub repository secrets from your local crier config
-
-    Requires the GitHub CLI (gh) to be installed and authenticated.
-    """
-    import subprocess
-    import shutil
-
-    # Check for gh CLI
-    if not shutil.which("gh"):
-        console.print("[red]GitHub CLI (gh) is not installed.[/red]")
-        console.print("[dim]Install it from: https://cli.github.com/[/dim]")
-        return
-
-    # Check gh auth status
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            console.print("[red]GitHub CLI is not authenticated.[/red]")
-            console.print("[dim]Run: gh auth login[/dim]")
-            return
-    except Exception as e:
-        console.print(f"[red]Error checking gh auth: {e}[/red]")
-        return
-
-    # Check we're in a git repo with GitHub remote
-    try:
-        result = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            console.print("[red]Not in a GitHub repository.[/red]")
-            console.print("[dim]Make sure you're in a git repo with a GitHub remote.[/dim]")
-            return
-        repo_name = result.stdout.strip()
-    except Exception as e:
-        console.print(f"[red]Error detecting repository: {e}[/red]")
-        return
-
-    console.print(f"\n[bold]Crier GitHub Action Setup[/bold]")
-    console.print(f"[dim]Repository: {repo_name}[/dim]\n")
-
-    # Get configured platforms and their API keys
-    cfg = load_config()
-    configured_platforms = cfg.get("platforms", {})
-
-    if not configured_platforms:
-        console.print("[yellow]No platforms configured in crier.[/yellow]")
-        console.print("[dim]Run: crier config set <platform>.api_key YOUR_KEY[/dim]")
-        return
-
-    # Build list of secrets to set
-    secrets_to_set: list[tuple[str, str]] = []
-    env_lines: list[str] = []
-
-    for platform_name, platform_config in configured_platforms.items():
-        api_key = platform_config.get("api_key")
-        if api_key:
-            secret_name = f"CRIER_{platform_name.upper()}_API_KEY"
-            secrets_to_set.append((secret_name, api_key))
-            env_lines.append(f"          {secret_name}: ${{{{ secrets.{secret_name} }}}}")
-
-    if not secrets_to_set:
-        console.print("[yellow]No API keys found in config.[/yellow]")
-        return
-
-    # Preview what we'll do
-    console.print("[bold]Will perform the following:[/bold]\n")
-
-    # Workflow file
-    workflow_path = Path(".github/workflows/crier-publish.yml")
-    console.print(f"[cyan]1. Create workflow file:[/cyan]")
-    console.print(f"   {workflow_path}")
-
-    # Secrets
-    console.print(f"\n[cyan]2. Set {len(secrets_to_set)} GitHub secret(s):[/cyan]")
-    for secret_name, _ in secrets_to_set:
-        console.print(f"   • {secret_name}")
-
-    if dry_run:
-        console.print("\n[dim]Dry run - no changes made.[/dim]")
-        return
-
-    # Confirm
-    if not yes:
-        console.print()
-        if not click.confirm("Proceed with setup?"):
-            console.print("[dim]Cancelled.[/dim]")
-            return
-
-    console.print()
-
-    # Create workflow file
-    workflow_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Generate workflow with correct env block
-    env_block = "\n".join(env_lines)
-    workflow_content = WORKFLOW_TEMPLATE.format(env_block=env_block)
-
-    # Customize content path if specified
-    if content_path:
-        # Replace default paths with custom one
-        workflow_content = workflow_content.replace(
-            "paths:\n      - 'posts/**/*.md'\n      - 'content/**/*.md'",
-            f"paths:\n      - '{content_path}/**/*.md'"
-        )
-        workflow_content = workflow_content.replace(
-            'if [ -d "posts" ]; then\n            crier audit ./posts || true\n          elif [ -d "content" ]; then\n            crier audit ./content || true\n          fi',
-            f'crier audit ./{content_path} || true'
-        )
-        workflow_content = workflow_content.replace(
-            'if [ -d "posts" ]; then\n            crier backfill ./posts --yes || true\n          elif [ -d "content" ]; then\n            crier backfill ./content --yes || true\n          fi',
-            f'crier backfill ./{content_path} --yes || true'
-        )
-
-    workflow_path.write_text(workflow_content)
-    console.print(f"[green]✓ Created {workflow_path}[/green]")
-
-    # Set secrets via gh CLI
-    for secret_name, secret_value in secrets_to_set:
-        try:
-            result = subprocess.run(
-                ["gh", "secret", "set", secret_name],
-                input=secret_value,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                console.print(f"[green]✓ Set secret {secret_name}[/green]")
-            else:
-                console.print(f"[red]✗ Failed to set {secret_name}: {result.stderr}[/red]")
-        except Exception as e:
-            console.print(f"[red]✗ Error setting {secret_name}: {e}[/red]")
-
-    console.print(f"\n[bold green]Setup complete![/bold green]")
-    console.print(f"\n[dim]Next steps:[/dim]")
-    console.print(f"[dim]1. Commit and push the workflow file[/dim]")
-    console.print(f"[dim]2. Add markdown files to posts/ or content/[/dim]")
-    console.print(f"[dim]3. Push to main/master to trigger auto-publishing[/dim]")
-
-
 @cli.command()
 @click.argument("file", type=click.Path(exists=True), required=False)
-@click.option("--all", "-a", "show_all", is_flag=True, help="Show all tracked posts")
+@click.option("--all", "-a", "show_all", is_flag=True, hidden=True, help="(deprecated) Show all tracked posts")
 def status(file: str | None, show_all: bool):
-    """Show publication status for a file or all tracked posts."""
+    """Show publication status for a file or all tracked posts.
+
+    Without arguments, shows all tracked posts.
+    With a FILE argument, shows detailed status for that file.
+    """
     if file:
         # Show status for a specific file
-        post_status = get_post_status(file)
+        result = get_article_by_file(file)
 
-        if not post_status:
+        if not result:
             console.print(f"[yellow]No publication record found for {file}[/yellow]")
             console.print("[dim]This file hasn't been published with crier yet.[/dim]")
             return
 
-        console.print(f"\n[bold]Publication Status: {post_status.get('title', file)}[/bold]")
+        canonical_url, article_data = result
 
-        if post_status.get("canonical_url"):
-            console.print(f"[dim]Canonical: {post_status['canonical_url']}[/dim]")
+        console.print(f"\n[bold]Publication Status: {article_data.get('title', file)}[/bold]")
+        console.print(f"[dim]Canonical: {canonical_url}[/dim]")
 
         # Check if content has changed
-        if has_content_changed(file):
-            console.print("[yellow]⚠ Content has changed since last publication[/yellow]")
+        file_path = Path(file)
+        if file_path.exists():
+            current_hash = get_file_content_hash(file_path)
+            stored_hash = article_data.get("content_hash")
+            if stored_hash and current_hash != stored_hash:
+                console.print("[yellow]⚠ Content has changed since last publication[/yellow]")
 
         console.print()
 
@@ -1111,7 +1471,7 @@ def status(file: str | None, show_all: bool):
         table.add_column("URL")
         table.add_column("Published")
 
-        publications = post_status.get("publications", {})
+        publications = article_data.get("platforms", {})
 
         # Show all platforms, marking which are published
         for platform_name in PLATFORMS:
@@ -1142,11 +1502,11 @@ def status(file: str | None, show_all: bool):
 
         console.print(table)
 
-    elif show_all:
-        # Show all tracked posts
-        all_posts = get_all_posts()
+    else:
+        # Show all tracked posts (registry v2: keyed by canonical_url)
+        all_articles = get_all_articles()
 
-        if not all_posts:
+        if not all_articles:
             console.print("[yellow]No posts tracked yet.[/yellow]")
             console.print("[dim]Publish a file to start tracking.[/dim]")
             return
@@ -1154,37 +1514,151 @@ def status(file: str | None, show_all: bool):
         console.print(f"\n[bold]Tracked Posts[/bold]")
         console.print(f"[dim]Registry: {get_registry_path()}[/dim]\n")
 
-        table = Table(title=f"All Tracked Posts ({len(all_posts)})")
-        table.add_column("File", style="cyan")
+        table = Table(title=f"All Tracked Posts ({len(all_articles)})")
+        table.add_column("Source File", style="cyan")
         table.add_column("Title")
         table.add_column("Platforms")
         table.add_column("Changed")
 
-        for file_path, post_data in all_posts.items():
-            publications = post_data.get("publications", {})
-            platform_list = ", ".join(publications.keys()) if publications else "[dim]none[/dim]"
+        for canonical_url, article_data in all_articles.items():
+            platforms = article_data.get("platforms", {})
+            platform_list = ", ".join(platforms.keys()) if platforms else "[dim]none[/dim]"
 
-            # Check if file still exists and has changed
-            full_path = Path(file_path)
-            if full_path.exists():
-                changed = "⚠ Yes" if has_content_changed(file_path) else "No"
+            source_file = article_data.get("source_file")
+            if source_file:
+                full_path = Path(source_file)
+                if full_path.exists():
+                    current_hash = get_file_content_hash(full_path)
+                    stored_hash = article_data.get("content_hash")
+                    changed = "[yellow]⚠ Yes[/yellow]" if stored_hash and current_hash != stored_hash else "No"
+                    display_file = source_file
+                else:
+                    changed = "[red]File missing[/red]"
+                    display_file = f"{source_file} [dim](missing)[/dim]"
             else:
-                changed = "[red]File missing[/red]"
+                changed = "[dim]?[/dim]"
+                display_file = "[dim]unknown[/dim]"
 
             table.add_row(
-                file_path,
-                (post_data.get("title") or "")[:40],
+                display_file,
+                (article_data.get("title") or "")[:35],
                 platform_list,
                 changed,
             )
 
         console.print(table)
 
+
+@cli.group()
+def skill():
+    """Manage Claude Code skill integration."""
+    pass
+
+
+@skill.command(name="install")
+@click.option("--local", is_flag=True, help="Install to .claude/skills/ (repo-local) instead of ~/.claude/skills/")
+def skill_install(local: bool):
+    """Install or update the crier skill for Claude Code.
+
+    By default, installs to ~/.claude/skills/crier/ (global).
+    Use --local to install to .claude/skills/crier/ (repo-local).
+    """
+    from .skill import install, is_installed, get_skill_path, get_skill_content
+
+    location = "local" if local else "global"
+    status = is_installed()
+    skill_path = get_skill_path(local)
+
+    # Check if already installed and up-to-date
+    already_installed = (local and status["local"]) or (not local and status["global"])
+    if already_installed:
+        installed_content = skill_path.read_text()
+        current_content = get_skill_content()
+        if installed_content == current_content:
+            console.print(f"[green]Skill already installed and up-to-date ({location}).[/green]")
+            console.print(f"[dim]Path: {skill_path}[/dim]")
+            return
+        # Outdated - will update
+        action = "Updated"
     else:
-        # No file specified, show help
-        console.print("[yellow]Usage:[/yellow]")
-        console.print("  crier status <file>    Show publication status for a file")
-        console.print("  crier status --all     Show all tracked posts")
+        action = "Installed"
+
+    path = install(local=local)
+    console.print(f"[green]✓ {action} crier skill ({location})[/green]")
+    console.print(f"[dim]Path: {path}[/dim]")
+
+
+@skill.command(name="uninstall")
+@click.option("--local", is_flag=True, help="Uninstall from .claude/skills/ instead of ~/.claude/skills/")
+def skill_uninstall(local: bool):
+    """Uninstall the crier skill from Claude Code."""
+    from .skill import uninstall
+
+    location = "local" if local else "global"
+
+    if uninstall(local=local):
+        console.print(f"[green]✓ Uninstalled crier skill ({location})[/green]")
+    else:
+        console.print(f"[yellow]Skill not installed ({location}).[/yellow]")
+
+
+@skill.command(name="status")
+def skill_status():
+    """Check if the crier skill is installed and up-to-date."""
+    from .skill import is_installed, get_skill_path, get_skill_content
+
+    status = is_installed()
+    current_content = get_skill_content()
+    needs_update = []
+
+    console.print("\n[bold]Claude Code Skill Status[/bold]\n")
+
+    # Check global
+    global_path = get_skill_path(local=False)
+    if status["global"]:
+        installed_content = global_path.read_text()
+        if installed_content == current_content:
+            global_status = "[green]installed (up-to-date)[/green]"
+        else:
+            global_status = "[yellow]installed (outdated)[/yellow]"
+            needs_update.append("global")
+    else:
+        global_status = "[dim]not installed[/dim]"
+    console.print(f"  Global: {global_path}")
+    console.print(f"          {global_status}")
+
+    console.print()
+
+    # Check local
+    local_path = get_skill_path(local=True)
+    if status["local"]:
+        installed_content = local_path.read_text()
+        if installed_content == current_content:
+            local_status = "[green]installed (up-to-date)[/green]"
+        else:
+            local_status = "[yellow]installed (outdated)[/yellow]"
+            needs_update.append("local")
+    else:
+        local_status = "[dim]not installed[/dim]"
+    console.print(f"  Local:  {local_path}")
+    console.print(f"          {local_status}")
+
+    # Show hints
+    if not status["global"] and not status["local"]:
+        console.print("\n[dim]Install with: crier skill install[/dim]")
+    elif needs_update:
+        console.print()
+        for location in needs_update:
+            flag = " --local" if location == "local" else ""
+            console.print(f"[yellow]Update {location} skill with: crier skill install{flag}[/yellow]")
+
+
+@skill.command(name="show")
+def skill_show():
+    """Display the skill content."""
+    from .skill import get_skill_content
+
+    console.print(get_skill_content())
 
 
 if __name__ == "__main__":

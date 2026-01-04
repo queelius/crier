@@ -16,6 +16,7 @@ class Discord(Platform):
     """
 
     name = "discord"
+    max_content_length = 4096  # Discord embed description limit
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -48,6 +49,15 @@ class Discord(Platform):
 
     def publish(self, article: Article) -> PublishResult:
         """Send a message to Discord via webhook."""
+        # Check description length (main content in embed)
+        if article.description:
+            if error := self._check_content_length(article.description):
+                return PublishResult(
+                    success=False,
+                    platform=self.name,
+                    error=error,
+                )
+
         # Build message content
         content_parts = []
         if article.canonical_url:

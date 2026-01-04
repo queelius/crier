@@ -1,4 +1,10 @@
-"""Publication registry for tracking where content has been published."""
+"""Publication registry for tracking where content has been published.
+
+Registry Format v2:
+- Keyed by canonical_url (stable identity)
+- Tracks source_file for reference
+- Uses SHA256 content hashes for change detection
+"""
 
 import hashlib
 from datetime import datetime, timezone
@@ -10,6 +16,7 @@ import yaml
 
 REGISTRY_DIR = ".crier"
 REGISTRY_FILE = "registry.yaml"
+CURRENT_VERSION = 2
 
 
 def get_registry_path(base_path: Path | None = None) -> Path:
@@ -33,21 +40,74 @@ def get_registry_path(base_path: Path | None = None) -> Path:
     return base_path / REGISTRY_DIR / REGISTRY_FILE
 
 
+def get_content_hash(content: str) -> str:
+    """Calculate SHA256 hash of content."""
+    return "sha256:" + hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def get_file_content_hash(file_path: Path) -> str:
+    """Calculate SHA256 hash of a file's content."""
+    content = file_path.read_text()
+    return get_content_hash(content)
+
+
+def _migrate_v1_to_v2(v1_data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate v1 registry (file-path keys) to v2 (canonical_url keys)."""
+    v2_data: dict[str, Any] = {
+        "version": 2,
+        "articles": {},
+    }
+
+    posts = v1_data.get("posts", {})
+    for file_path, post_data in posts.items():
+        canonical_url = post_data.get("canonical_url")
+
+        if not canonical_url:
+            # Can't migrate without canonical_url - skip
+            continue
+
+        # Convert publications to platforms format
+        platforms = {}
+        for platform_name, pub_data in post_data.get("publications", {}).items():
+            platforms[platform_name] = {
+                "id": pub_data.get("id"),
+                "url": pub_data.get("url"),
+                "published_at": pub_data.get("published_at"),
+                "updated_at": pub_data.get("updated_at"),
+            }
+
+        v2_data["articles"][canonical_url] = {
+            "title": post_data.get("title"),
+            "source_file": file_path,
+            "content_hash": None,  # Will be updated on next publish
+            "platforms": platforms,
+        }
+
+    return v2_data
+
+
 def load_registry(base_path: Path | None = None) -> dict[str, Any]:
-    """Load the registry from disk."""
+    """Load the registry from disk, migrating if necessary."""
     registry_path = get_registry_path(base_path)
 
     if not registry_path.exists():
-        return {"version": 1, "posts": {}}
+        return {"version": CURRENT_VERSION, "articles": {}}
 
     with open(registry_path) as f:
         data = yaml.safe_load(f) or {}
 
+    version = data.get("version", 1)
+
+    # Migrate v1 to v2
+    if version == 1:
+        data = _migrate_v1_to_v2(data)
+        # Save migrated data
+        save_registry(data, base_path)
+
     # Ensure structure
-    if "version" not in data:
-        data["version"] = 1
-    if "posts" not in data:
-        data["posts"] = {}
+    if "articles" not in data:
+        data["articles"] = {}
+    data["version"] = CURRENT_VERSION
 
     return data
 
@@ -59,161 +119,231 @@ def save_registry(registry: dict[str, Any], base_path: Path | None = None) -> No
     # Create directory if needed
     registry_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Ensure version is current
+    registry["version"] = CURRENT_VERSION
+
     with open(registry_path, "w") as f:
         yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
 
 
-def get_file_checksum(file_path: Path) -> str:
-    """Calculate MD5 checksum of a file's content."""
-    content = file_path.read_bytes()
-    return hashlib.md5(content).hexdigest()[:12]
-
-
-def get_relative_path(file_path: Path, base_path: Path | None = None) -> str:
-    """Get the relative path of a file from the registry base."""
-    if base_path is None:
-        base_path = Path.cwd()
-
-    file_path = Path(file_path).resolve()
-    base_path = base_path.resolve()
-
-    try:
-        return str(file_path.relative_to(base_path))
-    except ValueError:
-        # File is outside base_path, use absolute path
-        return str(file_path)
-
-
 def record_publication(
-    file_path: str | Path,
+    canonical_url: str,
     platform: str,
     article_id: str | None,
     url: str | None,
     title: str | None = None,
-    canonical_url: str | None = None,
+    source_file: str | Path | None = None,
+    content_hash: str | None = None,
+    rewritten: bool = False,
+    rewrite_author: str | None = None,
+    posted_content: str | None = None,
     base_path: Path | None = None,
 ) -> None:
-    """Record a successful publication to the registry."""
-    file_path = Path(file_path).resolve()
-    rel_path = get_relative_path(file_path, base_path)
+    """Record a successful publication to the registry.
 
+    Args:
+        canonical_url: The canonical URL of the source article (primary key)
+        platform: Platform name (e.g., 'bluesky', 'mastodon')
+        article_id: Platform-specific article ID
+        url: URL of the published article on the platform
+        title: Article title
+        source_file: Path to the source file (for reference)
+        content_hash: Hash of the source content
+        rewritten: Whether content was rewritten for this platform
+        rewrite_author: Who rewrote the content (e.g., 'claude-code')
+        posted_content: The actual content posted (for short-form platforms)
+        base_path: Base path for registry lookup
+    """
     registry = load_registry(base_path)
 
-    # Initialize post entry if needed
-    if rel_path not in registry["posts"]:
-        registry["posts"][rel_path] = {
+    # Initialize article entry if needed
+    if canonical_url not in registry["articles"]:
+        registry["articles"][canonical_url] = {
             "title": title,
-            "checksum": get_file_checksum(file_path),
-            "canonical_url": canonical_url,
-            "publications": {},
+            "source_file": str(source_file) if source_file else None,
+            "content_hash": content_hash,
+            "platforms": {},
         }
 
-    post = registry["posts"][rel_path]
+    article = registry["articles"][canonical_url]
 
     # Update metadata
     if title:
-        post["title"] = title
-    if canonical_url:
-        post["canonical_url"] = canonical_url
-    post["checksum"] = get_file_checksum(file_path)
+        article["title"] = title
+    if source_file:
+        article["source_file"] = str(source_file)
+    if content_hash:
+        article["content_hash"] = content_hash
 
     # Record this publication
     now = datetime.now(timezone.utc).isoformat()
-    post["publications"][platform] = {
+    platform_data: dict[str, Any] = {
         "id": article_id,
         "url": url,
         "published_at": now,
         "updated_at": now,
+        "content_hash": content_hash,
     }
 
+    # Track rewrites
+    if rewritten:
+        platform_data["rewritten"] = True
+        if rewrite_author:
+            platform_data["rewrite_author"] = rewrite_author
+        if posted_content:
+            platform_data["posted_content"] = posted_content
+
+    article["platforms"][platform] = platform_data
     save_registry(registry, base_path)
 
 
-def get_post_status(file_path: str | Path, base_path: Path | None = None) -> dict[str, Any] | None:
-    """Get the publication status for a specific file."""
-    file_path = Path(file_path).resolve()
-    rel_path = get_relative_path(file_path, base_path)
-
+def get_article(canonical_url: str, base_path: Path | None = None) -> dict[str, Any] | None:
+    """Get an article by canonical URL."""
     registry = load_registry(base_path)
-    return registry["posts"].get(rel_path)
+    return registry["articles"].get(canonical_url)
 
 
-def get_all_posts(base_path: Path | None = None) -> dict[str, Any]:
-    """Get all tracked posts from the registry."""
+def get_article_by_file(file_path: str | Path, base_path: Path | None = None) -> tuple[str, dict[str, Any]] | None:
+    """Find an article by its source file path.
+
+    Returns (canonical_url, article_data) or None if not found.
+    """
     registry = load_registry(base_path)
-    return registry.get("posts", {})
+    file_path_str = str(file_path)
+
+    for canonical_url, article in registry["articles"].items():
+        if article.get("source_file") == file_path_str:
+            return (canonical_url, article)
+
+    return None
 
 
-def is_published(file_path: str | Path, platform: str, base_path: Path | None = None) -> bool:
-    """Check if a file has been published to a specific platform."""
-    status = get_post_status(file_path, base_path)
-    if not status:
+def get_all_articles(base_path: Path | None = None) -> dict[str, Any]:
+    """Get all tracked articles from the registry."""
+    registry = load_registry(base_path)
+    return registry.get("articles", {})
+
+
+def get_platform_publications(platform: str, base_path: Path | None = None) -> list[dict[str, Any]]:
+    """Get all publications for a specific platform.
+
+    Returns list of dicts with canonical_url, title, and platform-specific data.
+    """
+    registry = load_registry(base_path)
+    results = []
+
+    for canonical_url, article in registry.get("articles", {}).items():
+        if platform in article.get("platforms", {}):
+            platform_data = article["platforms"][platform]
+            results.append({
+                "canonical_url": canonical_url,
+                "title": article.get("title"),
+                "source_file": article.get("source_file"),
+                "platform_id": platform_data.get("id"),
+                "platform_url": platform_data.get("url"),
+                "published_at": platform_data.get("published_at"),
+                "rewritten": platform_data.get("rewritten", False),
+                "rewrite_author": platform_data.get("rewrite_author"),
+            })
+
+    return results
+
+
+def is_published(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+    """Check if an article has been published to a specific platform."""
+    article = get_article(canonical_url, base_path)
+    if not article:
         return False
-    return platform in status.get("publications", {})
+    return platform in article.get("platforms", {})
 
 
-def get_publication_id(file_path: str | Path, platform: str, base_path: Path | None = None) -> str | None:
-    """Get the article ID for a file on a specific platform."""
-    status = get_post_status(file_path, base_path)
-    if not status:
+def get_publication_id(canonical_url: str, platform: str, base_path: Path | None = None) -> str | None:
+    """Get the platform-specific article ID."""
+    article = get_article(canonical_url, base_path)
+    if not article:
         return None
-    pub = status.get("publications", {}).get(platform)
+    pub = article.get("platforms", {}).get(platform)
     return pub.get("id") if pub else None
 
 
-def has_content_changed(file_path: str | Path, base_path: Path | None = None) -> bool:
-    """Check if the file content has changed since last publication."""
-    file_path = Path(file_path).resolve()
-    status = get_post_status(file_path, base_path)
+def get_publication_info(
+    canonical_url: str, platform: str, base_path: Path | None = None
+) -> dict[str, Any] | None:
+    """Get full publication info for a platform.
 
-    if not status:
-        return True  # Never published, consider it changed
+    Returns dict with: article_id, url, published_at, content_hash, etc.
+    """
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return None
+    platform_data = article.get("platforms", {}).get(platform)
+    if not platform_data:
+        return None
+    # Normalize the "id" key to "article_id" for consistency
+    return {
+        "article_id": platform_data.get("id"),
+        "url": platform_data.get("url"),
+        "published_at": platform_data.get("published_at"),
+        "updated_at": platform_data.get("updated_at"),
+        "content_hash": platform_data.get("content_hash"),
+        "rewritten": platform_data.get("rewritten", False),
+        "rewrite_author": platform_data.get("rewrite_author"),
+    }
 
-    old_checksum = status.get("checksum")
-    if not old_checksum:
-        return True
 
-    current_checksum = get_file_checksum(file_path)
-    return current_checksum != old_checksum
+def has_content_changed(
+    canonical_url: str,
+    current_hash: str,
+    platform: str | None = None,
+    base_path: Path | None = None,
+) -> bool:
+    """Check if content has changed since last publication.
+
+    Args:
+        canonical_url: The article's canonical URL
+        current_hash: Current content hash
+        platform: If specified, check against when posted to this platform.
+                  If None, check against the article's stored hash.
+    """
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return True  # New article, consider changed
+
+    if platform:
+        platform_data = article.get("platforms", {}).get(platform)
+        if not platform_data:
+            return True  # Never published to this platform
+        old_hash = platform_data.get("content_hash")
+    else:
+        old_hash = article.get("content_hash")
+
+    if not old_hash:
+        return True  # No hash stored
+
+    return current_hash != old_hash
 
 
-def update_checksum(file_path: str | Path, base_path: Path | None = None) -> None:
-    """Update the stored checksum for a file."""
-    file_path = Path(file_path).resolve()
-    rel_path = get_relative_path(file_path, base_path)
-
+def remove_article(canonical_url: str, base_path: Path | None = None) -> bool:
+    """Remove an article from the registry."""
     registry = load_registry(base_path)
 
-    if rel_path in registry["posts"]:
-        registry["posts"][rel_path]["checksum"] = get_file_checksum(file_path)
-        save_registry(registry, base_path)
-
-
-def remove_post(file_path: str | Path, base_path: Path | None = None) -> bool:
-    """Remove a post from the registry."""
-    file_path = Path(file_path).resolve()
-    rel_path = get_relative_path(file_path, base_path)
-
-    registry = load_registry(base_path)
-
-    if rel_path in registry["posts"]:
-        del registry["posts"][rel_path]
+    if canonical_url in registry["articles"]:
+        del registry["articles"][canonical_url]
         save_registry(registry, base_path)
         return True
     return False
 
 
-def remove_publication(file_path: str | Path, platform: str, base_path: Path | None = None) -> bool:
+def remove_publication(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
     """Remove a single platform publication from the registry."""
-    file_path = Path(file_path).resolve()
-    rel_path = get_relative_path(file_path, base_path)
-
     registry = load_registry(base_path)
 
-    if rel_path in registry["posts"]:
-        publications = registry["posts"][rel_path].get("publications", {})
-        if platform in publications:
-            del publications[platform]
+    if canonical_url in registry["articles"]:
+        platforms = registry["articles"][canonical_url].get("platforms", {})
+        if platform in platforms:
+            del platforms[platform]
             save_registry(registry, base_path)
             return True
     return False
+
+
