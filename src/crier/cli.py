@@ -481,12 +481,18 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if auto_rewrite:
         if not is_llm_configured():
             console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
-            console.print("[dim]Configure LLM in ~/.config/crier/config.yaml:[/dim]")
+            console.print()
+            console.print("[bold]Simplest setup:[/bold] Set OPENAI_API_KEY environment variable")
+            console.print("[dim]  export OPENAI_API_KEY=sk-...[/dim]")
+            console.print()
+            console.print("[bold]Or configure in ~/.config/crier/config.yaml:[/bold]")
             console.print("[dim]  llm:[/dim]")
-            console.print("[dim]    provider: openai[/dim]")
-            console.print("[dim]    base_url: http://localhost:11434/v1  # For Ollama[/dim]")
+            console.print("[dim]    api_key: sk-...  # defaults to OpenAI + gpt-4o-mini[/dim]")
+            console.print()
+            console.print("[bold]For Ollama/other providers:[/bold]")
+            console.print("[dim]  llm:[/dim]")
+            console.print("[dim]    base_url: http://localhost:11434/v1[/dim]")
             console.print("[dim]    model: llama3[/dim]")
-            console.print("[dim]Or set environment variables: CRIER_LLM_BASE_URL, CRIER_LLM_MODEL[/dim]")
             raise SystemExit(1)
 
         # Initialize LLM provider

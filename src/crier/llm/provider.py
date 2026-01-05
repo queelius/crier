@@ -59,20 +59,21 @@ class LLMProviderError(Exception):
 
 # Default prompt template for rewrites
 DEFAULT_REWRITE_PROMPT = """\
-Write a short social media announcement for this article.
+Write a short social media post announcing this blog article.
 
-Requirements:
-- Maximum {max_chars} characters (this is a hard limit)
+Rules:
+- Maximum {max_chars} characters (HARD LIMIT - count carefully)
+- Single paragraph, no line breaks
+- Lead with the key insight or what makes this interesting
+- Do NOT include any URL (one will be appended automatically)
+- Do NOT include hashtags (they will be added from article tags)
+- Sound like a real person sharing something interesting, not marketing copy
 - Platform: {platform}
-- Capture the key insight or hook
-- Do NOT include the URL (it will be appended automatically)
-- Do NOT use hashtags (they will be added from article tags)
-- Write in an engaging but not clickbait style
 
-Article title: {title}
+Title: {title}
 
-Article content:
+Content:
 {body}
 
-Write ONLY the announcement text, nothing else.
+Output only the post text, nothing else.
 """

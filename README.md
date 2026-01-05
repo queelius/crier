@@ -270,24 +270,30 @@ JSON output structure:
 Use `--auto-rewrite` to generate short-form content using an LLM:
 
 ```bash
-# Configure LLM first (see below), then:
 crier publish post.md --to bluesky --auto-rewrite
 ```
 
-Configure LLM in `~/.config/crier/config.yaml`:
+**Simplest setup:** If you have `OPENAI_API_KEY` set, it just works (defaults to gpt-4o-mini).
+
+**Or configure in `~/.config/crier/config.yaml`:**
 
 ```yaml
+# Minimal - just the API key (defaults to OpenAI + gpt-4o-mini)
 llm:
-  provider: openai              # OpenAI-compatible API
-  base_url: http://localhost:11434/v1  # Ollama local
+  api_key: sk-...
+
+# Or full config for Ollama/other providers
+llm:
+  base_url: http://localhost:11434/v1  # Ollama
   model: llama3
-  # api_key: sk-...             # For cloud providers (OpenAI, Groq, etc.)
+  # api_key: not needed for local Ollama
 ```
 
-Or via environment variables:
-- `CRIER_LLM_BASE_URL` — API endpoint
-- `CRIER_LLM_MODEL` — Model name
-- `CRIER_LLM_API_KEY` — API key (optional for local providers like Ollama)
+**Environment variables** (override config):
+- `OPENAI_API_KEY` — Standard OpenAI key (auto-configures endpoint + model)
+- `CRIER_LLM_API_KEY` — Override API key
+- `CRIER_LLM_BASE_URL` — Override endpoint
+- `CRIER_LLM_MODEL` — Override model
 
 ## Bulk Operations
 

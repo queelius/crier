@@ -262,26 +262,25 @@ JSON output structure:
 
 ### Auto-Rewrite with LLM
 
-If you have an LLM configured (Ollama, OpenAI, etc.), use `--auto-rewrite` to automatically generate short-form content:
+Use `--auto-rewrite` to automatically generate short-form content:
 
 ```bash
-# Auto-rewrite for short-form platforms
 crier publish article.md --to bluesky --auto-rewrite
 ```
 
-Configure LLM in `~/.config/crier/config.yaml`:
-```yaml
-llm:
-  provider: openai
-  base_url: http://localhost:11434/v1  # Ollama
-  model: llama3
-  # api_key: sk-...  # For OpenAI/cloud providers
-```
+**Simplest setup:** If `OPENAI_API_KEY` is set, it just works (defaults to gpt-4o-mini).
 
-Or via environment variables:
-- `CRIER_LLM_BASE_URL`
-- `CRIER_LLM_MODEL`
-- `CRIER_LLM_API_KEY`
+**Or configure in `~/.config/crier/config.yaml`:**
+```yaml
+# Minimal (defaults to OpenAI + gpt-4o-mini)
+llm:
+  api_key: sk-...
+
+# For Ollama/other providers
+llm:
+  base_url: http://localhost:11434/v1
+  model: llama3
+```
 
 ## Bulk Operations
 
@@ -369,11 +368,15 @@ crier doctor
 
 LLM configuration (for --auto-rewrite):
 ```yaml
+# If OPENAI_API_KEY env var is set, no config needed!
+# Otherwise, minimal config:
 llm:
-  provider: openai
-  base_url: http://localhost:11434/v1  # Ollama local
+  api_key: sk-...  # defaults to OpenAI + gpt-4o-mini
+
+# Or for Ollama:
+llm:
+  base_url: http://localhost:11434/v1
   model: llama3
-  # api_key: sk-...  # For cloud providers
 ```
 
 ### Local Config (.crier/config.yaml)

@@ -111,20 +111,26 @@ crier publish article.md --to bluesky --auto-rewrite
 
 ## LLM Configuration
 
-Configure in `~/.config/crier/config.yaml` for `--auto-rewrite`:
+For `--auto-rewrite` to work:
+
+**Simplest:** Just have `OPENAI_API_KEY` env var set (defaults to gpt-4o-mini).
+
+**Or configure in `~/.config/crier/config.yaml`:**
 
 ```yaml
+# Minimal (defaults to OpenAI + gpt-4o-mini)
 llm:
-  provider: openai          # OpenAI-compatible API
-  base_url: http://localhost:11434/v1  # Ollama local
+  api_key: sk-...
+
+# Full config for Ollama/other providers
+llm:
+  base_url: http://localhost:11434/v1
   model: llama3
-  # api_key: sk-...         # For cloud providers (OpenAI, Groq, etc.)
 ```
 
-Or via environment variables:
-- `CRIER_LLM_BASE_URL` — API endpoint
-- `CRIER_LLM_MODEL` — Model name
-- `CRIER_LLM_API_KEY` — API key (optional for local providers)
+**Environment variables** (override config):
+- `OPENAI_API_KEY` — Auto-configures OpenAI endpoint + gpt-4o-mini
+- `CRIER_LLM_API_KEY`, `CRIER_LLM_BASE_URL`, `CRIER_LLM_MODEL` — Explicit overrides
 
 ## Bulk Operations
 
