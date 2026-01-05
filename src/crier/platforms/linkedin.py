@@ -25,6 +25,7 @@ class LinkedIn(Platform):
     name = "linkedin"
     base_url = "https://api.linkedin.com/v2"
     compose_url = "https://www.linkedin.com/feed/?shareActive=true"
+    max_content_length = 3000
 
     def __init__(self, api_key: str, person_urn: str | None = None):
         super().__init__(api_key)
@@ -103,9 +104,14 @@ class LinkedIn(Platform):
 
         text = "\n\n".join(text_parts)
 
-        # LinkedIn post limit is 3000 chars
-        if len(text) > 3000:
-            text = text[:2997] + "..."
+        # Check content length
+        error = self._check_content_length(text)
+        if error:
+            return PublishResult(
+                success=False,
+                platform=self.name,
+                error=error,
+            )
 
         # Create share with article link
         data = {

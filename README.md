@@ -134,24 +134,72 @@ This ensures the registry accurately reflects what's actually published.
 
 ## Configuration
 
-API keys can be set via:
+Crier uses two configuration files:
 
-1. **Config file** (`~/.config/crier/config.yaml`):
-   ```yaml
-   platforms:
-     devto:
-       api_key: your_key_here
-     bluesky:
-       api_key: "handle.bsky.social:app-password"
-     mastodon:
-       api_key: "mastodon.social:access-token"
-   ```
+### Global Config (`~/.config/crier/config.yaml`)
 
-2. **Environment variables**:
-   ```bash
-   export CRIER_DEVTO_API_KEY=your_key_here
-   export CRIER_BLUESKY_API_KEY="handle.bsky.social:app-password"
-   ```
+API keys and profiles (shared across all projects):
+
+```yaml
+platforms:
+  devto:
+    api_key: your_key_here
+  bluesky:
+    api_key: "handle.bsky.social:app-password"
+  mastodon:
+    api_key: "mastodon.social:access-token"
+  twitter:
+    api_key: manual    # Copy-paste mode
+  medium:
+    api_key: import    # URL import mode
+
+profiles:
+  blogs:
+    - devto
+    - hashnode
+    - medium
+  social:
+    - bluesky
+    - mastodon
+  everything:
+    - blogs           # Profiles can reference other profiles
+    - social
+```
+
+### Local Config (`.crier/config.yaml`)
+
+Project-specific settings:
+
+```yaml
+content_paths:
+  - content                    # Directories to scan for markdown files
+site_base_url: https://yoursite.com
+exclude_patterns:
+  - _index.md                  # Files to skip (Hugo section pages)
+file_extensions:
+  - .md
+  - .mdx                       # Optional: for MDX content
+default_profile: everything    # Used when no --to or --profile specified
+rewrite_author: claude-code    # Default author for AI-generated rewrites
+```
+
+| Option | Purpose |
+|--------|---------|
+| `content_paths` | Directories to scan for content |
+| `site_base_url` | For inferring canonical URLs |
+| `exclude_patterns` | Filename patterns to skip |
+| `file_extensions` | Extensions to scan (default: `.md`) |
+| `default_profile` | Default platforms when none specified |
+| `rewrite_author` | Default `--rewrite-author` value |
+
+### Environment Variables
+
+Environment variables override config files:
+
+```bash
+export CRIER_DEVTO_API_KEY=your_key_here
+export CRIER_BLUESKY_API_KEY="handle.bsky.social:app-password"
+```
 
 ## Markdown Format
 
@@ -177,12 +225,117 @@ crier publish FILE --to PLATFORM        # Publish to platform(s)
 crier publish FILE --to PLATFORM --manual  # Manual copy-paste mode
 crier audit                             # See what's missing/changed
 crier audit --publish                   # Bulk publish interactively
+crier audit --publish --yes             # Bulk publish without prompting
 crier status [FILE]                     # Show publication status
 crier list PLATFORM                     # List your articles
 crier config show                       # Show configuration
 crier config set KEY VALUE              # Set configuration
 crier doctor                            # Verify API keys work
+crier skill install                     # Install Claude Code skill
 ```
+
+## Automation
+
+### Batch Mode
+
+Use `--batch` for fully automated, non-interactive publishing (CI/CD):
+
+```bash
+# Batch mode implies --yes --json, skips manual/import platforms
+crier publish post.md --to devto --to bluesky --batch
+crier audit --publish --batch --long-form
+```
+
+### JSON Output
+
+Use `--json` for machine-readable output:
+
+```bash
+crier publish post.md --to devto --json
+crier audit --json
+```
+
+JSON output structure:
+```json
+{
+  "command": "publish",
+  "file": "post.md",
+  "results": [{"platform": "devto", "success": true, "url": "..."}],
+  "summary": {"succeeded": 1, "failed": 0, "skipped": 0}
+}
+```
+
+### Auto-Rewrite
+
+Use `--auto-rewrite` to generate short-form content using an LLM:
+
+```bash
+# Configure LLM first (see below), then:
+crier publish post.md --to bluesky --auto-rewrite
+```
+
+Configure LLM in `~/.config/crier/config.yaml`:
+
+```yaml
+llm:
+  provider: openai              # OpenAI-compatible API
+  base_url: http://localhost:11434/v1  # Ollama local
+  model: llama3
+  # api_key: sk-...             # For cloud providers (OpenAI, Groq, etc.)
+```
+
+Or via environment variables:
+- `CRIER_LLM_BASE_URL` — API endpoint
+- `CRIER_LLM_MODEL` — Model name
+- `CRIER_LLM_API_KEY` — API key (optional for local providers like Ollama)
+
+## Bulk Operations
+
+The `audit` command supports powerful filtering for targeted bulk operations:
+
+```bash
+# Post to API platforms only (skip manual/import)
+crier audit --publish --yes --only-api
+
+# Long-form only (skip bluesky, mastodon, twitter, threads)
+crier audit --publish --yes --long-form
+
+# Random sample of 5 articles
+crier audit --publish --yes --sample 5
+
+# Include changed content (default: missing only)
+crier audit --publish --yes --include-changed
+
+# Filter by path
+crier audit content/post --publish --yes --only-api
+
+# Filter by date (relative)
+crier audit --since 1w --publish --yes              # Last week
+crier audit --since 1m --publish --yes              # Last month
+crier audit --since 7d --until 1d --publish --yes   # 7 days ago to yesterday
+
+# Filter by date (absolute)
+crier audit --since 2025-12-01 --until 2025-12-31 --publish --yes
+
+# Combine filters
+crier audit content/post --since 1m --only-api --long-form --sample 10 --publish --yes
+```
+
+### Filter Reference
+
+| Filter | Description |
+|--------|-------------|
+| `[PATH]` | Only scan specific directory |
+| `--since` | Only content from this date (`1d`, `1w`, `1m`, `1y`, or `YYYY-MM-DD`) |
+| `--until` | Only content until this date |
+| `--only-api` | Skip manual/import/paste platforms |
+| `--long-form` | Skip short-form platforms (bluesky, mastodon, twitter, threads) |
+| `--sample N` | Random sample of N items |
+| `--include-changed` | Also update changed content (default: missing only) |
+| `--batch` | Non-interactive mode (implies `--yes --json`, skips manual platforms) |
+| `--json` | Output results as JSON |
+
+Filters are applied in order: path → date → platform mode → content type → changed → sampling
 
 ## Getting API Keys
 

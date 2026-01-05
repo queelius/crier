@@ -302,6 +302,108 @@ Content.
         assert result.exit_code == 0
         assert "Published" in result.output or "succeeded" in result.output.lower()
 
+    @patch("crier.cli.get_platform")
+    def test_publish_json_output(self, mock_get_platform, runner, mock_config_and_registry):
+        """Publish with --json outputs JSON format."""
+        import json
+
+        # Mock successful publish
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.article_id = "12345"
+        mock_result.url = "https://dev.to/user/article"
+        mock_result.requires_confirmation = False
+        mock_result.error = None
+        mock_platform.publish.return_value = mock_result
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content.
+""")
+
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto", "--json"])
+        assert result.exit_code == 0
+
+        # Parse JSON output
+        output = json.loads(result.output)
+        assert output["command"] == "publish"
+        assert output["title"] == "Test Article"
+        assert len(output["results"]) == 1
+        assert output["results"][0]["success"] is True
+        assert output["results"][0]["platform"] == "devto"
+        assert output["summary"]["succeeded"] == 1
+
+    def test_publish_batch_skips_manual_platforms(self, runner, mock_config_and_registry):
+        """Publish with --batch skips manual mode platforms."""
+        import json
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content.
+""")
+
+        # Twitter is configured as manual mode in mock_config_and_registry
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "twitter", "--batch"])
+        assert result.exit_code == 0
+
+        # Should output JSON (batch implies --json)
+        output = json.loads(result.output)
+        assert output["command"] == "publish"
+        # Twitter should be skipped
+        assert len(output["results"]) == 0
+        assert len(output["skipped"]) == 1
+        assert output["skipped"][0]["platform"] == "twitter"
+
+    @patch("crier.cli.get_platform")
+    def test_publish_batch_with_api_platform(self, mock_get_platform, runner, mock_config_and_registry):
+        """Publish with --batch publishes to API platforms."""
+        import json
+
+        # Mock successful publish
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.article_id = "12345"
+        mock_result.url = "https://dev.to/user/article"
+        mock_result.requires_confirmation = False
+        mock_result.error = None
+        mock_platform.publish.return_value = mock_result
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content.
+""")
+
+        # DevTo is configured as API mode
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto", "--batch"])
+        assert result.exit_code == 0
+
+        output = json.loads(result.output)
+        assert output["summary"]["succeeded"] == 1
+        assert len(output["skipped"]) == 0
+
 
 class TestStatusCommand:
     """Tests for crier status command."""

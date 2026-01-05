@@ -328,6 +328,32 @@ def remove_content_path(path: str) -> bool:
     return False
 
 
+# Default exclude patterns for content discovery
+# _index.md = Hugo section pages (branch bundles)
+DEFAULT_EXCLUDE_PATTERNS = ["_index.md"]
+
+
+def get_exclude_patterns() -> list[str]:
+    """Get patterns to exclude from content discovery.
+
+    Returns list of filename patterns to exclude.
+    No default fallback - must be explicitly configured via `crier init`
+    or manually in .crier/config.yaml.
+
+    Configure in .crier/config.yaml:
+        exclude_patterns:
+          - _index.md
+          - draft-*
+    """
+    config = load_local_config()
+    return config.get("exclude_patterns", [])
+
+
+def set_exclude_patterns(patterns: list[str]) -> None:
+    """Set exclude patterns in repo-local config."""
+    _save_local_config({"exclude_patterns": patterns})
+
+
 def get_site_base_url() -> str | None:
     """Get the site base URL for canonical URL inference.
 
@@ -384,3 +410,135 @@ def infer_canonical_url(file_path: Path, content_root: Path, base_url: str) -> s
 
     url_path = "/".join(parts)
     return f"{base_url}/{url_path}/"
+
+
+# Default file extensions for content discovery
+DEFAULT_FILE_EXTENSIONS = [".md"]
+
+
+def get_file_extensions() -> list[str]:
+    """Get file extensions to scan for content.
+
+    Returns list of extensions (with leading dot).
+    Must be explicitly configured via `crier init` or manually.
+
+    Configure in .crier/config.yaml:
+        file_extensions:
+          - .md
+          - .mdx
+    """
+    config = load_local_config()
+    return config.get("file_extensions", [])
+
+
+def set_file_extensions(extensions: list[str]) -> None:
+    """Set file extensions in repo-local config."""
+    # Normalize: ensure leading dot
+    normalized = [ext if ext.startswith(".") else f".{ext}" for ext in extensions]
+    _save_local_config({"file_extensions": normalized})
+
+
+def get_default_profile() -> str | None:
+    """Get the default profile to use when no platform is specified.
+
+    Configure in .crier/config.yaml:
+        default_profile: blogs
+    """
+    config = load_local_config()
+    return config.get("default_profile")
+
+
+def set_default_profile(profile: str) -> None:
+    """Set the default profile in repo-local config."""
+    _save_local_config({"default_profile": profile})
+
+
+def get_rewrite_author() -> str | None:
+    """Get the default author for rewrites.
+
+    When Claude or other tools generate short-form content,
+    this author is used by default if --rewrite-author is not specified.
+
+    Configure in .crier/config.yaml:
+        rewrite_author: claude-code
+    """
+    config = load_local_config()
+    return config.get("rewrite_author")
+
+
+def set_rewrite_author(author: str) -> None:
+    """Set the default rewrite author in repo-local config."""
+    _save_local_config({"rewrite_author": author})
+
+
+def get_llm_config() -> dict[str, Any]:
+    """Get LLM configuration for auto-rewrite.
+
+    LLM config is global only (stored in ~/.config/crier/config.yaml).
+    Environment variables can override:
+        - CRIER_LLM_API_KEY: API key for the LLM provider
+        - CRIER_LLM_BASE_URL: Base URL for the LLM API
+        - CRIER_LLM_MODEL: Model name
+
+    Config structure in config.yaml:
+        llm:
+          provider: openai  # Provider type (openai for OpenAI-compatible APIs)
+          base_url: http://localhost:11434/v1  # API base URL
+          api_key: ""  # API key (optional for local providers like Ollama)
+          model: llama3  # Model name
+          rewrite_prompt: |  # Optional custom prompt
+            Custom prompt here...
+
+    Returns:
+        Dict with LLM config, or empty dict if not configured.
+    """
+    config = load_global_config()
+    llm_config = config.get("llm", {})
+
+    # Environment variables override config file
+    if env_key := os.environ.get("CRIER_LLM_API_KEY"):
+        llm_config["api_key"] = env_key
+    if env_url := os.environ.get("CRIER_LLM_BASE_URL"):
+        llm_config["base_url"] = env_url
+    if env_model := os.environ.get("CRIER_LLM_MODEL"):
+        llm_config["model"] = env_model
+
+    return llm_config
+
+
+def set_llm_config(
+    provider: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    rewrite_prompt: str | None = None,
+) -> None:
+    """Set LLM configuration in global config.
+
+    Only updates provided values, leaves others unchanged.
+    """
+    config = load_global_config()
+    if "llm" not in config:
+        config["llm"] = {}
+
+    if provider is not None:
+        config["llm"]["provider"] = provider
+    if base_url is not None:
+        config["llm"]["base_url"] = base_url
+    if api_key is not None:
+        config["llm"]["api_key"] = api_key
+    if model is not None:
+        config["llm"]["model"] = model
+    if rewrite_prompt is not None:
+        config["llm"]["rewrite_prompt"] = rewrite_prompt
+
+    save_config(config)
+
+
+def is_llm_configured() -> bool:
+    """Check if LLM is configured for auto-rewrite.
+
+    Requires at minimum: base_url and model.
+    """
+    llm_config = get_llm_config()
+    return bool(llm_config.get("base_url") and llm_config.get("model"))

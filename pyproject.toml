@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crier"
-version = "0.4.0"
+version = "0.5.0"
 description = "Cross-post your content to dev.to, Hashnode, Medium, and more"
 readme = "README.md"
 license = "MIT"
@@ -52,6 +52,15 @@ Issues = "https://github.com/queelius/crier/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/crier"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/crier/SKILL.md" = "crier/SKILL.md"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/crier/**/*.py",
+    "src/crier/SKILL.md",
+]
 
 [tool.ruff]
 line-length = 100

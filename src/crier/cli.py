@@ -1,6 +1,7 @@
 """Command-line interface for crier."""
 
 import random
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -12,7 +13,7 @@ from .config import (
     get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles,
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
     is_manual_mode_key, is_import_mode_key, is_platform_configured,
-    get_platform_mode, is_short_form_platform,
+    get_platform_mode, is_short_form_platform, get_llm_config, is_llm_configured,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
@@ -59,6 +60,104 @@ def _is_in_content_paths(file_path: Path) -> bool:
     return False
 
 
+def _matches_exclude_pattern(filename: str, patterns: list[str]) -> bool:
+    """Check if a filename matches any exclude pattern.
+
+    Supports simple patterns:
+    - Exact match: "_index.md"
+    - Prefix wildcard: "draft-*" matches "draft-foo.md"
+    - Suffix wildcard: "*.draft.md" matches "foo.draft.md"
+    """
+    import fnmatch
+    for pattern in patterns:
+        if fnmatch.fnmatch(filename, pattern):
+            return True
+    return False
+
+
+def _parse_date_filter(value: str) -> datetime:
+    """Parse relative (1d, 1w, 1m) or absolute (2025-01-01) date.
+
+    Relative formats:
+    - Nd = N days ago (e.g., 7d)
+    - Nw = N weeks ago (e.g., 2w)
+    - Nm = N months ago (e.g., 1m)
+    - Ny = N years ago (e.g., 1y)
+
+    Absolute formats:
+    - YYYY-MM-DD (e.g., 2025-01-01)
+    - Full ISO format (e.g., 2025-01-01T12:00:00)
+    """
+    import re
+    from datetime import timedelta
+
+    # Try relative format: Nd, Nw, Nm, Ny
+    match = re.match(r'^(\d+)([dwmy])$', value.lower())
+    if match:
+        n, unit = int(match.group(1)), match.group(2)
+        now = datetime.now()
+        if unit == 'd':
+            return now - timedelta(days=n)
+        elif unit == 'w':
+            return now - timedelta(weeks=n)
+        elif unit == 'm':
+            return now - timedelta(days=n * 30)  # Approximate
+        elif unit == 'y':
+            return now - timedelta(days=n * 365)  # Approximate
+
+    # Try absolute format: YYYY-MM-DD or full ISO
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise click.BadParameter(
+            f"Invalid date format: {value}. "
+            "Use relative (1d, 1w, 1m, 1y) or absolute (YYYY-MM-DD)."
+        )
+
+
+def _get_content_date(file_path: Path) -> datetime | None:
+    """Get date from front matter of a markdown file.
+
+    Returns None if no date field or file can't be parsed.
+    """
+    try:
+        with open(file_path) as f:
+            content = f.read()
+
+        # Check for YAML front matter
+        if not content.startswith('---'):
+            return None
+
+        # Find end of front matter
+        end_idx = content.find('---', 3)
+        if end_idx == -1:
+            return None
+
+        front_matter = content[3:end_idx]
+
+        # Parse YAML
+        import yaml
+        data = yaml.safe_load(front_matter)
+        if not data or 'date' not in data:
+            return None
+
+        date_val = data['date']
+
+        # Handle datetime objects (YAML parses dates automatically)
+        if isinstance(date_val, datetime):
+            return date_val
+        if hasattr(date_val, 'year'):  # date object
+            return datetime(date_val.year, date_val.month, date_val.day)
+
+        # Handle string dates
+        if isinstance(date_val, str):
+            return datetime.fromisoformat(date_val.replace('Z', '+00:00'))
+
+        return None
+    except Exception:
+        return None
+
+
 def _find_content_files(explicit_path: str | None = None) -> list[Path]:
     """Find content files to process.
 
@@ -67,8 +166,17 @@ def _find_content_files(explicit_path: str | None = None) -> list[Path]:
 
     Returns:
         List of Path objects for files with valid front matter.
+
+    Note:
+        Excludes files matching exclude_patterns config (default: ["_index.md"]).
+        Uses file_extensions config (default: [".md"]) for which files to scan.
     """
+    from .config import get_exclude_patterns, get_file_extensions, DEFAULT_FILE_EXTENSIONS
+
     files: list[Path] = []
+
+    # Get configured extensions, fallback to .md for backwards compatibility
+    extensions = get_file_extensions() or DEFAULT_FILE_EXTENSIONS
 
     if explicit_path:
         # Explicit path provided - use it
@@ -76,7 +184,8 @@ def _find_content_files(explicit_path: str | None = None) -> list[Path]:
         if path_obj.is_file():
             files = [path_obj]
         else:
-            files = list(path_obj.glob("**/*.md"))
+            for ext in extensions:
+                files.extend(path_obj.glob(f"**/*{ext}"))
     else:
         # Use configured content_paths
         content_paths = get_content_paths()
@@ -88,7 +197,13 @@ def _find_content_files(explicit_path: str | None = None) -> list[Path]:
             if path_obj.is_file():
                 files.append(path_obj)
             elif path_obj.is_dir():
-                files.extend(path_obj.glob("**/*.md"))
+                for ext in extensions:
+                    files.extend(path_obj.glob(f"**/*{ext}"))
+
+    # Apply exclude patterns (default: ["_index.md"] for Hugo section pages)
+    exclude_patterns = get_exclude_patterns()
+    if exclude_patterns:
+        files = [f for f in files if not _matches_exclude_pattern(f.name, exclude_patterns)]
 
     # Filter to only files with valid front matter
     valid_files = [f for f in files if _has_valid_front_matter(f)]
@@ -169,6 +284,16 @@ def init():
         if selected:
             set_content_paths(selected)
             console.print(f"[green]✓[/green] Content paths: {', '.join(selected)}")
+
+            # Set default exclude patterns for content discovery
+            from .config import (set_exclude_patterns, DEFAULT_EXCLUDE_PATTERNS,
+                                set_file_extensions, DEFAULT_FILE_EXTENSIONS)
+            set_exclude_patterns(DEFAULT_EXCLUDE_PATTERNS)
+            console.print(f"[green]✓[/green] Exclude patterns: {', '.join(DEFAULT_EXCLUDE_PATTERNS)}")
+
+            # Set default file extensions
+            set_file_extensions(DEFAULT_FILE_EXTENSIONS)
+            console.print(f"[green]✓[/green] File extensions: {', '.join(DEFAULT_FILE_EXTENSIONS)}")
         else:
             console.print("[dim]No content paths selected. You can add them later with:[/dim]")
             console.print("[dim]  crier config content add <directory>[/dim]")
@@ -315,23 +440,63 @@ def init():
               help="Read rewrite content from a file")
 @click.option("--rewrite-author", "rewrite_author", default=None,
               help="Label for who wrote the rewrite (e.g., 'claude-code')")
+@click.option("--auto-rewrite", is_flag=True,
+              help="Auto-generate rewrites using configured LLM for short-form platforms")
 @click.option("--yes", "-y", is_flag=True,
               help="Assume success for manual mode (skip confirmation prompt)")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON for automation")
+@click.option("--batch", is_flag=True,
+              help="Non-interactive batch mode (implies --yes --json, skips manual/import platforms)")
 def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             draft: bool, dry_run: bool, manual: bool, no_browser: bool,
             rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None,
-            yes: bool):
+            auto_rewrite: bool, yes: bool, json_output: bool, batch: bool):
     """Publish a markdown file to one or more platforms.
 
     For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
     custom content that fits the platform's character limit.
 
+    Use --auto-rewrite to automatically generate short-form content using
+    a configured LLM (OpenAI, Ollama, etc.). Configure LLM in ~/.config/crier/config.yaml.
+
     Use --manual to generate content for copy-paste instead of using APIs.
     This is useful for platforms with restrictive API access (Medium, LinkedIn).
+
+    Use --batch for non-interactive automation (implies --yes --json, skips manual platforms).
     """
+    import json as json_module
     import webbrowser
     import pyperclip
     from rich.panel import Panel
+    from .config import get_default_profile, get_rewrite_author
+
+    # Batch mode implies --yes and --json
+    if batch:
+        yes = True
+        json_output = True
+
+    # Validate --auto-rewrite requires LLM configuration
+    llm_provider = None
+    if auto_rewrite:
+        if not is_llm_configured():
+            console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
+            console.print("[dim]Configure LLM in ~/.config/crier/config.yaml:[/dim]")
+            console.print("[dim]  llm:[/dim]")
+            console.print("[dim]    provider: openai[/dim]")
+            console.print("[dim]    base_url: http://localhost:11434/v1  # For Ollama[/dim]")
+            console.print("[dim]    model: llama3[/dim]")
+            console.print("[dim]Or set environment variables: CRIER_LLM_BASE_URL, CRIER_LLM_MODEL[/dim]")
+            raise SystemExit(1)
+
+        # Initialize LLM provider
+        from .llm import get_provider
+        llm_config = get_llm_config()
+        llm_provider = get_provider(llm_config)
+        if not llm_provider:
+            console.print("[red]Error: Failed to initialize LLM provider.[/red]")
+            raise SystemExit(1)
+
     # Resolve platforms from --to and --profile
     platforms: list[str] = []
 
@@ -346,15 +511,29 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if platform_args:
         platforms.extend(platform_args)
 
+    # Use default_profile if no platforms specified
+    if not platforms:
+        default_profile = get_default_profile()
+        if default_profile:
+            profile_platforms = get_profile(default_profile)
+            if profile_platforms:
+                platforms.extend(profile_platforms)
+                console.print(f"[dim]Using default profile: {default_profile}[/dim]")
+
     # Require explicit platform selection
     if not platforms:
         console.print("[red]Error: No platform specified.[/red]")
         console.print("[dim]Use --to <platform> or --profile <name> to specify where to publish.[/dim]")
+        console.print("[dim]Or set default_profile in .crier/config.yaml[/dim]")
         console.print("[dim]Examples:[/dim]")
         console.print("[dim]  crier publish article.md --to devto[/dim]")
         console.print("[dim]  crier publish article.md --to bluesky --to mastodon[/dim]")
         console.print("[dim]  crier publish article.md --profile social[/dim]")
         raise SystemExit(1)
+
+    # Use config default for rewrite_author if not specified
+    if rewrite_author is None:
+        rewrite_author = get_rewrite_author()
 
     # Remove duplicates while preserving order
     seen = set()
@@ -364,6 +543,33 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             seen.add(p)
             unique_platforms.append(p)
     platforms = unique_platforms
+
+    # Batch mode: filter out manual/import platforms
+    skipped_platforms = []
+    if batch:
+        api_platforms = []
+        for p in platforms:
+            mode = get_platform_mode(p)
+            if mode == 'api':
+                api_platforms.append(p)
+            else:
+                skipped_platforms.append({"platform": p, "reason": f"skipped ({mode} mode)"})
+        platforms = api_platforms
+
+        if not platforms:
+            # All platforms were manual/import - output JSON and exit
+            if json_output:
+                output = {
+                    "command": "publish",
+                    "file": file,
+                    "results": [],
+                    "skipped": skipped_platforms,
+                    "summary": {"succeeded": 0, "failed": 0, "skipped": len(skipped_platforms)},
+                }
+                print(json_module.dumps(output, indent=2))
+            else:
+                console.print("[yellow]No API platforms to publish to in batch mode.[/yellow]")
+            return
 
     article = parse_markdown_file(file)
 
@@ -545,8 +751,73 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     "error": None,
                 })()
             else:
-                console.print(f"[dim]Publishing to {platform_name}...[/dim]")
-                result = platform.publish(article)
+                # Check if auto-rewrite is needed for this platform
+                publish_article = article
+                platform_rewritten = False
+                platform_rewrite_content = None
+
+                if auto_rewrite and llm_provider and platform.max_content_length:
+                    # Check if content exceeds platform limit
+                    if len(article.body) > platform.max_content_length:
+                        if not json_output:
+                            console.print(f"[dim]Content too long for {platform_name} ({len(article.body)} > {platform.max_content_length})[/dim]")
+                            console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}...[/dim]")
+
+                        try:
+                            from .llm import LLMProviderError
+                            rewrite_result = llm_provider.rewrite(
+                                title=article.title,
+                                body=article.body,
+                                max_chars=platform.max_content_length,
+                                platform=platform_name,
+                            )
+
+                            # Check if rewritten content fits
+                            if len(rewrite_result.text) <= platform.max_content_length:
+                                platform_rewrite_content = rewrite_result.text
+                                platform_rewritten = True
+                                publish_article = Article(
+                                    title=article.title,
+                                    body=rewrite_result.text,
+                                    description=article.description,
+                                    tags=article.tags,
+                                    canonical_url=article.canonical_url,
+                                    published=article.published,
+                                    cover_image=article.cover_image,
+                                )
+                                if not json_output:
+                                    console.print(f"[green]✓ Generated {len(rewrite_result.text)} char rewrite[/green]")
+                            else:
+                                # LLM output still too long
+                                results.append({
+                                    "platform": platform_name,
+                                    "success": False,
+                                    "error": f"Auto-rewrite still too long: {len(rewrite_result.text)} chars (limit: {platform.max_content_length}). Use manual --rewrite.",
+                                    "url": None,
+                                    "id": None,
+                                })
+                                continue
+
+                        except LLMProviderError as e:
+                            results.append({
+                                "platform": platform_name,
+                                "success": False,
+                                "error": f"Auto-rewrite failed: {e}",
+                                "url": None,
+                                "id": None,
+                            })
+                            continue
+
+                if not json_output:
+                    console.print(f"[dim]Publishing to {platform_name}...[/dim]")
+                result = platform.publish(publish_article)
+
+                # Track rewrite info for registry
+                if platform_rewritten:
+                    is_rewritten = True
+                    posted_content = platform_rewrite_content
+                    if not rewrite_author:
+                        rewrite_author = f"llm:{llm_provider.model}"
 
             # Handle manual/import mode confirmation flow
             if result.requires_confirmation:
@@ -673,7 +944,46 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 "id": None,
             })
 
-    # Display results table
+    # Calculate summary
+    success_count = sum(1 for r in results if r["success"])
+    fail_count = len(results) - success_count
+
+    # JSON output mode
+    if json_output:
+        json_results = []
+        for r in results:
+            result_obj = {
+                "platform": r["platform"],
+                "success": r["success"],
+            }
+            if r["success"]:
+                result_obj["article_id"] = r.get("id")
+                result_obj["url"] = r["url"]
+                result_obj["action"] = "published"
+            else:
+                result_obj["error"] = r["error"]
+                # Add suggestion for content length errors
+                if r["error"] and "too long" in r["error"].lower():
+                    result_obj["suggestion"] = {"flag": "--rewrite", "reason": "short-form platform"}
+            json_results.append(result_obj)
+
+        output = {
+            "command": "publish",
+            "file": file,
+            "title": article.title,
+            "canonical_url": article.canonical_url,
+            "results": json_results,
+            "skipped": skipped_platforms if batch else [],
+            "summary": {
+                "succeeded": success_count,
+                "failed": fail_count,
+                "skipped": len(skipped_platforms) if batch else 0,
+            },
+        }
+        print(json_module.dumps(output, indent=2))
+        return
+
+    # Display results table (non-JSON mode)
     console.print()
     table = Table(title=f"Publishing Results: {article.title}")
     table.add_column("Platform", style="cyan")
@@ -693,9 +1003,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     console.print(table)
 
     # Summary
-    success_count = sum(1 for r in results if r["success"])
-    fail_count = len(results) - success_count
-
     if fail_count == 0:
         console.print(f"\n[green]All {success_count} platform(s) published successfully.[/green]")
     elif success_count == 0:
@@ -1023,6 +1330,52 @@ def config_show():
         console.print("  [dim]Set with: crier config set site_base_url https://yoursite.com[/dim]")
         console.print()
 
+    # Show exclude patterns
+    from .config import (get_exclude_patterns, DEFAULT_EXCLUDE_PATTERNS,
+                        get_file_extensions, DEFAULT_FILE_EXTENSIONS,
+                        get_default_profile, get_rewrite_author)
+    exclude_patterns = get_exclude_patterns()
+    if not exclude_patterns:
+        console.print("[bold]Exclude Patterns[/bold] [dim](not configured)[/dim]")
+        console.print("  [dim]None - all .md files included. Run 'crier init' to set defaults.[/dim]")
+    else:
+        is_default = exclude_patterns == DEFAULT_EXCLUDE_PATTERNS
+        console.print(f"[bold]Exclude Patterns[/bold] [dim]({'default' if is_default else 'custom'})[/dim]")
+        for pattern in exclude_patterns:
+            console.print(f"  • {pattern}")
+    console.print()
+
+    # Show file extensions
+    file_extensions = get_file_extensions()
+    if not file_extensions:
+        console.print("[bold]File Extensions[/bold] [dim](not configured)[/dim]")
+        console.print("  [dim]Using default: .md. Run 'crier init' to set explicitly.[/dim]")
+    else:
+        is_default = file_extensions == DEFAULT_FILE_EXTENSIONS
+        console.print(f"[bold]File Extensions[/bold] [dim]({'default' if is_default else 'custom'})[/dim]")
+        console.print(f"  {', '.join(file_extensions)}")
+    console.print()
+
+    # Show default profile
+    default_profile = get_default_profile()
+    if default_profile:
+        console.print(f"[bold]Default Profile[/bold]")
+        console.print(f"  {default_profile}")
+    else:
+        console.print("[bold]Default Profile[/bold] [dim](not set)[/dim]")
+        console.print("  [dim]Platform must be specified with --to or --profile[/dim]")
+    console.print()
+
+    # Show rewrite author
+    rewrite_author = get_rewrite_author()
+    if rewrite_author:
+        console.print(f"[bold]Rewrite Author[/bold]")
+        console.print(f"  {rewrite_author}")
+    else:
+        console.print("[bold]Rewrite Author[/bold] [dim](not set)[/dim]")
+        console.print("  [dim]Use --rewrite-author to specify when publishing rewrites[/dim]")
+    console.print()
+
     # Show platforms with source
     table = Table(title="Configured Platforms")
     table.add_column("Platform", style="cyan")
@@ -1237,9 +1590,18 @@ def content_set(paths: tuple[str, ...]):
               help="Randomly sample N items for processing")
 @click.option("--include-changed", is_flag=True,
               help="Include changed/dirty items (default: missing only)")
+@click.option("--since", "since_date", default=None,
+              help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--until", "until_date", default=None,
+              help="Only include content until this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON for automation")
+@click.option("--batch", is_flag=True,
+              help="Non-interactive batch mode (implies --yes --json --only-api)")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
-          sample: int | None, include_changed: bool):
+          sample: int | None, include_changed: bool, since_date: str | None, until_date: str | None,
+          json_output: bool, batch: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -1254,7 +1616,17 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     --long-form: Skip short-form platforms (bluesky, mastodon, twitter, threads).
     --sample N: Randomly select N items from the actionable pool.
     --include-changed: Also process changed/dirty items (default: missing only).
+
+    Use --batch for non-interactive automation (implies --yes --json --only-api).
     """
+    import json as json_module
+
+    # Batch mode implies --yes, --json, and --only-api
+    if batch:
+        yes = True
+        json_output = True
+        only_api = True
+
     # Determine which platforms to check
     check_platforms: list[str] = []
 
@@ -1288,6 +1660,25 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Find content files
     files = _find_content_files(path)
+
+    # Apply date filtering
+    if since_date or until_date:
+        since_dt = _parse_date_filter(since_date) if since_date else None
+        until_dt = _parse_date_filter(until_date) if until_date else None
+
+        filtered_files = []
+        for f in files:
+            content_date = _get_content_date(f)
+            if content_date:
+                # Make comparison timezone-naive if needed
+                if content_date.tzinfo is not None:
+                    content_date = content_date.replace(tzinfo=None)
+                if since_dt and content_date < since_dt:
+                    continue
+                if until_dt and content_date > until_dt:
+                    continue
+            filtered_files.append(f)
+        files = filtered_files
 
     if not files:
         if path:
@@ -1357,15 +1748,54 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
         table.add_row(*row)
 
+    # JSON output mode for audit
+    if json_output and not publish:
+        actionable_items_json = []
+        for fp, plat, curl, title in missing_items:
+            actionable_items_json.append({
+                "file": str(fp),
+                "canonical_url": curl,
+                "platform": plat,
+                "title": title,
+                "status": "missing",
+                "action_needed": "publish",
+            })
+        for fp, plat, curl, title in dirty_items:
+            actionable_items_json.append({
+                "file": str(fp),
+                "canonical_url": curl,
+                "platform": plat,
+                "title": title,
+                "status": "changed",
+                "action_needed": "update",
+            })
+
+        output = {
+            "command": "audit",
+            "path": path,
+            "files_scanned": len(files),
+            "platforms_checked": check_platforms,
+            "actionable": actionable_items_json,
+            "summary": {
+                "up_to_date": uptodate_count,
+                "changed": dirty_count,
+                "missing": len(missing_items),
+            },
+        }
+        print(json_module.dumps(output, indent=2))
+        return
+
     console.print(table)
 
     # Legend
     console.print("[dim]Legend: ✓ up-to-date  ⚠ changed  ✗ missing[/dim]")
 
     # Summary
+    total_pairs = len(files) * len(check_platforms)
     console.print(f"\n[bold]Summary:[/bold]")
     console.print(f"  Files: {len(files)}")
-    console.print(f"  Platforms checked: {len(check_platforms)}")
+    console.print(f"  Platforms: {len(check_platforms)}")
+    console.print(f"  [dim]Total file-platform pairs: {total_pairs}[/dim]")
     console.print(f"  Up-to-date: [green]{uptodate_count}[/green]")
     console.print(f"  Changed: [yellow]{dirty_count}[/yellow]")
     console.print(f"  Missing: [red]{len(missing_items)}[/red]")
@@ -1485,22 +1915,40 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     # Do the publishing/updating
     new_count = sum(1 for _, _, _, _, action in selected_items if action == "publish")
     update_count = len(selected_items) - new_count
-    console.print(f"\n[bold]Processing {len(selected_items)} item(s) ({new_count} new, {update_count} updates)...[/bold]\n")
+    if not json_output:
+        console.print(f"\n[bold]Processing {len(selected_items)} item(s) ({new_count} new, {update_count} updates)...[/bold]\n")
 
     success_count = 0
     fail_count = 0
+    publish_results = []  # For JSON output
 
     for file_path, platform, canonical_url, title, action in selected_items:
         article = parse_markdown_file(str(file_path))
         api_key = get_api_key(platform)
 
         if not api_key:
-            console.print(f"[red]✗ {title[:30]} → {platform}: Not configured[/red]")
+            if not json_output:
+                console.print(f"[red]✗ {title[:30]} → {platform}: Not configured[/red]")
+            publish_results.append({
+                "file": str(file_path),
+                "platform": platform,
+                "success": False,
+                "error": "Not configured",
+                "action": action,
+            })
             fail_count += 1
             continue
 
         if not article.canonical_url:
-            console.print(f"[yellow]⚠ {title[:30]}: No canonical_url, skipping[/yellow]")
+            if not json_output:
+                console.print(f"[yellow]⚠ {title[:30]}: No canonical_url, skipping[/yellow]")
+            publish_results.append({
+                "file": str(file_path),
+                "platform": platform,
+                "success": False,
+                "error": "No canonical_url",
+                "action": action,
+            })
             fail_count += 1
             continue
 
@@ -1510,24 +1958,35 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
             if action == "publish":
                 # New publication
-                console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
+                if not json_output:
+                    console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
                 result = plat.publish(article)
                 action_verb = "Published"
             else:
                 # Update existing publication
                 pub_info = get_publication_info(canonical_url, platform)
                 if not pub_info or not pub_info.get("article_id"):
-                    console.print(f"[yellow]⚠ {title[:30]} → {platform}: No article_id in registry, skipping[/yellow]")
+                    if not json_output:
+                        console.print(f"[yellow]⚠ {title[:30]} → {platform}: No article_id in registry, skipping[/yellow]")
+                    publish_results.append({
+                        "file": str(file_path),
+                        "platform": platform,
+                        "success": False,
+                        "error": "No article_id in registry",
+                        "action": action,
+                    })
                     fail_count += 1
                     continue
 
                 article_id = pub_info["article_id"]
-                console.print(f"[dim]Updating {title[:30]} → {platform}...[/dim]")
+                if not json_output:
+                    console.print(f"[dim]Updating {title[:30]} → {platform}...[/dim]")
                 result = plat.update(article_id, article)
                 action_verb = "Updated"
 
             if result.success:
-                console.print(f"[green]✓ {title[:30]} → {platform} ({action_verb.lower()})[/green]")
+                if not json_output:
+                    console.print(f"[green]✓ {title[:30]} → {platform} ({action_verb.lower()})[/green]")
                 content_hash = get_file_content_hash(file_path)
                 record_publication(
                     canonical_url=article.canonical_url,
@@ -1538,21 +1997,57 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     source_file=str(file_path),
                     content_hash=content_hash,
                 )
+                publish_results.append({
+                    "file": str(file_path),
+                    "platform": platform,
+                    "success": True,
+                    "action": action,
+                    "article_id": result.article_id,
+                    "url": result.url,
+                })
                 success_count += 1
             else:
-                console.print(f"[red]✗ {title[:30]} → {platform}: {result.error}[/red]")
+                if not json_output:
+                    console.print(f"[red]✗ {title[:30]} → {platform}: {result.error}[/red]")
+                publish_results.append({
+                    "file": str(file_path),
+                    "platform": platform,
+                    "success": False,
+                    "error": result.error,
+                    "action": action,
+                })
                 fail_count += 1
 
         except Exception as e:
-            console.print(f"[red]✗ {title[:30]} → {platform}: {e}[/red]")
+            if not json_output:
+                console.print(f"[red]✗ {title[:30]} → {platform}: {e}[/red]")
+            publish_results.append({
+                "file": str(file_path),
+                "platform": platform,
+                "success": False,
+                "error": str(e),
+                "action": action,
+            })
             fail_count += 1
 
-    # Final summary
-    console.print()
-    if fail_count == 0:
-        console.print(f"[green]All {success_count} operation(s) succeeded![/green]")
+    # Final output
+    if json_output:
+        output = {
+            "command": "audit",
+            "mode": "publish",
+            "results": publish_results,
+            "summary": {
+                "succeeded": success_count,
+                "failed": fail_count,
+            },
+        }
+        print(json_module.dumps(output, indent=2))
     else:
-        console.print(f"[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
+        console.print()
+        if fail_count == 0:
+            console.print(f"[green]All {success_count} operation(s) succeeded![/green]")
+        else:
+            console.print(f"[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
 
 
 @cli.command()

@@ -1,34 +1,3 @@
-"""Claude Code skill installation for crier."""
-
-from importlib.resources import files
-from pathlib import Path
-
-SKILL_NAME = "crier"
-
-# Claude Code skills directory structure
-GLOBAL_SKILLS_DIR = Path.home() / ".claude" / "skills"
-LOCAL_SKILLS_DIR = Path(".claude") / "skills"
-
-
-def _load_skill_content() -> str:
-    """Load SKILL.md content from package resources."""
-    return files("crier").joinpath("SKILL.md").read_text()
-
-
-# Keep for backwards compatibility, but load from file
-_SKILL_CONTENT_CACHE: str | None = None
-
-
-def get_skill_content() -> str:
-    """Get the skill content from package resource."""
-    global _SKILL_CONTENT_CACHE
-    if _SKILL_CONTENT_CACHE is None:
-        _SKILL_CONTENT_CACHE = _load_skill_content()
-    return _SKILL_CONTENT_CACHE
-
-
-# Legacy constant for any direct imports (deprecated)
-SKILL_CONTENT = '''\
 ---
 name: crier
 description: Cross-post blog content to social platforms. Claude handles audit, user selection, and generates rewrites for short-form platforms.
@@ -50,10 +19,10 @@ Crier cross-posts blog content to multiple platforms. The blog is the canonical 
 | hashnode  | API    | ∞      | Yes      |                                |
 | bluesky   | API    | 300    | No       | Short-form, needs rewrite      |
 | mastodon  | API    | 500    | Yes      | Short-form, needs rewrite      |
+| linkedin  | API    | 3000   | No       | Long-form but has limit        |
 | medium    | import | ∞      | No       | User imports from canonical URL |
 | twitter   | paste  | 280    | No       | Short-form, copy-paste         |
 | threads   | paste  | 500    | No       | Short-form, copy-paste         |
-| linkedin  | paste  | ∞      | No       | Copy-paste                     |
 
 **Modes:**
 - `API` = automatic posting via API
@@ -122,7 +91,7 @@ complex problems."
 
 (198 chars + URL = within limit)
 
-[runs: crier publish article.md --to bluesky \\
+[runs: crier publish article.md --to bluesky \
   --rewrite "New post: Exploring..." --rewrite-author "claude-code"]
 
 ✓ bluesky: https://bsky.app/profile/user/post/abc123
@@ -230,9 +199,12 @@ crier audit content/post/my-article/index.md
 crier publish article.md --to devto
 
 # Publish with rewrite for short-form
-crier publish article.md --to bluesky \\
-  --rewrite "Short announcement text" \\
+crier publish article.md --to bluesky \
+  --rewrite "Short announcement text" \
   --rewrite-author "claude-code"
+
+# Auto-rewrite using configured LLM (requires LLM config)
+crier publish article.md --to bluesky --auto-rewrite
 
 # Import/paste mode (skips interactive prompts)
 crier publish article.md --to medium --yes
@@ -246,12 +218,80 @@ crier register <file> --platform <platform> [--url <url>]
 crier unregister <file> --platform <platform>
 ```
 
+## Automation Modes
+
+### Batch Mode
+
+Use `--batch` for fully automated, non-interactive publishing:
+
+```bash
+# Batch mode: implies --yes --json, skips manual/import platforms
+crier publish article.md --to devto --to bluesky --batch
+crier audit --publish --batch
+```
+
+Batch mode:
+- Implies `--yes` (no prompts)
+- Implies `--json` (structured output)
+- Skips manual/import platforms automatically
+- Perfect for CI/CD and automated workflows
+
+### JSON Output
+
+Use `--json` for machine-readable output:
+
+```bash
+# JSON output for publish
+crier publish article.md --to devto --json
+
+# JSON output for audit
+crier audit --json
+```
+
+JSON output structure:
+```json
+{
+  "command": "publish",
+  "file": "article.md",
+  "results": [
+    {"platform": "devto", "success": true, "url": "https://..."}
+  ],
+  "summary": {"succeeded": 1, "failed": 0, "skipped": 0}
+}
+```
+
+### Auto-Rewrite with LLM
+
+If you have an LLM configured (Ollama, OpenAI, etc.), use `--auto-rewrite` to automatically generate short-form content:
+
+```bash
+# Auto-rewrite for short-form platforms
+crier publish article.md --to bluesky --auto-rewrite
+```
+
+Configure LLM in `~/.config/crier/config.yaml`:
+```yaml
+llm:
+  provider: openai
+  base_url: http://localhost:11434/v1  # Ollama
+  model: llama3
+  # api_key: sk-...  # For OpenAI/cloud providers
+```
+
+Or via environment variables:
+- `CRIER_LLM_BASE_URL`
+- `CRIER_LLM_MODEL`
+- `CRIER_LLM_API_KEY`
+
 ## Bulk Operations
 
 For large content libraries, use filters to control scope:
 
 ```bash
-# Post 5 random articles to blog platforms (fully automated)
+# Batch mode: publish to API long-form platforms (fully automated)
+crier audit --publish --batch --long-form
+
+# Post 5 random articles to blog platforms
 crier audit --publish --yes --only-api --long-form --sample 5
 
 # All missing to API platforms (skips manual/import)
@@ -284,12 +324,14 @@ crier audit --sample 5 --since 1m --only-api --long-form
 - `--long-form` - Skip short-form platforms (bluesky, mastodon, twitter, threads)
 - `--sample N` - Random sample of N items
 - `--include-changed` - Also update changed content (default: missing only)
+- `--batch` - Non-interactive mode (implies --yes --json --only-api)
+- `--json` - Output results as JSON
 
 ### Claude Code Bulk Workflow
 
-1. Run automated batch: `crier audit --publish --yes --only-api --long-form --sample 10`
+1. Run automated batch: `crier audit --publish --batch --long-form --sample 10`
 2. Check what else needs work: `crier audit`
-3. Handle short-form platforms with --rewrite
+3. Handle short-form platforms with --rewrite or --auto-rewrite
 4. Guide user through manual/import platforms
 
 ## Important Rules
@@ -303,6 +345,8 @@ crier audit --sample 5 --since 1m --only-api --long-form
 4. **Ask simple yes/no** after manual operations. Trust the user's answer.
 
 5. **Show the canonical URL** for import-mode platforms. It's the key piece of information.
+
+6. **Use --batch for automation**. It handles all the flags for non-interactive use.
 
 ## Configuration
 
@@ -321,6 +365,15 @@ crier config set twitter.api_key manual
 
 # Check configuration
 crier doctor
+```
+
+LLM configuration (for --auto-rewrite):
+```yaml
+llm:
+  provider: openai
+  base_url: http://localhost:11434/v1  # Ollama local
+  model: llama3
+  # api_key: sk-...  # For cloud providers
 ```
 
 ### Local Config (.crier/config.yaml)
@@ -361,92 +414,3 @@ canonical_url: "https://yourblog.com/your-article/"
 ```
 
 The `canonical_url` is required - it's the article's identity for tracking and linking.
-'''
-
-
-def get_skill_dir(local: bool = False) -> Path:
-    """Get the skills directory path."""
-    if local:
-        return LOCAL_SKILLS_DIR / SKILL_NAME
-    return GLOBAL_SKILLS_DIR / SKILL_NAME
-
-
-def get_skill_path(local: bool = False) -> Path:
-    """Get the SKILL.md file path."""
-    return get_skill_dir(local) / "SKILL.md"
-
-
-def is_installed(local: bool | None = None) -> dict[str, bool]:
-    """Check if skill is installed.
-
-    Args:
-        local: If True, check only local. If False, check only global.
-               If None, check both.
-
-    Returns:
-        Dict with 'global' and 'local' keys indicating installation status.
-    """
-    result = {"global": False, "local": False}
-
-    if local is None or local is False:
-        result["global"] = get_skill_path(local=False).exists()
-
-    if local is None or local is True:
-        result["local"] = get_skill_path(local=True).exists()
-
-    return result
-
-
-def install(local: bool = False) -> Path:
-    """Install the crier skill.
-
-    Args:
-        local: If True, install to .claude/skills/ (repo-local).
-               If False, install to ~/.claude/skills/ (global).
-
-    Returns:
-        Path to the installed SKILL.md file.
-    """
-    skill_dir = get_skill_dir(local)
-    skill_path = get_skill_path(local)
-
-    # Create directory
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write skill file
-    skill_path.write_text(get_skill_content())
-
-    return skill_path
-
-
-def uninstall(local: bool = False) -> bool:
-    """Uninstall the crier skill.
-
-    Args:
-        local: If True, uninstall from .claude/skills/.
-               If False, uninstall from ~/.claude/skills/.
-
-    Returns:
-        True if skill was removed, False if it wasn't installed.
-    """
-    skill_path = get_skill_path(local)
-    skill_dir = get_skill_dir(local)
-
-    if not skill_path.exists():
-        return False
-
-    # Remove the skill file
-    skill_path.unlink()
-
-    # Remove the directory if empty
-    try:
-        skill_dir.rmdir()
-    except OSError:
-        pass  # Directory not empty or other error
-
-    return True
-
-
-def get_skill_content() -> str:
-    """Get the skill content."""
-    return SKILL_CONTENT

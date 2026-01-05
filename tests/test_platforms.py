@@ -14,6 +14,7 @@ from crier.platforms import (
     Mastodon,
     Twitter,
     Threads,
+    LinkedIn,
 )
 
 
@@ -466,6 +467,87 @@ class TestThreads:
         platform = Threads("user:token")
         with pytest.raises(NotImplementedError):
             platform.delete("123")
+
+
+class TestLinkedIn:
+    """Tests for LinkedIn platform."""
+
+    def test_linkedin_properties(self):
+        platform = LinkedIn("access_token")
+        assert platform.name == "linkedin"
+        assert platform.max_content_length == 3000
+        assert platform.compose_url == "https://www.linkedin.com/feed/?shareActive=true"
+
+    def test_api_key_parsing_simple(self):
+        platform = LinkedIn("access_token")
+        assert platform.access_token == "access_token"
+        assert platform.person_urn is None
+
+    def test_api_key_parsing_with_urn(self):
+        platform = LinkedIn("token123:urn:li:person:abc")
+        assert platform.access_token == "token123"
+        assert platform.person_urn == "urn:li:person:abc"
+
+    def test_format_for_manual(self):
+        article = Article(
+            title="My Article",
+            body="Full body content",
+            description="Brief description",
+            tags=["python", "web-dev"],
+            canonical_url="https://example.com/article",
+        )
+        platform = LinkedIn("token")
+        result = platform.format_for_manual(article)
+        assert "My Article" in result
+        assert "Brief description" in result
+        assert "#python" in result
+        assert "#webdev" in result  # Hyphens removed
+        assert "https://example.com/article" in result
+
+    def test_publish_content_too_long(self):
+        """Content exceeding 3000 chars should error, not truncate."""
+        article = Article(
+            title="A" * 2000,
+            body="Content",
+            description="B" * 1500,
+            tags=["python"],
+            canonical_url="https://example.com",
+        )
+        platform = LinkedIn("token:urn:li:person:123")
+        # Mock the _get_person_urn to return a valid URN
+        platform.person_urn = "urn:li:person:123"
+        result = platform.publish(article)
+        assert result.success is False
+        assert "too long" in result.error.lower()
+        assert "3000" in result.error
+        assert "--rewrite" in result.error
+
+    @patch("crier.platforms.linkedin.requests.get")
+    @patch("crier.platforms.linkedin.requests.post")
+    def test_publish_within_limit(self, mock_post, mock_get, sample_article):
+        """Content within 3000 chars should succeed."""
+        # Mock userinfo response
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"sub": "abc123"})
+        )
+        # Mock post response
+        mock_post.return_value = Mock(
+            status_code=201,
+            headers={"x-restli-id": "urn:li:share:123456"}
+        )
+
+        platform = LinkedIn("token")
+        result = platform.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "urn:li:share:123456"
+
+    def test_update_not_supported(self, sample_article):
+        platform = LinkedIn("token")
+        result = platform.update("123", sample_article)
+        assert result.success is False
+        assert "not support editing" in result.error
 
 
 class TestPlatformRegistry:
