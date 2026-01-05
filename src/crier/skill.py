@@ -14,176 +14,255 @@ name: crier
 description: Cross-post blog content to social platforms. Claude handles audit, user selection, and generates rewrites for short-form platforms.
 ---
 
-# Crier - Cross-Posting Tool
+# Crier Cross-Posting Workflow
 
-Crier cross-posts blog content from markdown files (with YAML front matter) to multiple platforms.
+Crier cross-posts blog content to multiple platforms. The blog is the canonical source of truth.
 
-## Claude Code Workflow
+**Division of labor:**
+- **Crier** does mechanics: API calls, registry tracking, clipboard, browser
+- **Claude** does judgment: summaries, error handling, user interaction
 
-When the user wants to cross-post content, follow this workflow:
+## Platform Reference
 
-### 1. Audit - See What Needs Publishing
+| Platform  | Mode   | Limit  | Updates? | Notes                          |
+|-----------|--------|--------|----------|--------------------------------|
+| devto     | API    | ∞      | Yes      | Tags auto-sanitized (no hyphens) |
+| hashnode  | API    | ∞      | Yes      |                                |
+| bluesky   | API    | 300    | No       | Short-form, needs rewrite      |
+| mastodon  | API    | 500    | Yes      | Short-form, needs rewrite      |
+| medium    | import | ∞      | No       | User imports from canonical URL |
+| twitter   | paste  | 280    | No       | Short-form, copy-paste         |
+| threads   | paste  | 500    | No       | Short-form, copy-paste         |
+| linkedin  | paste  | ∞      | No       | Copy-paste                     |
 
-Run `crier audit` to see status:
-- `✓` = published and up-to-date
-- `⚠` = published but content changed (needs update)
-- `✗` = not published (missing)
+**Modes:**
+- `API` = automatic posting via API
+- `import` = user imports from canonical URL (like Medium)
+- `paste` = user copy-pastes (content goes to clipboard)
 
-```bash
-crier audit                    # Uses configured content_paths
-crier audit ./posts            # Specific directory
-crier audit --to bluesky       # Check specific platform
+## Complete Dialogue Examples
+
+### Example 1: Cross-post a new article
+
+```
+User: cross-post my new blog post to the usual platforms
+
+Claude: I'll cross-post content/post/2026-01-04-my-article/index.md
+
+Let me check what's needed:
+[runs: crier audit content/post/2026-01-04-my-article/index.md]
+
+Platforms to post:
+• devto (API) - will auto-post
+• hashnode (API) - will auto-post
+• bluesky (API, 300 chars) - I'll write a summary
+• mastodon (API, 500 chars) - I'll write a summary
+• medium (import) - you'll import from your URL
+
+Proceed?
+
+User: yes
+
+Claude: [runs API posts for devto, hashnode]
+[generates summaries and posts to bluesky, mastodon with --rewrite]
+
+✓ devto: https://dev.to/user/my-article-abc
+✓ hashnode: https://user.hashnode.dev/my-article
+✓ bluesky: posted announcement
+✓ mastodon: posted announcement
+
+For Medium, import from your canonical URL:
+https://yourblog.com/post/2026-01-04-my-article/
+
+Go to: https://medium.com/p/import
+
+[runs: crier publish article.md --to medium --yes]
+
+Did you import to Medium successfully?
+
+User: yes
+
+Claude: ✓ All platforms complete.
 ```
 
-### 2. Select - Let User Choose
+### Example 2: Handling short-form platforms
 
-Use AskUserQuestion to let user choose which items to publish/update.
-Or use `crier audit --publish` for interactive checkbox selection.
+```
+User: post this to bluesky
 
-```bash
-# Interactive selection
-crier audit --publish
+Claude: [runs: crier publish article.md --to bluesky]
 
-# Publish all without prompting
-crier audit --publish --yes
+Error: Content too long for bluesky: 5000 characters (limit: 300)
+
+I'll write a short announcement:
+
+"New post: Exploring the mathematics of uncertainty - how
+probabilistic thinking can transform how we approach
+complex problems."
+
+(198 chars + URL = within limit)
+
+[runs: crier publish article.md --to bluesky \\
+  --rewrite "New post: Exploring..." --rewrite-author "claude-code"]
+
+✓ bluesky: https://bsky.app/profile/user/post/abc123
 ```
 
-### 3. Publish - Handle Each Item
+### Example 3: Import mode (Medium)
 
-For each selected item:
+```
+User: post to medium
 
-**Long-form platforms** (devto, hashnode, ghost, wordpress, medium):
-```bash
-crier publish article.md --to devto
+Claude: Medium uses URL import. I'll set this up:
+
+[runs: crier publish article.md --to medium --yes]
+
+Import your article from this URL:
+https://yourblog.com/post/2026-01-04-my-article/
+
+Go to: https://medium.com/p/import
+
+Did the import work?
+
+User: yes
+
+Claude: ✓ Registered in crier. Done!
 ```
 
-**Short-form platforms** (bluesky, mastodon, twitter, threads):
-Generate a short announcement, then:
-```bash
-crier publish article.md --to bluesky \\
-  --rewrite "Your announcement text" \\
-  --rewrite-author "claude-code"
+### Example 4: Manual paste mode (Twitter)
+
+```
+User: share on twitter
+
+Claude: Twitter uses copy-paste mode.
+
+[runs: crier publish article.md --to twitter --yes]
+
+I've copied this to your clipboard:
+"New post: My Article Title - exploring key concepts...
+
+https://yourblog.com/post/my-article/"
+
+Go to: https://twitter.com/compose/tweet
+
+Did you post it?
+
+User: yes
+
+Claude: ✓ Registered. All done!
 ```
 
-## Handling "Content Too Long" Errors
+## Workflow Decision Tree
 
-If you see: `Content too long for bluesky: 5000 characters (limit: 300)`
+### User wants to cross-post
 
-Generate a short announcement that:
-1. Is under the platform's character limit
-2. Mentions the article title/topic
-3. Is engaging for the platform's audience
-4. Does NOT include the URL (crier appends canonical_url automatically)
+1. **Audit first**: `crier audit <file>` or `crier audit` for all content
+2. **Show platforms**: List what will happen for each platform
+3. **Get confirmation**: Simple "Proceed?" - trust the user
+4. **Execute by type**:
+   - API long-form → `crier publish <file> --to <platform>`
+   - API short-form → Generate summary, use `--rewrite`
+   - Import mode → `crier publish ... --to medium --yes`, tell user to import
+   - Paste mode → `crier publish ... --to twitter --yes`, tell user to paste
+5. **Report results**: Show all successes, ask about manual platforms
 
-Then retry with `--rewrite`.
+### User says something changed
 
-### Platform Character Limits
-- Bluesky: 300 chars
-- Twitter: 280 chars
-- Mastodon: 500 chars
-- Threads: 500 chars
+1. Run `crier audit` to see `⚠` dirty markers
+2. For platforms that support update: re-run publish (auto-updates)
+3. For platforms without update (bluesky, twitter): tell user they must delete/repost manually
 
-## Platform Update Support
+### Failure handling
 
-When content changes (⚠ dirty), `audit --publish` will update:
-- **Supports update**: devto, hashnode, ghost, wordpress, buttondown, mastodon, telegram, discord
-- **No update support**: bluesky, twitter, threads (will show error)
+- Continue through all platforms even if some fail
+- Report all failures at the end
+- Don't ask user to retry - just report what happened
 
-For platforms without update support, the user must decide whether to delete and re-post manually.
-
-## Manual Mode
-
-For platforms with restrictive API access (Medium, LinkedIn, Twitter/X), use `--manual`:
+## Key Commands
 
 ```bash
-crier publish article.md --to medium --manual
-crier publish article.md --to linkedin --manual
-```
-
-**Auto-manual mode**: Configure a platform with `api_key: manual` to always use copy-paste mode:
-
-```bash
-crier config set twitter.api_key manual
-crier config set linkedin.api_key manual
-
-# Now these automatically use manual mode
-crier publish article.md --to twitter
-```
-
-Manual mode workflow:
-1. Formats content for the platform
-2. Copies to clipboard and opens browser
-3. Asks user to confirm after posting
-4. Records to registry only if confirmed
-
-This is useful when API access is problematic or unavailable.
-
-## Command Roles
-
-**`audit`** = Status checking + bulk operations
-- See what's missing/dirty across all content
-- Bulk publish/update with `--publish`
-- Preview with `--dry-run`
-
-**`publish`** = Single-file with full control
-- Direct publish one file
-- `--rewrite` for short-form platforms
-- `--dry-run` to preview
-- `--draft` to publish as draft
-
-## Commands Reference
-
-```bash
-# See what's missing or changed
+# Check what needs publishing
 crier audit
-crier audit --to bluesky --to devto
+crier audit content/post/my-article/index.md
 
-# Preview what would be published (no changes)
-crier audit --dry-run
-
-# Bulk publish missing/update changed (interactive)
-crier audit --publish
-
-# Bulk publish all without prompting
-crier audit --publish --yes
-
-# Single file to one platform
+# Publish to API platform
 crier publish article.md --to devto
 
-# Single file with rewrite for short-form
+# Publish with rewrite for short-form
 crier publish article.md --to bluesky \\
-  --rewrite "Announcement text" \\
+  --rewrite "Short announcement text" \\
   --rewrite-author "claude-code"
 
-# Preview single file (no changes)
-crier publish article.md --to devto --dry-run
+# Import/paste mode (skips interactive prompts)
+crier publish article.md --to medium --yes
+crier publish article.md --to twitter --yes
 
-# Check status of specific file
-crier status article.md
-
-# List what you've published to a platform
-crier list devto
-
-# Validate API keys work
+# Check API keys
 crier doctor
+
+# Manual registry management
+crier register <file> --platform <platform> [--url <url>]
+crier unregister <file> --platform <platform>
 ```
+
+## Bulk Operations
+
+For large content libraries, use filters to control scope:
+
+```bash
+# Post 5 random articles to blog platforms (fully automated)
+crier audit --publish --yes --only-api --long-form --sample 5
+
+# All missing to API platforms (skips manual/import)
+crier audit --publish --yes --only-api
+
+# Include updates to changed content
+crier audit --publish --yes --include-changed
+```
+
+### Filters
+- `--only-api` - Skip manual/import/paste platforms
+- `--long-form` - Skip short-form platforms (bluesky, mastodon, twitter, threads)
+- `--sample N` - Random sample of N items
+- `--include-changed` - Also update changed content (default: missing only)
+
+### Claude Code Bulk Workflow
+
+1. Run automated batch: `crier audit --publish --yes --only-api --long-form --sample 10`
+2. Check what else needs work: `crier audit`
+3. Handle short-form platforms with --rewrite
+4. Guide user through manual/import platforms
+
+## Important Rules
+
+1. **Crier appends the canonical URL** to short-form posts automatically. Don't include it in your rewrite text.
+
+2. **DevTo tags are auto-sanitized**. Hyphens removed, lowercase, max 4 tags. No action needed.
+
+3. **Use --yes for non-API modes**. This skips interactive prompts that don't work through Claude Code.
+
+4. **Ask simple yes/no** after manual operations. Trust the user's answer.
+
+5. **Show the canonical URL** for import-mode platforms. It's the key piece of information.
 
 ## Configuration
 
 ```bash
-# Set API key
-crier config set <platform>.api_key <key>
+# Set API key for automatic posting
+crier config set devto.api_key <key>
 
-# Create a profile (group of platforms)
-crier config profile set social bluesky mastodon threads
+# Set import mode (Medium)
+crier config set medium.api_key import
 
-# Add content path for scanning
-crier config content add ./posts
+# Set paste mode (Twitter)
+crier config set twitter.api_key manual
+
+# Check configuration
+crier doctor
 ```
 
 ## Front Matter Requirements
 
-Articles need YAML front matter with:
 ```yaml
 ---
 title: "Your Article Title"
@@ -191,7 +270,7 @@ canonical_url: "https://yourblog.com/your-article/"
 ---
 ```
 
-The `canonical_url` is required for registry tracking and is appended to short-form posts.
+The `canonical_url` is required - it's the article's identity for tracking and linking.
 '''
 
 

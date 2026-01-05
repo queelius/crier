@@ -105,13 +105,25 @@ def get_api_key(platform: str) -> str | None:
 def is_manual_mode_key(api_key: str | None) -> bool:
     """Check if an API key value indicates manual mode should be used.
 
-    Returns True if the key is explicitly set to "manual" (case-insensitive),
+    Returns True if the key is explicitly set to "manual" or "paste" (case-insensitive),
     meaning the platform is configured for copy-paste mode without API access.
     Returns False for None, empty string, or any other value.
     """
     if api_key is None:
         return False
-    return api_key.lower() == "manual"
+    return api_key.lower() in ("manual", "paste")
+
+
+def is_import_mode_key(api_key: str | None) -> bool:
+    """Check if an API key value indicates import mode should be used.
+
+    Returns True if the key is explicitly set to "import" (case-insensitive),
+    meaning the platform supports importing from the canonical URL directly
+    (like Medium's import feature).
+    """
+    if api_key is None:
+        return False
+    return api_key.lower() == "import"
 
 
 def is_platform_configured(platform: str) -> bool:
@@ -131,6 +143,35 @@ def is_platform_configured(platform: str) -> bool:
     config = load_config()
     platform_config = config.get("platforms", {}).get(platform, {})
     return "api_key" in platform_config
+
+
+def get_platform_mode(platform: str) -> str:
+    """Get the mode for a platform.
+
+    Returns:
+        'api' - Platform has a real API key for automatic publishing
+        'manual' - Platform is configured for copy-paste mode
+        'import' - Platform uses URL import (like Medium)
+        'unconfigured' - Platform has no configuration
+    """
+    api_key = get_api_key(platform)
+    if api_key is None:
+        return 'unconfigured'
+    elif is_import_mode_key(api_key):
+        return 'import'
+    elif is_manual_mode_key(api_key):
+        return 'manual'
+    else:
+        return 'api'
+
+
+# Platforms with character limits that require content rewriting
+SHORT_FORM_PLATFORMS = {'bluesky', 'mastodon', 'twitter', 'threads'}
+
+
+def is_short_form_platform(platform: str) -> bool:
+    """Check if platform has character limits requiring content rewrites."""
+    return platform in SHORT_FORM_PLATFORMS
 
 
 def get_api_key_source(platform: str) -> str | None:
@@ -285,3 +326,61 @@ def remove_content_path(path: str) -> bool:
         set_content_paths(paths)
         return True
     return False
+
+
+def get_site_base_url() -> str | None:
+    """Get the site base URL for canonical URL inference.
+
+    This is used to auto-generate canonical_url when not specified in front matter.
+    Configured in local .crier/config.yaml.
+    """
+    config = load_local_config()
+    return config.get("site_base_url")
+
+
+def set_site_base_url(url: str) -> None:
+    """Set the site base URL in repo-local config."""
+    # Normalize: remove trailing slash
+    url = url.rstrip("/")
+    _save_local_config({"site_base_url": url})
+
+
+def infer_canonical_url(file_path: Path, content_root: Path, base_url: str) -> str:
+    """Infer canonical URL from file path using Hugo conventions.
+
+    Args:
+        file_path: Path to the markdown file (e.g., content/post/2025-01-04-slug/index.md)
+        content_root: Root of content directory (e.g., content/)
+        base_url: Site base URL (e.g., https://metafunctor.com)
+
+    Returns:
+        Inferred canonical URL (e.g., https://metafunctor.com/post/2025-01-04-slug/)
+
+    Hugo conventions:
+    - content/post/slug/index.md -> /post/slug/
+    - content/papers/name/index.md -> /papers/name/
+    - content/about/_index.md -> /about/
+    """
+    file_path = Path(file_path).resolve()
+    content_root = Path(content_root).resolve()
+
+    # Get path relative to content root
+    try:
+        rel_path = file_path.relative_to(content_root)
+    except ValueError:
+        # File not under content_root, can't infer
+        return f"{base_url}/{file_path.stem}/"
+
+    # Convert path to URL:
+    # content/post/2025-01-04-slug/index.md -> post/2025-01-04-slug/
+    parts = list(rel_path.parts)
+
+    # Remove index.md or _index.md from end
+    if parts and parts[-1] in ("index.md", "_index.md"):
+        parts = parts[:-1]
+    elif parts and parts[-1].endswith(".md"):
+        # file.md -> file/
+        parts[-1] = parts[-1][:-3]
+
+    url_path = "/".join(parts)
+    return f"{base_url}/{url_path}/"

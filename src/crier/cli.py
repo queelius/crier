@@ -1,5 +1,6 @@
 """Command-line interface for crier."""
 
+import random
 from pathlib import Path
 
 import click
@@ -10,7 +11,8 @@ from . import __version__
 from .config import (
     get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles,
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
-    is_manual_mode_key, is_platform_configured,
+    is_manual_mode_key, is_import_mode_key, is_platform_configured,
+    get_platform_mode, is_short_form_platform,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
@@ -25,6 +27,7 @@ from .registry import (
     get_platform_publications,
     get_article_by_file,
     get_all_articles,
+    remove_publication,
 )
 
 console = Console()
@@ -312,9 +315,12 @@ def init():
               help="Read rewrite content from a file")
 @click.option("--rewrite-author", "rewrite_author", default=None,
               help="Label for who wrote the rewrite (e.g., 'claude-code')")
+@click.option("--yes", "-y", is_flag=True,
+              help="Assume success for manual mode (skip confirmation prompt)")
 def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             draft: bool, dry_run: bool, manual: bool, no_browser: bool,
-            rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None):
+            rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None,
+            yes: bool):
     """Publish a markdown file to one or more platforms.
 
     For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
@@ -455,9 +461,11 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     for platform_name in platforms:
         api_key = get_api_key(platform_name)
 
-        # Determine if we should use manual mode:
-        # 1. Explicitly requested with --manual flag
-        # 2. API key is empty string or "manual" (configured for manual mode)
+        # Determine mode:
+        # 1. Import mode: api_key is "import" - user imports from canonical URL
+        # 2. Manual mode: --manual flag or api_key is "manual"/"paste" - copy-paste
+        # 3. API mode: normal API publishing
+        use_import = is_import_mode_key(api_key)
         use_manual = manual or is_manual_mode_key(api_key)
 
         # Check if platform is configured at all
@@ -474,13 +482,44 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         try:
             platform_cls = get_platform(platform_name)
 
-            # For manual mode with no real API key, we still need a platform instance
+            # For manual/import mode with no real API key, we still need a platform instance
             # Pass a dummy key since we won't be making API calls
-            effective_key = api_key if api_key and not is_manual_mode_key(api_key) else "manual"
+            effective_key = api_key if api_key and not is_manual_mode_key(api_key) and not is_import_mode_key(api_key) else "manual"
             platform = platform_cls(effective_key)
 
+            # Handle import mode (api_key: import) - user imports from canonical URL
+            if use_import:
+                if not article.canonical_url:
+                    results.append({
+                        "platform": platform_name,
+                        "success": False,
+                        "error": "Import mode requires canonical_url in front matter",
+                        "url": None,
+                        "id": None,
+                    })
+                    continue
+
+                # Platform-specific import URLs
+                import_urls = {
+                    "medium": "https://medium.com/p/import",
+                    "devto": "https://dev.to/import",
+                }
+                import_url = import_urls.get(platform_name, f"https://{platform_name}.com")
+
+                # Create a result for import mode
+                result = type("Result", (), {
+                    "success": True,
+                    "requires_confirmation": True,
+                    "is_import_mode": True,
+                    "canonical_url": article.canonical_url,
+                    "import_url": import_url,
+                    "article_id": None,
+                    "url": None,
+                    "error": None,
+                })()
+
             # Handle manual mode (--manual flag or auto-detected from key)
-            if use_manual:
+            elif use_manual:
                 manual_content = platform.format_for_manual(article)
                 compose_url = platform.compose_url or f"https://{platform_name}.com"
 
@@ -509,47 +548,67 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 console.print(f"[dim]Publishing to {platform_name}...[/dim]")
                 result = platform.publish(article)
 
-            # Handle manual mode confirmation flow
+            # Handle manual/import mode confirmation flow
             if result.requires_confirmation:
                 console.print()
-                console.print(Panel(
-                    result.manual_content,
-                    title=f"[bold]Copy this to {platform_name}[/bold]",
-                    subtitle=f"{len(result.manual_content)} characters",
-                ))
 
-                # Copy to clipboard
-                try:
-                    pyperclip.copy(result.manual_content)
-                    console.print("[green]✓ Copied to clipboard[/green]")
-                except Exception:
-                    console.print("[yellow]Could not copy to clipboard (install xclip/xsel on Linux)[/yellow]")
+                # Import mode: show URL to import from
+                if getattr(result, 'is_import_mode', False):
+                    console.print(Panel(
+                        f"[bold]Import from:[/bold] {result.canonical_url}",
+                        title=f"[bold]Import to {platform_name}[/bold]",
+                    ))
+                    console.print(f"Go to: {result.import_url}")
+                    target_url = result.import_url
+                else:
+                    # Manual mode: show content to copy
+                    console.print(Panel(
+                        result.manual_content,
+                        title=f"[bold]Copy this to {platform_name}[/bold]",
+                        subtitle=f"{len(result.manual_content)} characters",
+                    ))
 
-                console.print(f"[dim]Compose at: {result.compose_url}[/dim]")
+                    # Copy to clipboard
+                    try:
+                        pyperclip.copy(result.manual_content)
+                        console.print("[green]✓ Copied to clipboard[/green]")
+                    except Exception:
+                        console.print("[yellow]Could not copy to clipboard (install xclip/xsel on Linux)[/yellow]")
 
-                # Open browser unless --no-browser
-                if not no_browser:
-                    webbrowser.open(result.compose_url)
+                    console.print(f"Compose at: {result.compose_url}")
+                    target_url = result.compose_url
+
+                # Open browser unless --no-browser or --yes (Claude will tell user)
+                if not no_browser and not yes:
+                    webbrowser.open(target_url)
                     console.print("[dim]Browser opened[/dim]")
 
-                # Ask for confirmation
+                # Ask for confirmation (skip if --yes)
                 console.print()
-                posted = click.confirm(f"Did you successfully post to {platform_name}?", default=False)
+                if yes:
+                    console.print(f"[dim]--yes flag set, assuming successful post to {platform_name}[/dim]")
+                    posted = True
+                else:
+                    posted = click.confirm(f"Did you successfully post to {platform_name}?", default=False)
 
                 if posted:
-                    post_url = click.prompt(
-                        "Enter the post URL (or press enter to skip)",
-                        default="",
-                        show_default=False,
-                    )
+                    if yes:
+                        post_url = ""  # Skip URL prompt in --yes mode
+                    else:
+                        post_url = click.prompt(
+                            "Enter the post URL (or press enter to skip)",
+                            default="",
+                            show_default=False,
+                        )
 
                     # Record to registry
                     if article.canonical_url:
                         content_hash = get_file_content_hash(Path(file))
+                        mode_id = "import" if getattr(result, 'is_import_mode', False) else "manual"
                         record_publication(
                             canonical_url=article.canonical_url,
                             platform=platform_name,
-                            article_id="manual",
+                            article_id=mode_id,
                             url=post_url or None,
                             title=article.title,
                             source_file=file,
@@ -559,12 +618,13 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             posted_content=posted_content if is_rewritten else None,
                         )
 
+                    mode_label = "(import)" if getattr(result, 'is_import_mode', False) else "(manual)"
                     results.append({
                         "platform": platform_name,
                         "success": True,
                         "error": None,
-                        "url": post_url or "(manual)",
-                        "id": "manual",
+                        "url": post_url or mode_label,
+                        "id": mode_id if article.canonical_url else None,
                     })
                     console.print(f"[green]✓ Recorded publication to {platform_name}[/green]")
                 else:
@@ -789,6 +849,16 @@ def doctor():
     for name in PLATFORMS:
         api_key = get_api_key(name)
 
+        # Check if configured for import mode
+        if is_import_mode_key(api_key):
+            table.add_row(
+                name,
+                "[cyan]📥 Import mode[/cyan]",
+                "User imports from canonical URL"
+            )
+            manual_count += 1  # Count with manual for stats
+            continue
+
         # Check if configured for manual mode
         if is_manual_mode_key(api_key):
             table.add_row(
@@ -875,16 +945,23 @@ def config():
 @click.argument("key")
 @click.argument("value")
 def config_set(key: str, value: str):
-    """Set a configuration value (e.g., devto.api_key)."""
+    """Set a configuration value (e.g., devto.api_key, site_base_url)."""
+    from .config import set_site_base_url
+
     parts = key.split(".")
 
-    if len(parts) == 2 and parts[1] == "api_key":
+    if key == "site_base_url":
+        set_site_base_url(value)
+        console.print(f"[green]Set site_base_url: {value}[/green]")
+        console.print("[dim]Canonical URLs will be auto-inferred for content without explicit canonical_url.[/dim]")
+    elif len(parts) == 2 and parts[1] == "api_key":
         platform = parts[0]
         set_api_key(platform, value)
         console.print(f"[green]Set API key for {platform}[/green]")
     else:
         console.print(f"[red]Unknown config key: {key}[/red]")
         console.print("Use: crier config set <platform>.api_key <value>")
+        console.print("     crier config set site_base_url <url>")
 
 
 @config.command(name="show")
@@ -931,6 +1008,19 @@ def config_show():
                 console.print(f"  [green]✓[/green] {p}")
             else:
                 console.print(f"  [red]✗[/red] {p} [dim](not found)[/dim]")
+        console.print()
+
+    # Show site_base_url (for canonical URL inference)
+    from .config import get_site_base_url
+    site_base_url = get_site_base_url()
+    if site_base_url:
+        console.print(f"[bold]Site Base URL[/bold] [dim](for canonical URL inference)[/dim]")
+        console.print(f"  {site_base_url}")
+        console.print()
+    else:
+        console.print("[bold]Site Base URL[/bold] [dim](for canonical URL inference)[/dim]")
+        console.print("  [dim]Not configured - canonical_url required in front matter[/dim]")
+        console.print("  [dim]Set with: crier config set site_base_url https://yoursite.com[/dim]")
         console.print()
 
     # Show platforms with source
@@ -1139,8 +1229,17 @@ def content_set(paths: tuple[str, ...]):
 @click.option("--publish", is_flag=True, help="Publish missing content (interactive selection)")
 @click.option("--yes", "-y", is_flag=True, help="Publish all missing without prompting")
 @click.option("--dry-run", is_flag=True, help="Show what would be published without actually publishing")
+@click.option("--only-api", is_flag=True,
+              help="Only check platforms with API access (skip manual/import/paste)")
+@click.option("--long-form", is_flag=True,
+              help="Only check long-form platforms (skip those with character limits)")
+@click.option("--sample", type=int, default=None,
+              help="Randomly sample N items for processing")
+@click.option("--include-changed", is_flag=True,
+              help="Include changed/dirty items (default: missing only)")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
-          publish: bool, yes: bool, dry_run: bool):
+          publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
+          sample: int | None, include_changed: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -1149,6 +1248,12 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     Use --publish to interactively select which missing items to publish.
     Use --publish --yes to publish all missing items without prompting.
     Use --publish --dry-run to preview what would be published.
+
+    Bulk operation filters:
+    --only-api: Skip platforms configured for manual/import mode.
+    --long-form: Skip short-form platforms (bluesky, mastodon, twitter, threads).
+    --sample N: Randomly select N items from the actionable pool.
+    --include-changed: Also process changed/dirty items (default: missing only).
     """
     # Determine which platforms to check
     check_platforms: list[str] = []
@@ -1166,6 +1271,16 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     # Default to all configured platforms
     if not check_platforms:
         check_platforms = [name for name in PLATFORMS if get_api_key(name)]
+
+    # Apply mode filter: only API platforms (skip manual/import)
+    if only_api:
+        check_platforms = [p for p in check_platforms
+                          if get_platform_mode(p) == 'api']
+
+    # Apply content-type filter: only long-form platforms (skip short-form)
+    if long_form:
+        check_platforms = [p for p in check_platforms
+                          if not is_short_form_platform(p)]
 
     if not check_platforms:
         console.print("[yellow]No platforms configured.[/yellow]")
@@ -1261,17 +1376,25 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         return
 
     if not publish and not dry_run:
-        console.print(f"\n[dim]Use --publish to publish missing and update changed content.[/dim]")
+        console.print(f"\n[dim]Use --publish to publish missing content.[/dim]")
+        console.print(f"[dim]Use --publish --include-changed to also update changed content.[/dim]")
         console.print(f"[dim]Use --publish --dry-run to preview what would be published.[/dim]")
         return
 
     # Build combined list with action type: (file_path, platform, canonical_url, title, action)
     # action is "publish" for missing or "update" for dirty
+    # Default: missing items only. Add dirty items if --include-changed.
     actionable_items: list[tuple[Path, str, str, str, str]] = []
     for item in missing_items:
         actionable_items.append((*item, "publish"))
-    for item in dirty_items:
-        actionable_items.append((*item, "update"))
+
+    if include_changed:
+        for item in dirty_items:
+            actionable_items.append((*item, "update"))
+
+    # Apply sampling if requested
+    if sample is not None and len(actionable_items) > sample:
+        actionable_items = random.sample(actionable_items, sample)
 
     # Dry run mode - show what would be published without doing it
     if dry_run:
@@ -1659,6 +1782,82 @@ def skill_show():
     from .skill import get_skill_content
 
     console.print(get_skill_content())
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--platform", "-t", "platform_name", required=True,
+              help="Platform to register publication for")
+@click.option("--url", "-u", default=None,
+              help="URL of the published article (optional)")
+@click.option("--id", "article_id", default=None,
+              help="Platform-specific article ID (optional)")
+def register(file: str, platform_name: str, url: str | None, article_id: str | None):
+    """Manually register a file as published to a platform.
+
+    Use this when you've published content outside of crier and want to
+    track it in the registry, or to fix registry entries.
+
+    Example:
+        crier register article.md --platform medium --url https://medium.com/@user/article
+    """
+    article = parse_markdown_file(file)
+
+    if not article.canonical_url:
+        console.print("[red]Error: File must have canonical_url in front matter.[/red]")
+        console.print("[dim]The canonical_url is the unique identity for tracking publications.[/dim]")
+        return
+
+    # Check if already registered
+    if is_published(article.canonical_url, platform_name):
+        console.print(f"[yellow]Already registered to {platform_name}.[/yellow]")
+        if not click.confirm("Overwrite existing entry?", default=False):
+            return
+
+    content_hash = get_file_content_hash(Path(file))
+
+    record_publication(
+        canonical_url=article.canonical_url,
+        platform=platform_name,
+        article_id=article_id or "manual",
+        url=url,
+        title=article.title,
+        source_file=file,
+        content_hash=content_hash,
+    )
+
+    console.print(f"[green]✓ Registered {file} as published to {platform_name}[/green]")
+    if url:
+        console.print(f"[dim]URL: {url}[/dim]")
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--platform", "-t", "platform_name", required=True,
+              help="Platform to unregister from")
+def unregister(file: str, platform_name: str):
+    """Remove a publication record from the registry.
+
+    Use this when a publication was recorded incorrectly or you've
+    deleted the post from the platform.
+
+    Example:
+        crier unregister article.md --platform medium
+    """
+    article = parse_markdown_file(file)
+
+    if not article.canonical_url:
+        console.print("[red]Error: File must have canonical_url in front matter.[/red]")
+        return
+
+    if not is_published(article.canonical_url, platform_name):
+        console.print(f"[yellow]Not registered to {platform_name}.[/yellow]")
+        return
+
+    if remove_publication(article.canonical_url, platform_name):
+        console.print(f"[green]✓ Unregistered {file} from {platform_name}[/green]")
+    else:
+        console.print(f"[red]Failed to unregister.[/red]")
 
 
 if __name__ == "__main__":

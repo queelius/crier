@@ -7,6 +7,23 @@ import requests
 from .base import Article, Platform, PublishResult
 
 
+def sanitize_tags(tags: list[str]) -> list[str]:
+    """Sanitize tags for DevTo requirements.
+
+    DevTo tags must be:
+    - Alphanumeric only (no hyphens, spaces, special chars)
+    - Lowercase
+    - Max 4 tags
+    """
+    sanitized = []
+    for tag in tags[:4]:  # DevTo limit
+        # Remove hyphens, spaces, and other non-alphanumeric chars
+        clean = "".join(c for c in tag.lower() if c.isalnum())
+        if clean and clean not in sanitized:
+            sanitized.append(clean)
+    return sanitized
+
+
 class DevTo(Platform):
     """Dev.to publishing platform."""
 
@@ -33,7 +50,7 @@ class DevTo(Platform):
         if article.description:
             data["article"]["description"] = article.description
         if article.tags:
-            data["article"]["tags"] = article.tags[:4]  # dev.to limit
+            data["article"]["tags"] = sanitize_tags(article.tags)
         if article.canonical_url:
             data["article"]["canonical_url"] = article.canonical_url
 
@@ -71,7 +88,7 @@ class DevTo(Platform):
         if article.description:
             data["article"]["description"] = article.description
         if article.tags:
-            data["article"]["tags"] = article.tags[:4]
+            data["article"]["tags"] = sanitize_tags(article.tags)
         if article.canonical_url:
             data["article"]["canonical_url"] = article.canonical_url
 
