@@ -218,9 +218,16 @@ crier audit --publish --yes --only-api
 
 # Include updates to changed content
 crier audit --publish --yes --include-changed
+
+# Filter by path - only posts (not projects, papers, etc.)
+crier audit content/post --publish --yes --only-api --long-form --sample 5
+
+# Only projects
+crier audit content/projects --only-api
 ```
 
 ### Filters
+- `[PATH]` - Limit to specific directory (e.g., `content/post`, `content/projects`)
 - `--only-api` - Skip manual/import/paste platforms
 - `--long-form` - Skip short-form platforms (bluesky, mastodon, twitter, threads)
 - `--sample N` - Random sample of N items
