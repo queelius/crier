@@ -15,6 +15,7 @@ class Article:
     tags: list[str] | None = None
     canonical_url: str | None = None
     published: bool = True
+    cover_image: str | None = None
 
     # Platform-specific ID after publishing
     platform_id: str | None = None

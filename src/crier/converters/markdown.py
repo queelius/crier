@@ -50,6 +50,7 @@ def parse_markdown_file(path: str | Path) -> Article:
     raw_tags = front_matter.get("tags", [])
     canonical_url = front_matter.get("canonical_url")
     published = front_matter.get("published", True)
+    cover_image = front_matter.get("cover_image") or front_matter.get("image")
 
     # Handle tags as list or comma-separated string
     if isinstance(raw_tags, list):
@@ -67,4 +68,5 @@ def parse_markdown_file(path: str | Path) -> Article:
         tags=tags,
         canonical_url=canonical_url,
         published=published,
+        cover_image=cover_image,
     )
