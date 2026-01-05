@@ -359,6 +359,47 @@ class TestConfigIntegration:
         assert llm_config["model"] == "env-model"
         assert llm_config["api_key"] == "env-key"
 
+    def test_get_llm_config_openai_api_key_fallback(self, tmp_config, monkeypatch):
+        """Test fallback to standard OPENAI_API_KEY env var."""
+        from crier.config import get_llm_config
+
+        tmp_config.write_text("")
+
+        # Only OPENAI_API_KEY set (standard env var)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+
+        llm_config = get_llm_config()
+        assert llm_config["api_key"] == "sk-test-key"
+        # Should default to OpenAI endpoint and model
+        assert llm_config["base_url"] == "https://api.openai.com/v1"
+        assert llm_config["model"] == "gpt-4o-mini"
+
+    def test_get_llm_config_crier_key_takes_precedence(self, tmp_config, monkeypatch):
+        """Test CRIER_LLM_API_KEY takes precedence over OPENAI_API_KEY."""
+        from crier.config import get_llm_config
+
+        tmp_config.write_text("")
+
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+        monkeypatch.setenv("CRIER_LLM_API_KEY", "crier-key")
+
+        llm_config = get_llm_config()
+        assert llm_config["api_key"] == "crier-key"
+
+    def test_get_llm_config_defaults_with_api_key(self, tmp_config, monkeypatch):
+        """Test defaults are applied when API key is present but base_url/model missing."""
+        import yaml
+        from crier.config import get_llm_config
+
+        # Config with only api_key
+        config = {"llm": {"api_key": "my-key"}}
+        tmp_config.write_text(yaml.dump(config))
+
+        llm_config = get_llm_config()
+        assert llm_config["api_key"] == "my-key"
+        assert llm_config["base_url"] == "https://api.openai.com/v1"
+        assert llm_config["model"] == "gpt-4o-mini"
+
     def test_is_llm_configured_true(self, tmp_config):
         """Test is_llm_configured returns True when configured."""
         import yaml

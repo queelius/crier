@@ -475,10 +475,10 @@ def get_llm_config() -> dict[str, Any]:
     """Get LLM configuration for auto-rewrite.
 
     LLM config is global only (stored in ~/.config/crier/config.yaml).
-    Environment variables can override:
-        - CRIER_LLM_API_KEY: API key for the LLM provider
-        - CRIER_LLM_BASE_URL: Base URL for the LLM API
-        - CRIER_LLM_MODEL: Model name
+    Environment variables can override (checked in order):
+        - CRIER_LLM_API_KEY or OPENAI_API_KEY: API key
+        - CRIER_LLM_BASE_URL: Base URL (defaults to OpenAI if key is set)
+        - CRIER_LLM_MODEL: Model name (defaults to gpt-4o-mini if key is set)
 
     Config structure in config.yaml:
         llm:
@@ -496,12 +496,24 @@ def get_llm_config() -> dict[str, Any]:
     llm_config = config.get("llm", {})
 
     # Environment variables override config file
+    # Check CRIER_LLM_API_KEY first, then fall back to standard OPENAI_API_KEY
     if env_key := os.environ.get("CRIER_LLM_API_KEY"):
         llm_config["api_key"] = env_key
+    elif env_key := os.environ.get("OPENAI_API_KEY"):
+        llm_config["api_key"] = env_key
+
     if env_url := os.environ.get("CRIER_LLM_BASE_URL"):
         llm_config["base_url"] = env_url
     if env_model := os.environ.get("CRIER_LLM_MODEL"):
         llm_config["model"] = env_model
+
+    # If we have an API key but no base_url, default to OpenAI
+    if llm_config.get("api_key") and not llm_config.get("base_url"):
+        llm_config["base_url"] = "https://api.openai.com/v1"
+
+    # If we have an API key but no model, default to gpt-4o-mini (cheap/fast)
+    if llm_config.get("api_key") and not llm_config.get("model"):
+        llm_config["model"] = "gpt-4o-mini"
 
     return llm_config
 
