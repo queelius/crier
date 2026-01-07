@@ -96,7 +96,6 @@ class OpenAICompatProvider(LLMProvider):
                     "content": prompt,
                 }
             ],
-            "max_tokens": max_chars * 2,  # Allow room for the response
             "temperature": self.temperature,
         }
 
