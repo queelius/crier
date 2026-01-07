@@ -15,7 +15,7 @@ from .config import (
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
     is_manual_mode_key, is_import_mode_key, is_platform_configured,
     get_platform_mode, is_short_form_platform, get_llm_config, set_llm_config, is_llm_configured,
-    get_llm_temperature, get_llm_retry_count, get_llm_truncate_fallback,
+    get_llm_temperature, get_llm_retry_count, get_llm_truncate_fallback, get_rewrite_author,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
@@ -2134,10 +2134,17 @@ def llm_test():
               help="Non-interactive batch mode (implies --yes --json --only-api)")
 @click.option("--quiet", "-q", is_flag=True,
               help="Suppress non-essential output (for scripting)")
+@click.option("--auto-rewrite/--no-auto-rewrite", default=False,
+              help="Auto-generate rewrites using configured LLM for short-form platforms")
+@click.option("--auto-rewrite-retry", "-R", "auto_rewrite_retry", type=int, default=None,
+              help="Retry auto-rewrite N times if output exceeds limit (default from config)")
+@click.option("--auto-rewrite-truncate", "auto_rewrite_truncate", is_flag=True, default=None,
+              help="Hard-truncate at sentence boundary if retries fail")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
           sample: int | None, include_changed: bool, since_date: str | None, until_date: str | None,
-          tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool):
+          tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
+          auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -2166,6 +2173,27 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Silent mode: suppress non-essential output
     silent = quiet or json_output
+
+    # Initialize LLM provider if auto-rewrite is enabled
+    llm_provider = None
+    if auto_rewrite:
+        from .llm import get_provider
+
+        llm_config = get_llm_config()
+        if not llm_config:
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "--auto-rewrite requires LLM configuration"}))
+            else:
+                console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
+                console.print("[dim]Run 'crier llm set' to configure, or 'crier init' for guided setup.[/dim]")
+            raise SystemExit(1)
+        llm_provider = get_provider(llm_config)
+
+        # Resolve auto-rewrite settings from config if not specified on CLI
+        if auto_rewrite_retry is None:
+            auto_rewrite_retry = get_llm_retry_count()
+        if auto_rewrite_truncate is None:
+            auto_rewrite_truncate = get_llm_truncate_fallback()
 
     # Determine which platforms to check
     check_platforms: list[str] = []
@@ -2510,11 +2538,110 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             platform_cls = get_platform(platform)
             plat = platform_cls(api_key)
 
+            # Check if auto-rewrite is needed for this platform
+            publish_article = article
+            max_len = platform_cls.max_content_length
+            rewritten = False
+            rewrite_content = None
+
+            if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
+                if not silent:
+                    console.print(f"[dim]Content too long for {platform} ({len(article.body)} > {max_len})[/dim]")
+                    retry_info = f" (max {auto_rewrite_retry} retries)" if auto_rewrite_retry else ""
+                    console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}{retry_info}...[/dim]")
+
+                try:
+                    from .llm import LLMProviderError
+
+                    # Retry loop
+                    rewrite_result = None
+                    prev_text = None
+                    last_length = None
+                    max_attempts = (auto_rewrite_retry or 0) + 1
+
+                    for attempt in range(max_attempts):
+                        if attempt > 0 and not silent:
+                            console.print(f"[yellow]Retry {attempt}/{auto_rewrite_retry} (previous: {last_length}/{max_len} chars, {last_length - max_len} over)[/yellow]")
+
+                        rewrite_result = llm_provider.rewrite(
+                            title=article.title,
+                            body=article.body,
+                            max_chars=max_len,
+                            platform=platform,
+                            previous_attempt=prev_text,
+                            previous_length=last_length,
+                        )
+
+                        last_length = len(rewrite_result.text)
+
+                        if last_length <= max_len and not rewrite_result.was_truncated:
+                            break  # Success!
+
+                        prev_text = rewrite_result.text
+
+                    # Check final result
+                    final_text = rewrite_result.text
+                    if len(final_text) <= max_len:
+                        # Success
+                        pct = len(final_text) * 100 // max_len
+                        rewrite_content = final_text
+                        rewritten = True
+                        publish_article = Article(
+                            title=article.title,
+                            body=final_text,
+                            description=article.description,
+                            tags=article.tags,
+                            canonical_url=article.canonical_url,
+                            published=article.published,
+                            cover_image=article.cover_image,
+                        )
+                        if not silent:
+                            console.print(f"[green]✓ Generated {len(final_text)}/{max_len} char rewrite ({pct}%)[/green]")
+                    elif auto_rewrite_truncate:
+                        # Fallback: truncate at sentence boundary
+                        truncated = _truncate_at_sentence(final_text, max_len)
+                        pct = len(truncated) * 100 // max_len
+                        rewrite_content = truncated
+                        rewritten = True
+                        publish_article = Article(
+                            title=article.title,
+                            body=truncated,
+                            description=article.description,
+                            tags=article.tags,
+                            canonical_url=article.canonical_url,
+                            published=article.published,
+                            cover_image=article.cover_image,
+                        )
+                        if not silent:
+                            console.print(f"[yellow]⚠ Truncated to {len(truncated)}/{max_len} chars ({pct}%)[/yellow]")
+                    else:
+                        # All retries failed, no truncate fallback
+                        publish_results.append({
+                            "file": str(file_path),
+                            "platform": platform,
+                            "success": False,
+                            "error": f"Auto-rewrite still too long after {max_attempts} attempt(s): {len(final_text)} chars (limit: {max_len}). Use --auto-rewrite-retry or --auto-rewrite-truncate.",
+                            "action": action,
+                        })
+                        fail_count += 1
+                        continue
+
+                except LLMProviderError as e:
+                    publish_results.append({
+                        "file": str(file_path),
+                        "platform": platform,
+                        "success": False,
+                        "error": f"Auto-rewrite failed: {e}",
+                        "action": action,
+                    })
+                    fail_count += 1
+                    continue
+
             if action == "publish":
                 # New publication
                 if not silent:
                     console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
-                result = plat.publish(article)
+                result = plat.publish(publish_article)
                 action_verb = "Published"
             else:
                 # Update existing publication
@@ -2535,7 +2662,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 article_id = pub_info["article_id"]
                 if not silent:
                     console.print(f"[dim]Updating {title[:30]} → {platform}...[/dim]")
-                result = plat.update(article_id, article)
+                result = plat.update(article_id, publish_article)
                 action_verb = "Updated"
 
             if result.success:
@@ -2550,6 +2677,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     title=article.title,
                     source_file=str(file_path),
                     content_hash=content_hash,
+                    rewritten=rewritten,
+                    rewrite_author=get_rewrite_author() if rewritten else None,
+                    posted_content=rewrite_content if rewritten else None,
                 )
                 publish_results.append({
                     "file": str(file_path),
