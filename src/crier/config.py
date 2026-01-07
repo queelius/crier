@@ -475,19 +475,17 @@ def get_llm_config() -> dict[str, Any]:
     """Get LLM configuration for auto-rewrite.
 
     LLM config is global only (stored in ~/.config/crier/config.yaml).
-    Environment variables can override (checked in order):
-        - CRIER_LLM_API_KEY or OPENAI_API_KEY: API key
-        - CRIER_LLM_BASE_URL: Base URL (defaults to OpenAI if key is set)
-        - CRIER_LLM_MODEL: Model name (defaults to gpt-4o-mini if key is set)
+    Environment variables override config file values:
+        - OPENAI_API_KEY: API key
+        - OPENAI_BASE_URL: Base URL (defaults to https://api.openai.com/v1)
+
+    Model is config-only (no env var) - defaults to gpt-4o-mini.
 
     Config structure in config.yaml:
         llm:
-          provider: openai  # Provider type (openai for OpenAI-compatible APIs)
-          base_url: http://localhost:11434/v1  # API base URL
-          api_key: ""  # API key (optional for local providers like Ollama)
-          model: llama3  # Model name
-          rewrite_prompt: |  # Optional custom prompt
-            Custom prompt here...
+          api_key: sk-...  # API key (or use OPENAI_API_KEY env var)
+          base_url: http://localhost:11434/v1  # For Ollama/custom endpoints
+          model: llama3  # Model name (default: gpt-4o-mini)
 
     Returns:
         Dict with LLM config, or empty dict if not configured.
@@ -495,17 +493,12 @@ def get_llm_config() -> dict[str, Any]:
     config = load_global_config()
     llm_config = config.get("llm", {})
 
-    # Environment variables override config file
-    # Check CRIER_LLM_API_KEY first, then fall back to standard OPENAI_API_KEY
-    if env_key := os.environ.get("CRIER_LLM_API_KEY"):
-        llm_config["api_key"] = env_key
-    elif env_key := os.environ.get("OPENAI_API_KEY"):
+    # Standard OpenAI environment variables override config file
+    if env_key := os.environ.get("OPENAI_API_KEY"):
         llm_config["api_key"] = env_key
 
-    if env_url := os.environ.get("CRIER_LLM_BASE_URL"):
+    if env_url := os.environ.get("OPENAI_BASE_URL"):
         llm_config["base_url"] = env_url
-    if env_model := os.environ.get("CRIER_LLM_MODEL"):
-        llm_config["model"] = env_model
 
     # If we have an API key but no base_url, default to OpenAI
     if llm_config.get("api_key") and not llm_config.get("base_url"):
@@ -524,6 +517,9 @@ def set_llm_config(
     api_key: str | None = None,
     model: str | None = None,
     rewrite_prompt: str | None = None,
+    temperature: float | None = None,
+    retry_count: int | None = None,
+    truncate_fallback: bool | None = None,
 ) -> None:
     """Set LLM configuration in global config.
 
@@ -543,6 +539,12 @@ def set_llm_config(
         config["llm"]["model"] = model
     if rewrite_prompt is not None:
         config["llm"]["rewrite_prompt"] = rewrite_prompt
+    if temperature is not None:
+        config["llm"]["temperature"] = temperature
+    if retry_count is not None:
+        config["llm"]["retry_count"] = retry_count
+    if truncate_fallback is not None:
+        config["llm"]["truncate_fallback"] = truncate_fallback
 
     save_config(config)
 
@@ -554,3 +556,21 @@ def is_llm_configured() -> bool:
     """
     llm_config = get_llm_config()
     return bool(llm_config.get("base_url") and llm_config.get("model"))
+
+
+def get_llm_temperature() -> float:
+    """Get LLM temperature setting (default: 0.7)."""
+    llm_config = get_llm_config()
+    return float(llm_config.get("temperature", 0.7))
+
+
+def get_llm_retry_count() -> int:
+    """Get default retry count for auto-rewrite (default: 0)."""
+    llm_config = get_llm_config()
+    return int(llm_config.get("retry_count", 0))
+
+
+def get_llm_truncate_fallback() -> bool:
+    """Get default truncate fallback setting (default: False)."""
+    llm_config = get_llm_config()
+    return bool(llm_config.get("truncate_fallback", False))

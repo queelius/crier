@@ -11,6 +11,8 @@ class RewriteResult:
     text: str
     model: str
     tokens_used: int | None = None
+    was_truncated: bool = False  # True if post-processing truncated the output
+    original_length: int | None = None  # Original length before truncation
 
 
 class LLMProvider(ABC):
@@ -33,6 +35,9 @@ class LLMProvider(ABC):
         body: str,
         max_chars: int,
         platform: str,
+        *,
+        previous_attempt: str | None = None,
+        previous_length: int | None = None,
     ) -> RewriteResult:
         """Generate a short-form rewrite of article content.
 
@@ -41,6 +46,8 @@ class LLMProvider(ABC):
             body: Full article body text.
             max_chars: Maximum characters allowed for the output.
             platform: Target platform name (e.g., 'bluesky', 'mastodon').
+            previous_attempt: Previous attempt text (for retry feedback).
+            previous_length: Length of previous attempt (for retry feedback).
 
         Returns:
             RewriteResult with the generated text and metadata.
@@ -76,4 +83,11 @@ Content:
 {body}
 
 Output only the post text, nothing else.
+"""
+
+# Retry prompt addition when previous attempt was too long
+RETRY_PROMPT_ADDITION = """
+
+IMPORTANT: Your previous attempt was {previous_length} characters, which exceeds the {max_chars} character limit by {excess} characters.
+You MUST be more concise. Focus on the single most compelling point. Cut unnecessary words.
 """

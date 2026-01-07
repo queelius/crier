@@ -35,6 +35,24 @@ class TestRewriteResult:
         )
         assert result.tokens_used == 150
 
+    def test_result_with_truncation_metadata(self):
+        """Test result with truncation fields."""
+        result = RewriteResult(
+            text="Truncated text",
+            model="gpt-4o-mini",
+            tokens_used=100,
+            was_truncated=True,
+            original_length=350,
+        )
+        assert result.was_truncated is True
+        assert result.original_length == 350
+
+    def test_result_defaults_no_truncation(self):
+        """Test truncation fields default to False/None."""
+        result = RewriteResult(text="Text", model="test")
+        assert result.was_truncated is False
+        assert result.original_length is None
+
 
 class TestOpenAICompatProvider:
     """Tests for the OpenAI-compatible provider."""
@@ -79,6 +97,25 @@ class TestOpenAICompatProvider:
             model="llama3",
         )
         assert provider.prompt_template == DEFAULT_REWRITE_PROMPT
+
+    def test_temperature_initialization(self):
+        """Test temperature parameter is set correctly."""
+        provider = OpenAICompatProvider(
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            model="llama3",
+            temperature=1.2,
+        )
+        assert provider.temperature == 1.2
+
+    def test_default_temperature(self):
+        """Test default temperature is 0.7."""
+        provider = OpenAICompatProvider(
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            model="llama3",
+        )
+        assert provider.temperature == 0.7
 
     @patch("crier.llm.openai_compat.requests.post")
     def test_rewrite_success(self, mock_post):
@@ -254,6 +291,98 @@ class TestOpenAICompatProvider:
         # The body in the prompt should be truncated + "[Content truncated...]"
         assert "[Content truncated...]" in prompt
 
+    @patch("crier.llm.openai_compat.requests.post")
+    def test_rewrite_uses_temperature(self, mock_post):
+        """Test that temperature is passed to API request."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Summary"}}],
+        }
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+
+        provider = OpenAICompatProvider(
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            model="llama3",
+            temperature=1.5,
+        )
+
+        provider.rewrite(
+            title="Test",
+            body="Body content",
+            max_chars=280,
+            platform="bluesky",
+        )
+
+        # Check that temperature was passed in the API request
+        call_args = mock_post.call_args
+        request_data = call_args[1]["json"]
+        assert request_data["temperature"] == 1.5
+
+    @patch("crier.llm.openai_compat.requests.post")
+    def test_rewrite_with_retry_feedback(self, mock_post):
+        """Test that retry feedback is appended to prompt when previous_length is provided."""
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Shorter summary"}}],
+        }
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+
+        provider = OpenAICompatProvider(
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            model="llama3",
+        )
+
+        provider.rewrite(
+            title="Test",
+            body="Body content",
+            max_chars=280,
+            platform="bluesky",
+            previous_length=350,  # Previous attempt was 350 chars
+        )
+
+        # Check that retry feedback was included in prompt
+        call_args = mock_post.call_args
+        request_data = call_args[1]["json"]
+        prompt = request_data["messages"][0]["content"]
+        assert "350" in prompt  # previous_length
+        assert "280" in prompt  # max_chars
+        assert "70" in prompt  # excess (350 - 280)
+        assert "concise" in prompt.lower()
+
+    @patch("crier.llm.openai_compat.requests.post")
+    def test_rewrite_returns_truncation_metadata(self, mock_post):
+        """Test that truncation metadata is returned when response is truncated."""
+        # Response that exceeds limit
+        long_response = "This is a long response. " * 20  # ~520 chars
+        mock_response = Mock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": long_response}}],
+        }
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+
+        provider = OpenAICompatProvider(
+            base_url="http://localhost:11434/v1",
+            api_key="",
+            model="llama3",
+        )
+
+        result = provider.rewrite(
+            title="Test",
+            body="Body",
+            max_chars=280,
+            platform="bluesky",
+        )
+
+        assert result.was_truncated is True
+        assert result.original_length is not None
+        assert result.original_length > 280
+        assert len(result.text) <= 280
+
 
 class TestGetProvider:
     """Tests for the get_provider factory function."""
@@ -311,6 +440,58 @@ class TestGetProvider:
         provider = get_provider(config)
         assert provider.prompt_template == "Custom prompt: {title}"
 
+    def test_get_provider_temperature_override(self):
+        """Test temperature override takes precedence over config."""
+        config = {
+            "provider": "openai",
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3",
+            "temperature": 0.5,
+        }
+        provider = get_provider(config, temperature=1.2)
+        assert provider.temperature == 1.2
+
+    def test_get_provider_temperature_from_config(self):
+        """Test temperature from config is used when no override."""
+        config = {
+            "provider": "openai",
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3",
+            "temperature": 0.9,
+        }
+        provider = get_provider(config)
+        assert provider.temperature == 0.9
+
+    def test_get_provider_temperature_default(self):
+        """Test default temperature of 0.7 when not specified."""
+        config = {
+            "provider": "openai",
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3",
+        }
+        provider = get_provider(config)
+        assert provider.temperature == 0.7
+
+    def test_get_provider_model_override(self):
+        """Test model override takes precedence over config."""
+        config = {
+            "provider": "openai",
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3",
+        }
+        provider = get_provider(config, model="gpt-4o")
+        assert provider.model == "gpt-4o"
+
+    def test_get_provider_model_from_config(self):
+        """Test model from config is used when no override."""
+        config = {
+            "provider": "openai",
+            "base_url": "http://localhost:11434/v1",
+            "model": "custom-model",
+        }
+        provider = get_provider(config)
+        assert provider.model == "custom-model"
+
 
 class TestConfigIntegration:
     """Tests for LLM config integration."""
@@ -349,14 +530,13 @@ class TestConfigIntegration:
         }
         tmp_config.write_text(yaml.dump(config))
 
-        # Environment variables override
-        monkeypatch.setenv("CRIER_LLM_BASE_URL", "http://env-url/v1")
-        monkeypatch.setenv("CRIER_LLM_MODEL", "env-model")
-        monkeypatch.setenv("CRIER_LLM_API_KEY", "env-key")
+        # Environment variables override (standard OpenAI vars)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://env-url/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "env-key")
 
         llm_config = get_llm_config()
         assert llm_config["base_url"] == "http://env-url/v1"
-        assert llm_config["model"] == "env-model"
+        assert llm_config["model"] == "config-model"  # model has no env var
         assert llm_config["api_key"] == "env-key"
 
     def test_get_llm_config_openai_api_key_fallback(self, tmp_config, monkeypatch):
@@ -374,22 +554,28 @@ class TestConfigIntegration:
         assert llm_config["base_url"] == "https://api.openai.com/v1"
         assert llm_config["model"] == "gpt-4o-mini"
 
-    def test_get_llm_config_crier_key_takes_precedence(self, tmp_config, monkeypatch):
-        """Test CRIER_LLM_API_KEY takes precedence over OPENAI_API_KEY."""
+    def test_get_llm_config_openai_base_url_override(self, tmp_config, monkeypatch):
+        """Test OPENAI_BASE_URL env var overrides config file."""
+        import yaml
         from crier.config import get_llm_config
 
-        tmp_config.write_text("")
+        config = {"llm": {"base_url": "http://config-url/v1"}}
+        tmp_config.write_text(yaml.dump(config))
 
-        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-        monkeypatch.setenv("CRIER_LLM_API_KEY", "crier-key")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://ollama:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
         llm_config = get_llm_config()
-        assert llm_config["api_key"] == "crier-key"
+        assert llm_config["base_url"] == "http://ollama:11434/v1"
 
     def test_get_llm_config_defaults_with_api_key(self, tmp_config, monkeypatch):
         """Test defaults are applied when API key is present but base_url/model missing."""
         import yaml
         from crier.config import get_llm_config
+
+        # Clear any env vars that might interfere
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
         # Config with only api_key
         config = {"llm": {"api_key": "my-key"}}
@@ -415,9 +601,13 @@ class TestConfigIntegration:
 
         assert is_llm_configured() is True
 
-    def test_is_llm_configured_false(self, tmp_config):
+    def test_is_llm_configured_false(self, tmp_config, monkeypatch):
         """Test is_llm_configured returns False when not configured."""
         from crier.config import is_llm_configured
+
+        # Clear any env vars that might interfere
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
         tmp_config.write_text("")
 
@@ -438,6 +628,83 @@ class TestConfigIntegration:
         assert llm_config["provider"] == "openai"
         assert llm_config["base_url"] == "http://localhost:11434/v1"
         assert llm_config["model"] == "llama3"
+
+    def test_get_llm_temperature_default(self, tmp_config, monkeypatch):
+        """Test default temperature when not configured."""
+        from crier.config import get_llm_temperature
+
+        # Clear env vars
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        tmp_config.write_text("")
+
+        assert get_llm_temperature() == 0.7
+
+    def test_get_llm_temperature_from_config(self, tmp_config):
+        """Test temperature from config file."""
+        import yaml
+        from crier.config import get_llm_temperature
+
+        config = {"llm": {"temperature": 1.2}}
+        tmp_config.write_text(yaml.dump(config))
+
+        assert get_llm_temperature() == 1.2
+
+    def test_get_llm_retry_count_default(self, tmp_config, monkeypatch):
+        """Test default retry count when not configured."""
+        from crier.config import get_llm_retry_count
+
+        # Clear env vars
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        tmp_config.write_text("")
+
+        assert get_llm_retry_count() == 0
+
+    def test_get_llm_retry_count_from_config(self, tmp_config):
+        """Test retry count from config file."""
+        import yaml
+        from crier.config import get_llm_retry_count
+
+        config = {"llm": {"retry_count": 3}}
+        tmp_config.write_text(yaml.dump(config))
+
+        assert get_llm_retry_count() == 3
+
+    def test_get_llm_truncate_fallback_default(self, tmp_config, monkeypatch):
+        """Test default truncate fallback when not configured."""
+        from crier.config import get_llm_truncate_fallback
+
+        # Clear env vars
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        tmp_config.write_text("")
+
+        assert get_llm_truncate_fallback() is False
+
+    def test_get_llm_truncate_fallback_from_config(self, tmp_config):
+        """Test truncate fallback from config file."""
+        import yaml
+        from crier.config import get_llm_truncate_fallback
+
+        config = {"llm": {"truncate_fallback": True}}
+        tmp_config.write_text(yaml.dump(config))
+
+        assert get_llm_truncate_fallback() is True
+
+    def test_set_llm_config_new_fields(self, tmp_config):
+        """Test setting new LLM config fields."""
+        import yaml
+        from crier.config import set_llm_config, get_llm_config
+
+        set_llm_config(
+            temperature=0.9,
+            retry_count=2,
+            truncate_fallback=True,
+        )
+
+        llm_config = get_llm_config()
+        assert llm_config["temperature"] == 0.9
+        assert llm_config["retry_count"] == 2
+        assert llm_config["truncate_fallback"] is True
 
 
 class TestDefaultRewritePrompt:

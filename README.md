@@ -290,10 +290,8 @@ llm:
 ```
 
 **Environment variables** (override config):
-- `OPENAI_API_KEY` — Standard OpenAI key (auto-configures endpoint + model)
-- `CRIER_LLM_API_KEY` — Override API key
-- `CRIER_LLM_BASE_URL` — Override endpoint
-- `CRIER_LLM_MODEL` — Override model
+- `OPENAI_API_KEY` — API key (auto-defaults to OpenAI endpoint + gpt-4o-mini)
+- `OPENAI_BASE_URL` — Custom endpoint (e.g., `http://localhost:11434/v1` for Ollama)
 
 ## Bulk Operations
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crier"
-version = "0.5.1"
+version = "0.6.0"
 description = "Cross-post your content to dev.to, Hashnode, Medium, and more"
 readme = "README.md"
 license = "MIT"

@@ -9,6 +9,7 @@ from .provider import (
     LLMProviderError,
     RewriteResult,
     DEFAULT_REWRITE_PROMPT,
+    RETRY_PROMPT_ADDITION,
 )
 from .openai_compat import OpenAICompatProvider
 
@@ -18,11 +19,17 @@ __all__ = [
     "RewriteResult",
     "OpenAICompatProvider",
     "DEFAULT_REWRITE_PROMPT",
+    "RETRY_PROMPT_ADDITION",
     "get_provider",
 ]
 
 
-def get_provider(config: dict) -> LLMProvider | None:
+def get_provider(
+    config: dict,
+    *,
+    temperature: float | None = None,
+    model: str | None = None,
+) -> LLMProvider | None:
     """Create an LLM provider from configuration.
 
     Args:
@@ -32,6 +39,9 @@ def get_provider(config: dict) -> LLMProvider | None:
             - api_key: API key (optional for local providers)
             - model: Model name
             - rewrite_prompt: Optional custom prompt template
+            - temperature: LLM temperature (default: 0.7)
+        temperature: Override temperature (takes precedence over config).
+        model: Override model name (takes precedence over config).
 
     Returns:
         Configured LLMProvider instance, or None if config is empty/invalid.
@@ -58,18 +68,20 @@ def get_provider(config: dict) -> LLMProvider | None:
     provider_type = config.get("provider", "openai")
     base_url = config.get("base_url")
     api_key = config.get("api_key", "")
-    model = config.get("model")
+    effective_model = model if model else config.get("model")
     prompt_template = config.get("rewrite_prompt")
+    effective_temp = temperature if temperature is not None else config.get("temperature", 0.7)
 
-    if not base_url or not model:
+    if not base_url or not effective_model:
         return None
 
     if provider_type == "openai":
         return OpenAICompatProvider(
             base_url=base_url,
             api_key=api_key,
-            model=model,
+            model=effective_model,
             prompt_template=prompt_template,
+            temperature=effective_temp,
         )
 
     # Unknown provider type

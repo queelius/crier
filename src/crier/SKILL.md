@@ -265,7 +265,23 @@ JSON output structure:
 Use `--auto-rewrite` to automatically generate short-form content:
 
 ```bash
+# Basic auto-rewrite
 crier publish article.md --to bluesky --auto-rewrite
+
+# Preview with dry-run (shows char budget like "285/300 chars, 95%")
+crier publish article.md --to bluesky --auto-rewrite --dry-run
+
+# Retry up to 3 times if output exceeds character limit
+crier publish article.md --to bluesky --auto-rewrite -R 3
+
+# Truncate at sentence boundary if retries fail
+crier publish article.md --to bluesky --auto-rewrite -R 3 --auto-rewrite-truncate
+
+# Override temperature (0.0-2.0, higher=more creative)
+crier publish article.md --to bluesky --auto-rewrite --temperature 1.2
+
+# Override model
+crier publish article.md --to bluesky --auto-rewrite --model gpt-4o
 ```
 
 **Simplest setup:** If `OPENAI_API_KEY` is set, it just works (defaults to gpt-4o-mini).
@@ -377,6 +393,22 @@ llm:
 llm:
   base_url: http://localhost:11434/v1
   model: llama3
+
+# Full config with retry and truncation defaults:
+llm:
+  api_key: sk-...
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  temperature: 0.7          # 0.0-2.0, higher=more creative
+  retry_count: 0            # Auto-retry if output exceeds limit
+  truncate_fallback: false  # Hard-truncate if retries fail
+```
+
+Set LLM config via CLI:
+```bash
+crier config llm set temperature 0.9
+crier config llm set retry_count 3
+crier config llm set truncate_fallback true
 ```
 
 ### Local Config (.crier/config.yaml)

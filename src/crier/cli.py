@@ -1,5 +1,6 @@
 """Command-line interface for crier."""
 
+import os
 import random
 from datetime import datetime
 from pathlib import Path
@@ -10,10 +11,11 @@ from rich.table import Table
 
 from . import __version__
 from .config import (
-    get_api_key, set_api_key, load_config, get_profile, set_profile, get_all_profiles,
+    get_api_key, set_api_key, load_config, load_global_config, get_profile, set_profile, get_all_profiles,
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
     is_manual_mode_key, is_import_mode_key, is_platform_configured,
-    get_platform_mode, is_short_form_platform, get_llm_config, is_llm_configured,
+    get_platform_mode, is_short_form_platform, get_llm_config, set_llm_config, is_llm_configured,
+    get_llm_temperature, get_llm_retry_count, get_llm_truncate_fallback,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
@@ -32,6 +34,35 @@ from .registry import (
 )
 
 console = Console()
+
+
+def _truncate_at_sentence(text: str, max_chars: int) -> str:
+    """Truncate text at sentence boundary, ensuring it fits within max_chars.
+
+    Tries to cut at sentence boundary (., ?, !), then word boundary, then hard truncate.
+    """
+    if len(text) <= max_chars:
+        return text
+
+    truncated = text[:max_chars]
+
+    # Find last sentence boundary
+    last_period = truncated.rfind('.')
+    last_question = truncated.rfind('?')
+    last_exclaim = truncated.rfind('!')
+    last_sentence = max(last_period, last_question, last_exclaim)
+
+    # Only use sentence boundary if it's in reasonable range (>50% of limit)
+    if last_sentence > max_chars // 2:
+        return truncated[:last_sentence + 1]
+
+    # Fall back to word boundary
+    last_space = truncated.rfind(' ')
+    if last_space > max_chars // 2:
+        return truncated[:last_space] + "..."
+
+    # Last resort: hard truncate
+    return truncated[:max_chars - 3] + "..."
 
 
 def _has_valid_front_matter(file_path: Path) -> bool:
@@ -156,6 +187,48 @@ def _get_content_date(file_path: Path) -> datetime | None:
         return None
     except Exception:
         return None
+
+
+def _get_content_tags(file_path: Path) -> list[str]:
+    """Get tags from front matter of a markdown file.
+
+    Returns empty list if no tags field or file can't be parsed.
+    Tags are normalized to lowercase for case-insensitive matching.
+    """
+    try:
+        with open(file_path) as f:
+            content = f.read()
+
+        # Check for YAML front matter
+        if not content.startswith('---'):
+            return []
+
+        # Find end of front matter
+        end_idx = content.find('---', 3)
+        if end_idx == -1:
+            return []
+
+        front_matter = content[3:end_idx]
+
+        # Parse YAML
+        import yaml
+        data = yaml.safe_load(front_matter)
+        if not data or 'tags' not in data:
+            return []
+
+        raw_tags = data['tags']
+
+        # Handle list format: tags: [python, testing]
+        if isinstance(raw_tags, list):
+            return [str(t).lower().strip() for t in raw_tags if t]
+
+        # Handle string format: tags: "python, testing"
+        if isinstance(raw_tags, str):
+            return [t.lower().strip() for t in raw_tags.split(',') if t.strip()]
+
+        return []
+    except Exception:
+        return []
 
 
 def _find_content_files(explicit_path: str | None = None) -> list[Path]:
@@ -407,7 +480,67 @@ def init():
 
     console.print()
 
-    # Step 4: Summary and next steps
+    # Step 4: LLM Configuration (for auto-rewrite)
+    console.print("[bold]Step 4: LLM Configuration (Optional)[/bold]")
+    console.print("[dim]Auto-rewrite uses an LLM to generate short-form posts from your articles.[/dim]")
+    console.print()
+
+    # Check if already configured
+    llm_already_configured = is_llm_configured()
+    llm_source = None
+    if llm_already_configured:
+        if os.environ.get("OPENAI_API_KEY"):
+            llm_source = "environment variable"
+        else:
+            llm_source = "config file"
+        console.print(f"[green]✓[/green] LLM already configured (source: {llm_source})")
+        configure_llm = questionary.confirm(
+            "Update LLM configuration?",
+            default=False,
+        ).ask()
+    else:
+        configure_llm = questionary.confirm(
+            "Configure LLM for auto-rewrite?",
+            default=False,
+        ).ask()
+
+    if configure_llm:
+        console.print()
+        console.print("[dim]Tip: Set OPENAI_API_KEY env var and it just works (defaults to gpt-4o-mini)[/dim]")
+        console.print()
+
+        provider_choice = questionary.select(
+            "Which provider?",
+            choices=[
+                questionary.Choice("OpenAI (default)", value="openai"),
+                questionary.Choice("Custom/Ollama (OpenAI-compatible)", value="custom"),
+            ],
+        ).ask()
+
+        if provider_choice == "openai":
+            key = questionary.password("OpenAI API key (or press Enter to skip):").ask()
+            if key:
+                set_llm_config(api_key=key)
+                console.print("[green]✓[/green] OpenAI API key saved")
+                console.print("[dim]Using default: base_url=api.openai.com, model=gpt-4o-mini[/dim]")
+        elif provider_choice == "custom":
+            base_url = questionary.text(
+                "Base URL:",
+                default="http://localhost:11434/v1",
+            ).ask()
+            model = questionary.text(
+                "Model name:",
+                default="llama3",
+            ).ask()
+            key = questionary.password("API key (press Enter if not needed):").ask()
+
+            if base_url and model:
+                set_llm_config(base_url=base_url, model=model, api_key=key or "")
+                console.print("[green]✓[/green] LLM configured")
+
+    console.print()
+
+    # Step 5: Summary and next steps
     console.print("[bold]Setup Complete![/bold]\n")
     console.print("Next steps:")
     console.print("  1. Run [cyan]crier audit[/cyan] to see what can be published")
@@ -440,18 +573,30 @@ def init():
               help="Read rewrite content from a file")
 @click.option("--rewrite-author", "rewrite_author", default=None,
               help="Label for who wrote the rewrite (e.g., 'claude-code')")
-@click.option("--auto-rewrite", is_flag=True,
+@click.option("--auto-rewrite/--no-auto-rewrite", default=False,
               help="Auto-generate rewrites using configured LLM for short-form platforms")
+@click.option("--auto-rewrite-retry", "-R", "auto_rewrite_retry", type=int, default=None,
+              help="Retry auto-rewrite N times if output exceeds limit (default from config)")
+@click.option("--auto-rewrite-truncate", "auto_rewrite_truncate", is_flag=True, default=None,
+              help="Hard-truncate at sentence boundary if retries fail")
+@click.option("--temperature", type=float, default=None,
+              help="LLM temperature (0.0-2.0, higher=more creative)")
+@click.option("--model", "model_override", default=None,
+              help="Override LLM model for this publish")
 @click.option("--yes", "-y", is_flag=True,
               help="Assume success for manual mode (skip confirmation prompt)")
 @click.option("--json", "json_output", is_flag=True,
               help="Output results as JSON for automation")
 @click.option("--batch", is_flag=True,
               help="Non-interactive batch mode (implies --yes --json, skips manual/import platforms)")
+@click.option("--quiet", "-q", is_flag=True,
+              help="Suppress non-essential output (for scripting)")
 def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             draft: bool, dry_run: bool, manual: bool, no_browser: bool,
             rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None,
-            auto_rewrite: bool, yes: bool, json_output: bool, batch: bool):
+            auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
+            temperature: float | None, model_override: str | None,
+            yes: bool, json_output: bool, batch: bool, quiet: bool):
     """Publish a markdown file to one or more platforms.
 
     For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
@@ -476,31 +621,50 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         yes = True
         json_output = True
 
+    # Silent mode: suppress non-essential output
+    silent = quiet or json_output
+
     # Validate --auto-rewrite requires LLM configuration
     llm_provider = None
     if auto_rewrite:
         if not is_llm_configured():
-            console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
-            console.print()
-            console.print("[bold]Simplest setup:[/bold] Set OPENAI_API_KEY environment variable")
-            console.print("[dim]  export OPENAI_API_KEY=sk-...[/dim]")
-            console.print()
-            console.print("[bold]Or configure in ~/.config/crier/config.yaml:[/bold]")
-            console.print("[dim]  llm:[/dim]")
-            console.print("[dim]    api_key: sk-...  # defaults to OpenAI + gpt-4o-mini[/dim]")
-            console.print()
-            console.print("[bold]For Ollama/other providers:[/bold]")
-            console.print("[dim]  llm:[/dim]")
-            console.print("[dim]    base_url: http://localhost:11434/v1[/dim]")
-            console.print("[dim]    model: llama3[/dim]")
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "--auto-rewrite requires LLM configuration"}))
+            else:
+                console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
+                console.print()
+                console.print("[bold]Simplest setup:[/bold] Set OPENAI_API_KEY environment variable")
+                console.print("[dim]  export OPENAI_API_KEY=sk-...[/dim]")
+                console.print()
+                console.print("[bold]Or configure in ~/.config/crier/config.yaml:[/bold]")
+                console.print("[dim]  llm:[/dim]")
+                console.print("[dim]    api_key: sk-...  # defaults to OpenAI + gpt-4o-mini[/dim]")
+                console.print()
+                console.print("[bold]For Ollama/other providers:[/bold]")
+                console.print("[dim]  llm:[/dim]")
+                console.print("[dim]    base_url: http://localhost:11434/v1[/dim]")
+                console.print("[dim]    model: llama3[/dim]")
             raise SystemExit(1)
 
-        # Initialize LLM provider
+        # Resolve auto-rewrite settings from config if not specified on CLI
+        if auto_rewrite_retry is None:
+            auto_rewrite_retry = get_llm_retry_count()
+        if auto_rewrite_truncate is None:
+            auto_rewrite_truncate = get_llm_truncate_fallback()
+
+        # Initialize LLM provider with optional overrides
         from .llm import get_provider
         llm_config = get_llm_config()
-        llm_provider = get_provider(llm_config)
+        llm_provider = get_provider(
+            llm_config,
+            temperature=temperature,
+            model=model_override,
+        )
         if not llm_provider:
-            console.print("[red]Error: Failed to initialize LLM provider.[/red]")
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "Failed to initialize LLM provider"}))
+            else:
+                console.print("[red]Error: Failed to initialize LLM provider.[/red]")
             raise SystemExit(1)
 
     # Resolve platforms from --to and --profile
@@ -509,9 +673,12 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if profile_name:
         profile_platforms = get_profile(profile_name)
         if profile_platforms is None:
-            console.print(f"[red]Unknown profile: {profile_name}[/red]")
-            console.print("[dim]Create a profile with: crier config profile set <name> <platforms>[/dim]")
-            return
+            if json_output:
+                print(json_module.dumps({"success": False, "error": f"Unknown profile: {profile_name}"}))
+            else:
+                console.print(f"[red]Unknown profile: {profile_name}[/red]")
+                console.print("[dim]Create a profile with: crier config profile set <name> <platforms>[/dim]")
+            raise SystemExit(1)
         platforms.extend(profile_platforms)
 
     if platform_args:
@@ -524,17 +691,21 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             profile_platforms = get_profile(default_profile)
             if profile_platforms:
                 platforms.extend(profile_platforms)
-                console.print(f"[dim]Using default profile: {default_profile}[/dim]")
+                if not silent:
+                    console.print(f"[dim]Using default profile: {default_profile}[/dim]")
 
     # Require explicit platform selection
     if not platforms:
-        console.print("[red]Error: No platform specified.[/red]")
-        console.print("[dim]Use --to <platform> or --profile <name> to specify where to publish.[/dim]")
-        console.print("[dim]Or set default_profile in .crier/config.yaml[/dim]")
-        console.print("[dim]Examples:[/dim]")
-        console.print("[dim]  crier publish article.md --to devto[/dim]")
-        console.print("[dim]  crier publish article.md --to bluesky --to mastodon[/dim]")
-        console.print("[dim]  crier publish article.md --profile social[/dim]")
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "No platform specified"}))
+        else:
+            console.print("[red]Error: No platform specified.[/red]")
+            console.print("[dim]Use --to <platform> or --profile <name> to specify where to publish.[/dim]")
+            console.print("[dim]Or set default_profile in .crier/config.yaml[/dim]")
+            console.print("[dim]Examples:[/dim]")
+            console.print("[dim]  crier publish article.md --to devto[/dim]")
+            console.print("[dim]  crier publish article.md --to bluesky --to mastodon[/dim]")
+            console.print("[dim]  crier publish article.md --profile social[/dim]")
         raise SystemExit(1)
 
     # Use config default for rewrite_author if not specified
@@ -643,6 +814,9 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         platform_table.add_column("Status", style="green")
         platform_table.add_column("Notes")
 
+        # Track platforms needing auto-rewrite
+        rewrite_previews = {}
+
         for platform_name in platforms:
             api_key = get_api_key(platform_name)
             if not api_key:
@@ -658,13 +832,63 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     "Platform not found"
                 )
             else:
-                platform_table.add_row(
-                    platform_name,
-                    "[green]✓ Ready[/green]",
-                    "Would publish"
-                )
+                platform_cls = get_platform(platform_name)
+                platform = platform_cls(api_key or "dry-run")
+                max_len = platform.max_content_length
+
+                # Check if auto-rewrite would be triggered
+                if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
+                    platform_table.add_row(
+                        platform_name,
+                        "[yellow]⚙ Needs rewrite[/yellow]",
+                        f"Content too long ({len(article.body)} > {max_len})"
+                    )
+                    # Generate actual rewrite preview
+                    try:
+                        console.print(f"[dim]Generating rewrite preview for {platform_name}...[/dim]")
+                        from .llm import LLMProviderError
+                        rewrite_result = llm_provider.rewrite(
+                            title=article.title,
+                            body=article.body,
+                            max_chars=max_len,
+                            platform=platform_name,
+                        )
+                        rewrite_previews[platform_name] = {
+                            "text": rewrite_result.text,
+                            "length": len(rewrite_result.text),
+                            "max": max_len,
+                            "fits": len(rewrite_result.text) <= max_len,
+                        }
+                    except LLMProviderError as e:
+                        rewrite_previews[platform_name] = {"error": str(e)}
+                elif max_len and len(article.body) > max_len:
+                    platform_table.add_row(
+                        platform_name,
+                        "[red]✗ Content too long[/red]",
+                        f"{len(article.body)} > {max_len} chars (use --rewrite or --auto-rewrite)"
+                    )
+                else:
+                    platform_table.add_row(
+                        platform_name,
+                        "[green]✓ Ready[/green]",
+                        "Would publish"
+                    )
 
         console.print(platform_table)
+
+        # Show rewrite previews if any
+        if rewrite_previews:
+            console.print()
+            console.print("[bold]Auto-Rewrite Previews[/bold]")
+            for platform_name, preview in rewrite_previews.items():
+                if "error" in preview:
+                    console.print(f"\n[red]✗ {platform_name}: {preview['error']}[/red]")
+                else:
+                    pct = preview['length'] * 100 // preview['max']
+                    status = "[green]✓ Fits[/green]" if preview["fits"] else "[red]✗ Still too long[/red]"
+                    console.print(f"\n[bold]{platform_name}[/bold] ({preview['length']}/{preview['max']} chars, {pct}%) {status}")
+                    console.print(Panel(preview["text"], border_style="dim"))
+
         return
 
     # Actual publishing with results table
@@ -757,6 +981,19 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     "error": None,
                 })()
             else:
+                # Check if manual rewrite content exceeds platform limit
+                if rewrite_content and not auto_rewrite and platform.max_content_length:
+                    max_len = platform.max_content_length
+                    if len(article.body) > max_len:
+                        results.append({
+                            "platform": platform_name,
+                            "success": False,
+                            "error": f"Rewrite content too long: {len(article.body)} chars (limit: {max_len})",
+                            "url": None,
+                            "id": None,
+                        })
+                        continue
+
                 # Check if auto-rewrite is needed for this platform
                 publish_article = article
                 platform_rewritten = False
@@ -764,41 +1001,83 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
                 if auto_rewrite and llm_provider and platform.max_content_length:
                     # Check if content exceeds platform limit
-                    if len(article.body) > platform.max_content_length:
-                        if not json_output:
-                            console.print(f"[dim]Content too long for {platform_name} ({len(article.body)} > {platform.max_content_length})[/dim]")
-                            console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}...[/dim]")
+                    max_len = platform.max_content_length
+                    if len(article.body) > max_len:
+                        if not silent:
+                            console.print(f"[dim]Content too long for {platform_name} ({len(article.body)} > {max_len})[/dim]")
+                            retry_info = f" (max {auto_rewrite_retry} retries)" if auto_rewrite_retry else ""
+                            console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}{retry_info}...[/dim]")
 
                         try:
                             from .llm import LLMProviderError
-                            rewrite_result = llm_provider.rewrite(
-                                title=article.title,
-                                body=article.body,
-                                max_chars=platform.max_content_length,
-                                platform=platform_name,
-                            )
 
-                            # Check if rewritten content fits
-                            if len(rewrite_result.text) <= platform.max_content_length:
-                                platform_rewrite_content = rewrite_result.text
+                            # Retry loop
+                            rewrite_result = None
+                            prev_text = None
+                            last_length = None
+                            max_attempts = (auto_rewrite_retry or 0) + 1
+
+                            for attempt in range(max_attempts):
+                                if attempt > 0 and not silent:
+                                    console.print(f"[yellow]Retry {attempt}/{auto_rewrite_retry} (previous: {last_length}/{max_len} chars, {last_length - max_len} over)[/yellow]")
+
+                                rewrite_result = llm_provider.rewrite(
+                                    title=article.title,
+                                    body=article.body,
+                                    max_chars=max_len,
+                                    platform=platform_name,
+                                    previous_attempt=prev_text,
+                                    previous_length=last_length,
+                                )
+
+                                last_length = len(rewrite_result.text)
+
+                                if last_length <= max_len:
+                                    break  # Success!
+
+                                prev_text = rewrite_result.text
+
+                            # Check final result
+                            final_text = rewrite_result.text
+                            if len(final_text) <= max_len:
+                                # Success
+                                pct = len(final_text) * 100 // max_len
+                                platform_rewrite_content = final_text
                                 platform_rewritten = True
                                 publish_article = Article(
                                     title=article.title,
-                                    body=rewrite_result.text,
+                                    body=final_text,
                                     description=article.description,
                                     tags=article.tags,
                                     canonical_url=article.canonical_url,
                                     published=article.published,
                                     cover_image=article.cover_image,
                                 )
-                                if not json_output:
-                                    console.print(f"[green]✓ Generated {len(rewrite_result.text)} char rewrite[/green]")
+                                if not silent:
+                                    console.print(f"[green]✓ Generated {len(final_text)}/{max_len} char rewrite ({pct}%)[/green]")
+                            elif auto_rewrite_truncate:
+                                # Fallback: truncate at sentence boundary
+                                truncated = _truncate_at_sentence(final_text, max_len)
+                                pct = len(truncated) * 100 // max_len
+                                platform_rewrite_content = truncated
+                                platform_rewritten = True
+                                publish_article = Article(
+                                    title=article.title,
+                                    body=truncated,
+                                    description=article.description,
+                                    tags=article.tags,
+                                    canonical_url=article.canonical_url,
+                                    published=article.published,
+                                    cover_image=article.cover_image,
+                                )
+                                if not silent:
+                                    console.print(f"[yellow]⚠ Truncated to {len(truncated)}/{max_len} chars ({pct}%)[/yellow]")
                             else:
-                                # LLM output still too long
+                                # All retries failed, no truncate fallback
                                 results.append({
                                     "platform": platform_name,
                                     "success": False,
-                                    "error": f"Auto-rewrite still too long: {len(rewrite_result.text)} chars (limit: {platform.max_content_length}). Use manual --rewrite.",
+                                    "error": f"Auto-rewrite still too long after {max_attempts} attempt(s): {len(final_text)} chars (limit: {max_len}). Use --auto-rewrite-retry or --auto-rewrite-truncate.",
                                     "url": None,
                                     "id": None,
                                 })
@@ -814,7 +1093,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             })
                             continue
 
-                if not json_output:
+                if not silent:
                     console.print(f"[dim]Publishing to {platform_name}...[/dim]")
                 result = platform.publish(publish_article)
 
@@ -1013,8 +1292,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         console.print(f"\n[green]All {success_count} platform(s) published successfully.[/green]")
     elif success_count == 0:
         console.print(f"\n[red]All {fail_count} platform(s) failed.[/red]")
+        raise SystemExit(1)
     else:
         console.print(f"\n[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
+        raise SystemExit(2)  # Partial failure
 
 
 @cli.command(name="list")
@@ -1275,6 +1556,50 @@ def config_set(key: str, value: str):
         console.print(f"[red]Unknown config key: {key}[/red]")
         console.print("Use: crier config set <platform>.api_key <value>")
         console.print("     crier config set site_base_url <url>")
+
+
+@config.command(name="get")
+@click.argument("key")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+def config_get(key: str, json_output: bool):
+    """Get a configuration value by key path.
+
+    Supports dot notation for nested keys:
+        crier config get llm.model
+        crier config get platforms.devto.api_key
+        crier config get site_base_url
+    """
+    import json as json_module
+    from .config import load_global_config, load_local_config
+
+    global_cfg = load_global_config()
+    local_cfg = load_local_config()
+    # Local config takes precedence
+    merged = {**global_cfg, **local_cfg}
+
+    # Navigate dot notation path
+    parts = key.split(".")
+    value = merged
+    for part in parts:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            value = None
+            break
+
+    if json_output:
+        print(json_module.dumps({"key": key, "value": value}))
+    else:
+        if value is None:
+            console.print(f"[yellow]Key not found: {key}[/yellow]")
+            raise SystemExit(1)
+        else:
+            # For simple values, just print them
+            if isinstance(value, (str, int, float, bool)):
+                console.print(str(value))
+            else:
+                # For complex values (dict/list), use JSON-like format
+                console.print(json_module.dumps(value, indent=2))
 
 
 @config.command(name="show")
@@ -1579,6 +1904,207 @@ def content_set(paths: tuple[str, ...]):
     console.print(f"[green]Content paths set to: {', '.join(paths)}[/green]")
 
 
+# --- LLM Config Commands ---
+
+@config.group()
+def llm():
+    """Manage LLM configuration for auto-rewrite."""
+    pass
+
+
+def _get_llm_config_sources() -> dict[str, str]:
+    """Get the source of each LLM config value (env, config, default, or unset)."""
+    sources = {}
+    global_config = load_global_config()
+
+    # Check api_key source
+    if os.environ.get("OPENAI_API_KEY"):
+        sources["api_key"] = "env (OPENAI_API_KEY)"
+    elif global_config.get("llm", {}).get("api_key"):
+        sources["api_key"] = "config"
+    else:
+        sources["api_key"] = "unset"
+
+    # Check base_url source
+    if os.environ.get("OPENAI_BASE_URL"):
+        sources["base_url"] = "env (OPENAI_BASE_URL)"
+    elif global_config.get("llm", {}).get("base_url"):
+        sources["base_url"] = "config"
+    else:
+        # Check if it's using the default (when api_key is set)
+        llm_config = get_llm_config()
+        if llm_config.get("base_url"):
+            sources["base_url"] = "default"
+        else:
+            sources["base_url"] = "unset"
+
+    # Check model source (no env var - config only)
+    if global_config.get("llm", {}).get("model"):
+        sources["model"] = "config"
+    else:
+        # Check if it's using the default (when api_key is set)
+        llm_config = get_llm_config()
+        if llm_config.get("model"):
+            sources["model"] = "default"
+        else:
+            sources["model"] = "unset"
+
+    return sources
+
+
+def _mask_api_key(key: str | None) -> str:
+    """Mask API key for display, showing only first/last few chars."""
+    if not key:
+        return "[dim]not set[/dim]"
+    if len(key) <= 8:
+        return "*" * len(key)
+    return f"{key[:4]}...{key[-4:]}"
+
+
+@llm.command(name="show")
+def llm_show():
+    """Show current LLM configuration."""
+    llm_config = get_llm_config()
+    sources = _get_llm_config_sources()
+
+    console.print("[bold]LLM Configuration:[/bold]")
+    console.print()
+
+    # Status
+    if is_llm_configured():
+        console.print("  [green]Status:[/green] configured")
+    else:
+        console.print("  [yellow]Status:[/yellow] not configured")
+
+    console.print()
+
+    # API Key
+    api_key = llm_config.get("api_key")
+    console.print(f"  [bold]api_key:[/bold] {_mask_api_key(api_key)} [dim]({sources['api_key']})[/dim]")
+
+    # Base URL
+    base_url = llm_config.get("base_url", "")
+    if base_url:
+        console.print(f"  [bold]base_url:[/bold] {base_url} [dim]({sources['base_url']})[/dim]")
+    else:
+        console.print(f"  [bold]base_url:[/bold] [dim]not set ({sources['base_url']})[/dim]")
+
+    # Model
+    model = llm_config.get("model", "")
+    if model:
+        console.print(f"  [bold]model:[/bold] {model} [dim]({sources['model']})[/dim]")
+    else:
+        console.print(f"  [bold]model:[/bold] [dim]not set ({sources['model']})[/dim]")
+
+    # Custom prompt (if set)
+    if llm_config.get("rewrite_prompt"):
+        console.print("  [bold]rewrite_prompt:[/bold] [dim](custom)[/dim]")
+
+    console.print()
+
+    # Auto-rewrite settings
+    console.print("[bold]Auto-rewrite settings:[/bold]")
+    temp = llm_config.get("temperature", 0.7)
+    retry = llm_config.get("retry_count", 0)
+    truncate = llm_config.get("truncate_fallback", False)
+    console.print(f"  [bold]temperature:[/bold] {temp}")
+    console.print(f"  [bold]retry_count:[/bold] {retry}")
+    console.print(f"  [bold]truncate_fallback:[/bold] {truncate}")
+
+    console.print()
+
+    if not is_llm_configured():
+        console.print("[dim]Configure with:[/dim]")
+        console.print("[dim]  export OPENAI_API_KEY=sk-...  (simplest)[/dim]")
+        console.print("[dim]  crier config llm set api_key <key>[/dim]")
+
+
+@llm.command(name="set")
+@click.argument("key", type=click.Choice([
+    "api_key", "base_url", "model", "temperature", "retry_count", "truncate_fallback"
+]))
+@click.argument("value")
+def llm_set(key: str, value: str):
+    """Set an LLM configuration value.
+
+    KEY is one of: api_key, base_url, model, temperature, retry_count, truncate_fallback
+
+    Examples:
+        crier config llm set api_key sk-...
+        crier config llm set base_url http://localhost:11434/v1
+        crier config llm set model llama3
+        crier config llm set temperature 0.8
+        crier config llm set retry_count 3
+        crier config llm set truncate_fallback true
+    """
+    if key == "api_key":
+        set_llm_config(api_key=value)
+    elif key == "base_url":
+        set_llm_config(base_url=value)
+    elif key == "model":
+        set_llm_config(model=value)
+    elif key == "temperature":
+        set_llm_config(temperature=float(value))
+    elif key == "retry_count":
+        set_llm_config(retry_count=int(value))
+    elif key == "truncate_fallback":
+        set_llm_config(truncate_fallback=value.lower() in ("true", "1", "yes"))
+
+    console.print(f"[green]LLM {key} set successfully.[/green]")
+
+    # Show current config status
+    if is_llm_configured():
+        console.print("[dim]LLM is now configured and ready to use.[/dim]")
+    else:
+        llm_config = get_llm_config()
+        missing = []
+        if not llm_config.get("base_url"):
+            missing.append("base_url")
+        if not llm_config.get("model"):
+            missing.append("model")
+        if missing:
+            console.print(f"[dim]Still need: {', '.join(missing)}[/dim]")
+
+
+@llm.command(name="test")
+def llm_test():
+    """Test LLM connection with a simple request."""
+    from .llm import get_provider, LLMProviderError
+
+    if not is_llm_configured():
+        console.print("[red]LLM is not configured.[/red]")
+        console.print("[dim]Configure with: export OPENAI_API_KEY=sk-...[/dim]")
+        raise SystemExit(1)
+
+    llm_config = get_llm_config()
+    provider = get_provider(llm_config)
+
+    if not provider:
+        console.print("[red]Failed to create LLM provider.[/red]")
+        raise SystemExit(1)
+
+    console.print(f"[dim]Testing connection to {llm_config.get('base_url')}...[/dim]")
+    console.print(f"[dim]Model: {llm_config.get('model')}[/dim]")
+    console.print()
+
+    try:
+        result = provider.rewrite(
+            title="Test Article",
+            body="This is a test article to verify the LLM connection is working properly.",
+            max_chars=280,
+            platform="test",
+        )
+        console.print("[green]✓ Connection successful![/green]")
+        console.print(f"[dim]Response ({result.tokens_used or '?'} tokens):[/dim]")
+        console.print(f"  {result.text}")
+    except LLMProviderError as e:
+        console.print(f"[red]✗ Connection failed: {e}[/red]")
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]✗ Unexpected error: {e}[/red]")
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.argument("path", type=click.Path(exists=True), required=False)
 @click.option("--to", "-t", "platform_filter", multiple=True,
@@ -1600,14 +2126,18 @@ def content_set(paths: tuple[str, ...]):
               help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
 @click.option("--until", "until_date", default=None,
               help="Only include content until this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--tag", "-T", "tag_filter", multiple=True,
+              help="Only include content with these tags (case-insensitive, OR logic)")
 @click.option("--json", "json_output", is_flag=True,
               help="Output results as JSON for automation")
 @click.option("--batch", is_flag=True,
               help="Non-interactive batch mode (implies --yes --json --only-api)")
+@click.option("--quiet", "-q", is_flag=True,
+              help="Suppress non-essential output (for scripting)")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
           sample: int | None, include_changed: bool, since_date: str | None, until_date: str | None,
-          json_output: bool, batch: bool):
+          tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -1620,6 +2150,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     Bulk operation filters:
     --only-api: Skip platforms configured for manual/import mode.
     --long-form: Skip short-form platforms (bluesky, mastodon, twitter, threads).
+    --tag: Filter by tags (case-insensitive, multiple tags use OR logic).
     --sample N: Randomly select N items from the actionable pool.
     --include-changed: Also process changed/dirty items (default: missing only).
 
@@ -1633,14 +2164,20 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         json_output = True
         only_api = True
 
+    # Silent mode: suppress non-essential output
+    silent = quiet or json_output
+
     # Determine which platforms to check
     check_platforms: list[str] = []
 
     if profile_name:
         profile_platforms = get_profile(profile_name)
         if profile_platforms is None:
-            console.print(f"[red]Unknown profile: {profile_name}[/red]")
-            return
+            if json_output:
+                print(json_module.dumps({"success": False, "error": f"Unknown profile: {profile_name}"}))
+            else:
+                console.print(f"[red]Unknown profile: {profile_name}[/red]")
+            raise SystemExit(1)
         check_platforms.extend(profile_platforms)
 
     if platform_filter:
@@ -1684,6 +2221,17 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 if until_dt and content_date > until_dt:
                     continue
             filtered_files.append(f)
+        files = filtered_files
+
+    # Apply tag filtering
+    if tag_filter:
+        filter_tags = {t.lower().strip() for t in tag_filter}
+        filtered_files = []
+        for f in files:
+            content_tags = _get_content_tags(f)
+            # OR logic: include if any tag matches
+            if any(tag in filter_tags for tag in content_tags):
+                filtered_files.append(f)
         files = filtered_files
 
     if not files:
@@ -1921,7 +2469,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     # Do the publishing/updating
     new_count = sum(1 for _, _, _, _, action in selected_items if action == "publish")
     update_count = len(selected_items) - new_count
-    if not json_output:
+    if not silent:
         console.print(f"\n[bold]Processing {len(selected_items)} item(s) ({new_count} new, {update_count} updates)...[/bold]\n")
 
     success_count = 0
@@ -1933,7 +2481,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         api_key = get_api_key(platform)
 
         if not api_key:
-            if not json_output:
+            if not silent:
                 console.print(f"[red]✗ {title[:30]} → {platform}: Not configured[/red]")
             publish_results.append({
                 "file": str(file_path),
@@ -1946,7 +2494,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             continue
 
         if not article.canonical_url:
-            if not json_output:
+            if not silent:
                 console.print(f"[yellow]⚠ {title[:30]}: No canonical_url, skipping[/yellow]")
             publish_results.append({
                 "file": str(file_path),
@@ -1964,7 +2512,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
             if action == "publish":
                 # New publication
-                if not json_output:
+                if not silent:
                     console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
                 result = plat.publish(article)
                 action_verb = "Published"
@@ -1972,7 +2520,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 # Update existing publication
                 pub_info = get_publication_info(canonical_url, platform)
                 if not pub_info or not pub_info.get("article_id"):
-                    if not json_output:
+                    if not silent:
                         console.print(f"[yellow]⚠ {title[:30]} → {platform}: No article_id in registry, skipping[/yellow]")
                     publish_results.append({
                         "file": str(file_path),
@@ -1985,13 +2533,13 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     continue
 
                 article_id = pub_info["article_id"]
-                if not json_output:
+                if not silent:
                     console.print(f"[dim]Updating {title[:30]} → {platform}...[/dim]")
                 result = plat.update(article_id, article)
                 action_verb = "Updated"
 
             if result.success:
-                if not json_output:
+                if not silent:
                     console.print(f"[green]✓ {title[:30]} → {platform} ({action_verb.lower()})[/green]")
                 content_hash = get_file_content_hash(file_path)
                 record_publication(
@@ -2013,7 +2561,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 })
                 success_count += 1
             else:
-                if not json_output:
+                if not silent:
                     console.print(f"[red]✗ {title[:30]} → {platform}: {result.error}[/red]")
                 publish_results.append({
                     "file": str(file_path),
@@ -2025,7 +2573,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 fail_count += 1
 
         except Exception as e:
-            if not json_output:
+            if not silent:
                 console.print(f"[red]✗ {title[:30]} → {platform}: {e}[/red]")
             publish_results.append({
                 "file": str(file_path),
@@ -2054,6 +2602,138 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             console.print(f"[green]All {success_count} operation(s) succeeded![/green]")
         else:
             console.print(f"[yellow]{success_count} succeeded, {fail_count} failed.[/yellow]")
+
+    # Exit codes: 0=success, 1=all failed, 2=partial failure
+    if fail_count > 0 and success_count == 0:
+        raise SystemExit(1)
+    elif fail_count > 0:
+        raise SystemExit(2)
+
+
+@cli.command()
+@click.argument("path", type=click.Path(exists=True), required=False)
+@click.option("--tag", "-T", "tag_filter", multiple=True,
+              help="Only include content with these tags (case-insensitive, OR logic)")
+@click.option("--since", "since_date", default=None,
+              help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--until", "until_date", default=None,
+              help="Only include content until this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--sample", type=int, default=None,
+              help="Randomly sample N items")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+@click.option("--quiet", "-q", is_flag=True,
+              help="Suppress non-essential output (for scripting)")
+def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None,
+           until_date: str | None, sample: int | None, json_output: bool, quiet: bool):
+    """Search and list content files with metadata.
+
+    PATH can be a file or directory. If not provided, uses configured content_paths.
+
+    Filters:
+    --tag: Filter by tags (case-insensitive, multiple tags use OR logic).
+    --since/--until: Filter by date.
+    --sample N: Randomly select N items.
+
+    Use --json for machine-readable output.
+    """
+    import json as json_module
+
+    # Silent mode: suppress non-essential output
+    silent = quiet or json_output
+
+    # Find content files
+    files = _find_content_files(path)
+
+    # Apply date filtering
+    if since_date or until_date:
+        since_dt = _parse_date_filter(since_date) if since_date else None
+        until_dt = _parse_date_filter(until_date) if until_date else None
+
+        filtered_files = []
+        for f in files:
+            content_date = _get_content_date(f)
+            if content_date:
+                # Make comparison timezone-naive if needed
+                if content_date.tzinfo is not None:
+                    content_date = content_date.replace(tzinfo=None)
+                if since_dt and content_date < since_dt:
+                    continue
+                if until_dt and content_date > until_dt:
+                    continue
+            filtered_files.append(f)
+        files = filtered_files
+
+    # Apply tag filtering
+    if tag_filter:
+        filter_tags = {t.lower().strip() for t in tag_filter}
+        filtered_files = []
+        for f in files:
+            content_tags = _get_content_tags(f)
+            # OR logic: include if any tag matches
+            if any(tag in filter_tags for tag in content_tags):
+                filtered_files.append(f)
+        files = filtered_files
+
+    # Apply sampling
+    if sample and len(files) > sample:
+        files = random.sample(files, sample)
+
+    if not files:
+        if json_output:
+            print(json_module.dumps({"results": [], "count": 0}))
+        elif not silent:
+            if path:
+                console.print(f"[yellow]No content files found in {path}[/yellow]")
+            else:
+                console.print("[yellow]No content files found[/yellow]")
+        return
+
+    # Collect metadata for each file
+    results = []
+    for f in files:
+        try:
+            article = parse_markdown_file(str(f))
+            if article and article.title:
+                content_date = _get_content_date(f)
+                results.append({
+                    "file": str(f),
+                    "title": article.title,
+                    "date": content_date.isoformat() if content_date else None,
+                    "tags": _get_content_tags(f),
+                    "words": len(article.body.split()) if article.body else 0,
+                })
+        except Exception:
+            # Skip files that can't be parsed
+            pass
+
+    if json_output:
+        print(json_module.dumps({"results": results, "count": len(results)}, indent=2))
+    else:
+        # Rich table output
+        table = Table(title=f"Content ({len(results)} files)")
+        table.add_column("File", style="cyan", max_width=40, overflow="ellipsis")
+        table.add_column("Title", style="green", max_width=30, overflow="ellipsis")
+        table.add_column("Date", style="yellow", width=10)
+        table.add_column("Tags", style="blue", max_width=20, overflow="ellipsis")
+        table.add_column("Words", style="dim", justify="right", width=6)
+
+        for r in results:
+            date_str = r["date"][:10] if r["date"] else "-"
+
+            tags = r["tags"]
+            tags_str = ", ".join(tags[:3])
+            if len(tags) > 3:
+                tags_str += f" (+{len(tags) - 3})"
+
+            table.add_row(
+                str(r["file"]),
+                r["title"],
+                date_str,
+                tags_str,
+                str(r["words"]),
+            )
+        console.print(table)
 
 
 @cli.command()
@@ -2293,7 +2973,9 @@ def skill_show():
               help="URL of the published article (optional)")
 @click.option("--id", "article_id", default=None,
               help="Platform-specific article ID (optional)")
-def register(file: str, platform_name: str, url: str | None, article_id: str | None):
+@click.option("--yes", "-y", is_flag=True,
+              help="Overwrite existing entry without prompting")
+def register(file: str, platform_name: str, url: str | None, article_id: str | None, yes: bool):
     """Manually register a file as published to a platform.
 
     Use this when you've published content outside of crier and want to
@@ -2312,7 +2994,7 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
     # Check if already registered
     if is_published(article.canonical_url, platform_name):
         console.print(f"[yellow]Already registered to {platform_name}.[/yellow]")
-        if not click.confirm("Overwrite existing entry?", default=False):
+        if not yes and not click.confirm("Overwrite existing entry?", default=False):
             return
 
     content_hash = get_file_content_hash(Path(file))

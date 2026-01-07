@@ -35,8 +35,9 @@ ruff format --check src/
 - `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`)
 - `status` — Show publication status for files
 - `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`)
+- `search` — Search and list content with metadata (supports `--tag`, `--since`, `--until`, `--sample`, `--json`)
 - `doctor` — Validate API keys
-- `config` — Manage API keys, profiles, and content paths
+- `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
 - `skill` — Manage Claude Code skill installation (`install`, `uninstall`, `status`, `show`)
 - `register` / `unregister` — Manual registry management
 - `list` — List articles on a platform
@@ -103,10 +104,68 @@ crier publish article.md --to devto --json
 crier audit --json
 ```
 
+**Quiet mode** (`--quiet`): Suppress non-essential output for scripting:
+```bash
+# Quiet mode suppresses progress/info messages
+crier publish article.md --to devto --quiet
+crier audit --publish --yes --quiet
+crier search --tag python --quiet
+```
+
+**Config access** (`config get`): Read config values programmatically:
+```bash
+crier config get llm.model
+crier config get platforms.devto.api_key
+crier config get site_base_url --json
+```
+
+**Non-interactive flags**:
+- `--yes` / `-y` — Skip confirmation prompts (available on `publish`, `audit --publish`, `register`)
+- `--quiet` / `-q` — Suppress non-essential output (available on `publish`, `audit`, `search`)
+
 **Auto-rewrite** (`--auto-rewrite`): LLM-generated short-form content:
 ```bash
 # Configure LLM first (see LLM Configuration below)
 crier publish article.md --to bluesky --auto-rewrite
+
+# Preview rewrite with dry-run (invokes LLM, shows preview with char budget)
+crier publish article.md --to bluesky --auto-rewrite --dry-run
+
+# Disable auto-rewrite explicitly
+crier publish article.md --to bluesky --no-auto-rewrite
+
+# Retry up to 3 times if output exceeds character limit
+crier publish article.md --to bluesky --auto-rewrite --auto-rewrite-retry 3
+# Or use short form: -R 3
+
+# Truncate at sentence boundary if all retries fail
+crier publish article.md --to bluesky --auto-rewrite -R 3 --auto-rewrite-truncate
+
+# Override temperature (0.0-2.0, higher=more creative)
+crier publish article.md --to bluesky --auto-rewrite --temperature 1.2
+
+# Override model for this publish
+crier publish article.md --to bluesky --auto-rewrite --model gpt-4o
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success - all operations completed |
+| 1 | Failure - operation failed or validation error |
+| 2 | Partial - some operations succeeded, some failed |
+
+```bash
+# Check exit code in scripts
+crier publish article.md --to devto --batch
+echo "Exit code: $?"
+
+# Example: retry on partial failure
+crier audit --publish --batch
+if [ $? -eq 2 ]; then
+  echo "Some platforms failed, retry needed"
+fi
 ```
 
 ## LLM Configuration
@@ -126,15 +185,39 @@ llm:
 llm:
   base_url: http://localhost:11434/v1
   model: llama3
+
+# Full config with retry and truncation defaults
+llm:
+  api_key: sk-...
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  temperature: 0.7          # Default: 0.7 (0.0-2.0, higher=more creative)
+  retry_count: 0            # Default: 0 (no retries)
+  truncate_fallback: false  # Default: false (no hard truncation)
+```
+
+**Set config via CLI:**
+```bash
+crier config llm set temperature 0.9
+crier config llm set retry_count 3
+crier config llm set truncate_fallback true
 ```
 
 **Environment variables** (override config):
-- `OPENAI_API_KEY` — Auto-configures OpenAI endpoint + gpt-4o-mini
-- `CRIER_LLM_API_KEY`, `CRIER_LLM_BASE_URL`, `CRIER_LLM_MODEL` — Explicit overrides
+- `OPENAI_API_KEY` — API key (auto-defaults to OpenAI endpoint + gpt-4o-mini)
+- `OPENAI_BASE_URL` — Custom endpoint (e.g., `http://localhost:11434/v1` for Ollama)
 
 ## Bulk Operations
 
-Filter order: path → date → platform mode → content type → changed → sampling
+Filter order: path → date → platform mode → content type → tag → changed → sampling
+
+**Bulk operation filters**:
+- `--only-api` — Skip manual/import platforms
+- `--long-form` — Skip short-form platforms (bluesky, mastodon, twitter, threads)
+- `--tag <tag>` — Only include content with matching tags (case-insensitive, OR logic)
+- `--sample N` — Random sample of N items
+- `--include-changed` — Also update changed content
+- `--since` / `--until` — Date filtering (supports `1d`, `1w`, `1m`, `1y` or `YYYY-MM-DD`)
 
 ```bash
 # Fully automated batch mode
@@ -142,6 +225,9 @@ crier audit --publish --batch --long-form
 
 # Typical bulk publish
 crier audit --publish --yes --only-api --long-form
+
+# Filter by tag (only technical posts)
+crier audit --tag python --tag algorithms --only-api --publish --yes
 
 # Sample recent content
 crier audit --since 1m --sample 10 --publish --yes
@@ -151,7 +237,36 @@ crier audit --since 2025-01-01 --until 2025-01-31 --publish --yes
 
 # Path + filters
 crier audit content/post --since 1w --only-api --long-form --publish --yes
+
+# Combine tag filter with other filters
+crier audit --tag machine-learning --since 1m --long-form --publish --yes
 ```
+
+## Content Search
+
+Search and explore content without publishing using `crier search`:
+
+```bash
+# List all content
+crier search
+
+# Filter by tag
+crier search --tag python
+
+# Filter by date
+crier search --since 1m
+
+# Combine filters
+crier search content/post --tag python --since 1w
+
+# JSON for scripting
+crier search --tag python --json | jq '.results[].file'
+
+# Sample random posts
+crier search --sample 5
+```
+
+JSON output includes: file, title, date, tags, word count.
 
 ## Adding a New Platform
 
