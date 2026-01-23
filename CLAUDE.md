@@ -65,7 +65,7 @@ ruff format --check src/
 
 **Registry** (`registry.py`): Tracks publications in `.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
 
-**Converters** (`converters/markdown.py`): Parses markdown files with YAML front matter into `Article` objects.
+**Converters** (`converters/markdown.py`): Parses markdown files with YAML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
 
 **Skill** (`skill.py`): Claude Code skill installation. Loads `SKILL.md` from package resources and installs to `~/.claude/skills/crier/`.
 
@@ -88,6 +88,7 @@ ruff format --check src/
 - **Batch mode**: Non-interactive automation with `--batch` (implies `--yes --json`, skips manual platforms)
 - **JSON output**: Machine-readable output with `--json` for CI/CD integration
 - **Doctor**: Validate all API keys work
+- **Relative link resolution**: Converts relative links (`/posts/other/`, `../images/`) to absolute URLs using `site_base_url`
 
 ## Automation Modes
 

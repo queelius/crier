@@ -363,6 +363,8 @@ crier audit --sample 5 --since 1m --only-api --long-form
 
 6. **Use --batch for automation**. It handles all the flags for non-interactive use.
 
+7. **Relative links are auto-resolved**. Links like `/posts/other/` are converted to absolute URLs using `site_base_url`. No manual URL fixing needed.
+
 ## Configuration
 
 ### Global Config (~/.config/crier/config.yaml)

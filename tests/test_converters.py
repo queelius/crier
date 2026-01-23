@@ -3,6 +3,7 @@
 import pytest
 
 from crier.converters import parse_markdown_file, parse_front_matter
+from crier.converters.markdown import resolve_relative_links
 
 
 class TestParseFrontMatter:
@@ -166,3 +167,112 @@ Content.
         # Should work with string path as well as Path object
         article = parse_markdown_file(str(sample_markdown_file))
         assert article.title == "Test Article Title"
+
+    def test_parse_resolves_relative_links(self, tmp_path, monkeypatch):
+        """Test that relative links are resolved when base_url is available."""
+        from crier import config
+
+        md_file = tmp_path / "with_links.md"
+        md_file.write_text("""\
+---
+title: Article with Links
+---
+
+Check out [another post](/posts/other-article/).
+
+Here's an image: ![alt](/images/photo.png)
+""")
+        # Provide base_url directly
+        article = parse_markdown_file(md_file, base_url="https://example.com")
+        assert "https://example.com/posts/other-article/" in article.body
+        assert "https://example.com/images/photo.png" in article.body
+
+
+class TestResolveRelativeLinks:
+    """Tests for resolve_relative_links()."""
+
+    def test_resolve_markdown_link_absolute_path(self):
+        """Resolve markdown links with absolute paths."""
+        body = "Check out [this post](/posts/other/)."
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "Check out [this post](https://example.com/posts/other/)."
+
+    def test_resolve_markdown_link_relative_path(self):
+        """Resolve markdown links with relative paths."""
+        body = "See [related](related-post/)."
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "See [related](https://example.com/related-post/)."
+
+    def test_resolve_markdown_image(self):
+        """Resolve markdown images."""
+        body = "![photo](/images/pic.png)"
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "![photo](https://example.com/images/pic.png)"
+
+    def test_preserve_absolute_urls(self):
+        """Don't modify already-absolute URLs."""
+        body = "Check [external](https://other.com/page)."
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "Check [external](https://other.com/page)."
+
+    def test_preserve_anchors(self):
+        """Don't modify anchor links."""
+        body = "See [section](#heading)."
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "See [section](#heading)."
+
+    def test_preserve_mailto(self):
+        """Don't modify mailto: links."""
+        body = "Email [me](mailto:test@example.com)."
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "Email [me](mailto:test@example.com)."
+
+    def test_resolve_html_href(self):
+        """Resolve HTML href attributes."""
+        body = '<a href="/about">About</a>'
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == '<a href="https://example.com/about">About</a>'
+
+    def test_resolve_html_src(self):
+        """Resolve HTML src attributes."""
+        body = '<img src="/images/logo.png" alt="logo">'
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == '<img src="https://example.com/images/logo.png" alt="logo">'
+
+    def test_multiple_links(self):
+        """Resolve multiple links in same content."""
+        body = """
+Here's [link one](/page1) and [link two](/page2).
+
+And an image: ![img](/img.png)
+"""
+        result = resolve_relative_links(body, "https://example.com")
+        assert "https://example.com/page1" in result
+        assert "https://example.com/page2" in result
+        assert "https://example.com/img.png" in result
+
+    def test_no_base_url_returns_unchanged(self):
+        """Without base_url, content is unchanged."""
+        body = "Link to [page](/page)."
+        result = resolve_relative_links(body, "")
+        assert result == body
+        result = resolve_relative_links(body, None)
+        assert result == body
+
+    def test_base_url_trailing_slash_normalized(self):
+        """Trailing slash on base_url shouldn't cause double slashes."""
+        body = "[link](/path)"
+        result = resolve_relative_links(body, "https://example.com/")
+        assert result == "[link](https://example.com/path)"
+
+    def test_preserve_protocol_relative(self):
+        """Don't modify protocol-relative URLs."""
+        body = "[link](//cdn.example.com/file.js)"
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "[link](//cdn.example.com/file.js)"
+
+    def test_preserve_data_urls(self):
+        """Don't modify data: URLs."""
+        body = "![img](data:image/png;base64,abc123)"
+        result = resolve_relative_links(body, "https://example.com")
+        assert result == "![img](data:image/png;base64,abc123)"
