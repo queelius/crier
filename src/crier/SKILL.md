@@ -13,16 +13,21 @@ Crier cross-posts blog content to multiple platforms. The blog is the canonical 
 
 ## Platform Reference
 
-| Platform  | Mode   | Limit  | Updates? | Notes                          |
-|-----------|--------|--------|----------|--------------------------------|
-| devto     | API    | ∞      | Yes      | Tags auto-sanitized (no hyphens) |
-| hashnode  | API    | ∞      | Yes      |                                |
-| bluesky   | API    | 300    | No       | Short-form, needs rewrite      |
-| mastodon  | API    | 500    | Yes      | Short-form, needs rewrite      |
-| linkedin  | API    | 3000   | No       | Long-form but has limit        |
-| medium    | import | ∞      | No       | User imports from canonical URL |
-| twitter   | paste  | 280    | No       | Short-form, copy-paste         |
-| threads   | paste  | 500    | No       | Short-form, copy-paste         |
+| Platform   | Mode   | Limit  | Updates? | Notes                          |
+|------------|--------|--------|----------|--------------------------------|
+| devto      | API    | ∞      | Yes      | Tags auto-sanitized (no hyphens) |
+| hashnode   | API    | ∞      | Yes      |                                |
+| ghost      | API    | ∞      | Yes      | Self-hosted or Ghost(Pro)      |
+| wordpress  | API    | ∞      | Yes      | WordPress.com or self-hosted   |
+| medium     | import | ∞      | No       | User imports from canonical URL |
+| buttondown | API    | ∞      | Yes      | Newsletter platform            |
+| bluesky    | API    | 300    | No       | Short-form, needs rewrite      |
+| mastodon   | API    | 500    | Yes      | Short-form, needs rewrite      |
+| linkedin   | API    | 3000   | No       | Long-form but has limit        |
+| threads    | API    | 500    | No       | Short-form, needs rewrite      |
+| twitter    | paste  | 280    | No       | Short-form, copy-paste         |
+| telegram   | API    | 4096   | Yes      | Channel/group posts            |
+| discord    | API    | 4096   | Yes      | Webhook-based                  |
 
 **Modes:**
 - `API` = automatic posting via API

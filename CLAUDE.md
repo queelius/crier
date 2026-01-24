@@ -204,6 +204,15 @@ crier config llm set retry_count 3
 crier config llm set truncate_fallback true
 ```
 
+**View and test LLM config:**
+```bash
+# View current LLM configuration
+crier config llm show
+
+# Test the LLM connection with a simple request
+crier config llm test
+```
+
 **Environment variables** (override config):
 - `OPENAI_API_KEY` — API key (auto-defaults to OpenAI endpoint + gpt-4o-mini)
 - `OPENAI_BASE_URL` — Custom endpoint (e.g., `http://localhost:11434/v1` for Ollama)

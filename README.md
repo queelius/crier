@@ -226,10 +226,14 @@ crier publish FILE --to PLATFORM --manual  # Manual copy-paste mode
 crier audit                             # See what's missing/changed
 crier audit --publish                   # Bulk publish interactively
 crier audit --publish --yes             # Bulk publish without prompting
+crier search                            # List all content
+crier search --tag python --since 1w    # Filter by tag and date
 crier status [FILE]                     # Show publication status
 crier list PLATFORM                     # List your articles
 crier config show                       # Show configuration
 crier config set KEY VALUE              # Set configuration
+crier config llm show                   # Show LLM configuration
+crier config llm test                   # Test LLM connection
 crier doctor                            # Verify API keys work
 crier skill install                     # Install Claude Code skill
 ```
@@ -245,6 +249,11 @@ Use `--batch` for fully automated, non-interactive publishing (CI/CD):
 crier publish post.md --to devto --to bluesky --batch
 crier audit --publish --batch --long-form
 ```
+
+Batch mode behavior:
+- Implies `--yes` (no confirmation prompts)
+- Implies `--json` (structured output for parsing)
+- Implies `--only-api` (skips manual/import platforms that require user interaction)
 
 ### JSON Output
 
