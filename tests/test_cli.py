@@ -1344,3 +1344,393 @@ class TestAutomationFlags:
         data = json.loads(result.output)
         assert data["success"] is False
         assert "nonexistent" in data["error"].lower()
+
+
+class TestPlatformTypoSuggestion:
+    """Tests for platform typo suggestion feature."""
+
+    def test_typo_suggestion(self):
+        """Unknown platform suggests closest match."""
+        from crier.platforms import get_platform
+        import pytest
+
+        with pytest.raises(ValueError) as exc_info:
+            get_platform("devtoo")
+
+        error_msg = str(exc_info.value)
+        assert "devto" in error_msg.lower()
+        assert "did you mean" in error_msg.lower()
+
+    def test_no_suggestion_for_gibberish(self):
+        """No suggestion for completely unrelated names."""
+        from crier.platforms import get_platform
+        import pytest
+
+        with pytest.raises(ValueError) as exc_info:
+            get_platform("xyzabc123")
+
+        error_msg = str(exc_info.value)
+        assert "unknown platform" in error_msg.lower()
+        # Should not suggest anything since it's too different
+        # But should list available platforms
+        assert "available platforms" in error_msg.lower()
+
+
+class TestPlatformsCommand:
+    """Tests for crier platforms command."""
+
+    def test_platforms_shows_all(self, runner, mock_config_and_registry):
+        """Platforms command shows all platforms."""
+        result = runner.invoke(cli, ["platforms"])
+        assert result.exit_code == 0
+        assert "Available Platforms" in result.output
+        assert "devto" in result.output
+        assert "bluesky" in result.output
+
+    def test_platforms_shows_status(self, runner, mock_config_and_registry):
+        """Platforms command shows configuration status."""
+        result = runner.invoke(cli, ["platforms"])
+        assert result.exit_code == 0
+        # devto is configured in mock_config_and_registry
+        assert "Configured" in result.output
+
+
+class TestListWithoutPlatform:
+    """Tests for crier list without platform argument."""
+
+    def test_list_all_platforms_empty(self, runner, mock_config_and_registry):
+        """List without platform shows message when empty."""
+        result = runner.invoke(cli, ["list"])
+        assert result.exit_code == 0
+        assert "No articles in registry" in result.output
+
+    def test_list_requires_platform_for_remote(self, runner, mock_config_and_registry):
+        """Remote mode requires platform argument."""
+        result = runner.invoke(cli, ["list", "--remote"])
+        assert result.exit_code == 1
+        assert "requires a PLATFORM argument" in result.output
+
+
+class TestDateFilterHelp:
+    """Tests for improved date filter error messages."""
+
+    def test_invalid_date_shows_examples(self, runner, mock_config_and_registry):
+        """Invalid date format shows helpful examples."""
+        result = runner.invoke(cli, ["audit", "--since", "invalid"])
+        # Click wraps the BadParameter message
+        assert "1d" in result.output or "1w" in result.output
+        assert "Invalid date format" in result.output
+
+
+class TestVerboseFlags:
+    """Tests for verbose flags on commands."""
+
+    def test_search_verbose_flag_exists(self, runner, mock_config_and_registry):
+        """Search command accepts --verbose flag."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\ndescription: A test article\n---\nContent.")
+
+        result = runner.invoke(cli, ["search", "--verbose"])
+        assert result.exit_code == 0
+        # Verbose mode should show description column
+        assert "Description" in result.output
+
+    def test_status_verbose_flag_exists(self, runner, mock_config_and_registry):
+        """Status command accepts --verbose flag."""
+        result = runner.invoke(cli, ["status", "--verbose"])
+        assert result.exit_code == 0
+
+    def test_audit_verbose_flag_exists(self, runner, mock_config_and_registry):
+        """Audit command accepts --verbose flag."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\n---\nContent.")
+
+        result = runner.invoke(cli, ["audit", "--verbose"])
+        assert result.exit_code == 0
+
+
+class TestPublishNoProfileHelp:
+    """Tests for improved publish error when no platform specified."""
+
+    def test_shows_available_profiles(self, runner, mock_config_and_registry):
+        """No platform error shows available profiles."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\n---\nContent.")
+
+        result = runner.invoke(cli, ["publish", str(posts_dir / "test.md")])
+        assert result.exit_code == 1
+        # Should show available profiles from mock_config_and_registry
+        assert "Available profiles" in result.output or "--profile" in result.output
+
+
+class TestDeleteCommand:
+    """Tests for crier delete command."""
+
+    def test_delete_no_canonical_url(self, runner, mock_config_and_registry):
+        """Delete fails if file has no canonical_url."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\n---\nContent.")
+
+        result = runner.invoke(cli, ["delete", str(posts_dir / "test.md"), "--from", "devto"])
+        assert result.exit_code == 1
+        assert "canonical_url" in result.output
+
+    def test_delete_not_in_registry(self, runner, mock_config_and_registry):
+        """Delete fails if file is not tracked."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        result = runner.invoke(cli, ["delete", str(posts_dir / "test.md"), "--from", "devto"])
+        assert result.exit_code == 1
+        assert "registry" in result.output.lower() or "tracked" in result.output.lower()
+
+    def test_delete_requires_platform_spec(self, runner, mock_config_and_registry):
+        """Delete requires --from or --all when file is tracked."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        # Register the file so it gets past the "not tracked" check
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["delete", str(md_file)])
+        assert result.exit_code == 1
+        assert "--from" in result.output or "--all" in result.output
+
+    def test_delete_dry_run(self, runner, mock_config_and_registry):
+        """Delete --dry-run shows preview without deleting."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        # Add to registry
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["delete", str(md_file), "--all", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Dry Run" in result.output
+        assert "devto" in result.output
+
+    def test_delete_json_output(self, runner, mock_config_and_registry):
+        """Delete --json outputs machine-readable results."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        # Delete file that's not tracked - should fail with JSON error
+        result = runner.invoke(cli, ["delete", str(md_file), "--from", "devto", "--json"])
+        assert result.exit_code == 1
+        output = json.loads(result.output)
+        assert output["success"] is False
+
+
+class TestArchiveCommand:
+    """Tests for crier archive command."""
+
+    def test_archive_no_canonical_url(self, runner, mock_config_and_registry):
+        """Archive fails if file has no canonical_url."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\n---\nContent.")
+
+        result = runner.invoke(cli, ["archive", str(posts_dir / "test.md")])
+        assert result.exit_code == 1
+        assert "canonical_url" in result.output
+
+    def test_archive_not_in_registry(self, runner, mock_config_and_registry):
+        """Archive fails if file is not tracked."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        result = runner.invoke(cli, ["archive", str(posts_dir / "test.md")])
+        assert result.exit_code == 1
+        assert "registry" in result.output.lower()
+
+    def test_archive_success(self, runner, mock_config_and_registry):
+        """Archive succeeds for tracked file."""
+        from crier.registry import record_publication, is_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["archive", str(md_file)])
+        assert result.exit_code == 0
+        assert "Archived" in result.output
+
+        # Verify it's archived
+        assert is_archived("https://example.com/test") is True
+
+    def test_archive_already_archived(self, runner, mock_config_and_registry):
+        """Archive already-archived file is idempotent."""
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        set_archived("https://example.com/test", archived=True)
+
+        result = runner.invoke(cli, ["archive", str(md_file)])
+        assert result.exit_code == 0
+        assert "already" in result.output.lower()
+
+
+class TestUnarchiveCommand:
+    """Tests for crier unarchive command."""
+
+    def test_unarchive_no_canonical_url(self, runner, mock_config_and_registry):
+        """Unarchive fails if file has no canonical_url."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text("---\ntitle: Test\n---\nContent.")
+
+        result = runner.invoke(cli, ["unarchive", str(posts_dir / "test.md")])
+        assert result.exit_code == 1
+        assert "canonical_url" in result.output
+
+    def test_unarchive_not_archived(self, runner, mock_config_and_registry):
+        """Unarchive not-archived file is idempotent."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["unarchive", str(md_file)])
+        assert result.exit_code == 0
+        assert "Not archived" in result.output
+
+    def test_unarchive_success(self, runner, mock_config_and_registry):
+        """Unarchive restores archived file."""
+        from crier.registry import record_publication, set_archived, is_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        set_archived("https://example.com/test", archived=True)
+        assert is_archived("https://example.com/test") is True
+
+        result = runner.invoke(cli, ["unarchive", str(md_file)])
+        assert result.exit_code == 0
+        assert "Unarchived" in result.output
+
+        # Verify it's unarchived
+        assert is_archived("https://example.com/test") is False
+
+
+class TestAuditArchiveFilter:
+    """Tests for audit command archive filtering."""
+
+    def test_audit_excludes_archived_by_default(self, runner, mock_config_and_registry):
+        """Audit excludes archived content by default."""
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+
+        # Create two files
+        active_file = posts_dir / "active.md"
+        active_file.write_text("---\ntitle: Active Post\ncanonical_url: https://example.com/active\n---\nActive content.")
+
+        archived_file = posts_dir / "archived.md"
+        archived_file.write_text("---\ntitle: Archived Post\ncanonical_url: https://example.com/archived\n---\nArchived content.")
+
+        # Register both and archive one
+        record_publication(
+            canonical_url="https://example.com/active",
+            platform="devto",
+            article_id="1",
+            url="https://dev.to/active",
+            source_file=str(active_file),
+        )
+        record_publication(
+            canonical_url="https://example.com/archived",
+            platform="devto",
+            article_id="2",
+            url="https://dev.to/archived",
+            source_file=str(archived_file),
+        )
+        set_archived("https://example.com/archived", archived=True)
+
+        result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0
+        # Should show 1 file (the active one), not the archived one
+        assert "1 file" in result.output
+        # Active file should be in output, archived should not
+        assert "active.md" in result.output
+        assert "archived.md" not in result.output
+
+    def test_audit_include_archived_shows_all(self, runner, mock_config_and_registry):
+        """Audit --include-archived includes archived content."""
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+
+        # Create two files
+        active_file = posts_dir / "active.md"
+        active_file.write_text("---\ntitle: Active Post\ncanonical_url: https://example.com/active\n---\nActive content.")
+
+        archived_file = posts_dir / "archived.md"
+        archived_file.write_text("---\ntitle: Archived Post\ncanonical_url: https://example.com/archived\n---\nArchived content.")
+
+        # Archive one
+        record_publication(
+            canonical_url="https://example.com/archived",
+            platform="devto",
+            article_id="2",
+            url="https://dev.to/archived",
+            source_file=str(archived_file),
+        )
+        set_archived("https://example.com/archived", archived=True)
+
+        result = runner.invoke(cli, ["audit", "--include-archived"])
+        assert result.exit_code == 0
+        # Should show 2 files now
+        assert "2 file" in result.output

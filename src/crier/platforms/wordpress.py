@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class WordPress(Platform):
@@ -20,6 +20,8 @@ class WordPress(Platform):
     """
 
     name = "wordpress"
+    description = "Blog platform (WP.com/self-hosted)"
+    api_key_url = None  # Varies based on setup
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -89,6 +91,7 @@ class WordPress(Platform):
             f"{self.base_url}/posts",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -123,6 +126,7 @@ class WordPress(Platform):
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -151,6 +155,7 @@ class WordPress(Platform):
             f"{self.base_url}/posts",
             headers=self.headers,
             params=params,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -171,16 +176,24 @@ class WordPress(Platform):
         resp = requests.get(
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete (trash) a post on WordPress."""
         resp = requests.delete(
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

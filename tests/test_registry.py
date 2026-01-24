@@ -17,6 +17,10 @@ from crier.registry import (
     get_publication_id,
     remove_article,
     remove_publication,
+    record_deletion,
+    is_deleted,
+    set_archived,
+    is_archived,
     load_registry,
     save_registry,
 )
@@ -361,3 +365,139 @@ class TestRemoveOperations:
 
     def test_remove_nonexistent_publication(self, tmp_registry):
         assert remove_publication("https://example.com/article", "devto") is False
+
+
+class TestDeletionOperations:
+    """Tests for record_deletion() and is_deleted()."""
+
+    def test_record_deletion_success(self, tmp_registry):
+        """Recording deletion adds deleted_at timestamp."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+
+        assert record_deletion("https://example.com/article", "devto") is True
+
+        # Verify deleted_at was added
+        article = get_article("https://example.com/article")
+        assert "deleted_at" in article["platforms"]["devto"]
+
+    def test_record_deletion_article_not_found(self, tmp_registry):
+        """Recording deletion fails if article doesn't exist."""
+        assert record_deletion("https://example.com/nonexistent", "devto") is False
+
+    def test_record_deletion_platform_not_found(self, tmp_registry):
+        """Recording deletion fails if platform doesn't exist."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        assert record_deletion("https://example.com/article", "bluesky") is False
+
+    def test_is_deleted_true(self, tmp_registry):
+        """is_deleted returns True for deleted publications."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        record_deletion("https://example.com/article", "devto")
+
+        assert is_deleted("https://example.com/article", "devto") is True
+
+    def test_is_deleted_false(self, tmp_registry):
+        """is_deleted returns False for non-deleted publications."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        assert is_deleted("https://example.com/article", "devto") is False
+
+    def test_is_deleted_article_not_found(self, tmp_registry):
+        """is_deleted returns False for nonexistent article."""
+        assert is_deleted("https://example.com/nonexistent", "devto") is False
+
+    def test_is_deleted_platform_not_found(self, tmp_registry):
+        """is_deleted returns False for nonexistent platform."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        assert is_deleted("https://example.com/article", "bluesky") is False
+
+
+class TestArchiveOperations:
+    """Tests for set_archived() and is_archived()."""
+
+    def test_set_archived_true(self, tmp_registry):
+        """Setting archived=True adds archived flag and timestamp."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        assert set_archived("https://example.com/article", archived=True) is True
+
+        article = get_article("https://example.com/article")
+        assert article["archived"] is True
+        assert "archived_at" in article
+
+    def test_set_archived_false(self, tmp_registry):
+        """Setting archived=False removes archived flag and timestamp."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        set_archived("https://example.com/article", archived=True)
+
+        assert set_archived("https://example.com/article", archived=False) is True
+
+        article = get_article("https://example.com/article")
+        assert "archived" not in article
+        assert "archived_at" not in article
+
+    def test_set_archived_article_not_found(self, tmp_registry):
+        """Setting archived fails for nonexistent article."""
+        assert set_archived("https://example.com/nonexistent", archived=True) is False
+
+    def test_is_archived_true(self, tmp_registry):
+        """is_archived returns True for archived articles."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        set_archived("https://example.com/article", archived=True)
+
+        assert is_archived("https://example.com/article") is True
+
+    def test_is_archived_false(self, tmp_registry):
+        """is_archived returns False for non-archived articles."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        assert is_archived("https://example.com/article") is False
+
+    def test_is_archived_article_not_found(self, tmp_registry):
+        """is_archived returns False for nonexistent article."""
+        assert is_archived("https://example.com/nonexistent") is False

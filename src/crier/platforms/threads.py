@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Threads(Platform):
@@ -17,8 +17,12 @@ class Threads(Platform):
     """
 
     name = "threads"
+    description = "Short posts (500 chars)"
     base_url = "https://graph.threads.net/v1.0"
     max_content_length = 500  # Threads character limit
+    api_key_url = "https://developers.facebook.com/"
+    supports_delete = False
+    supports_stats = True
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -66,6 +70,7 @@ class Threads(Platform):
         resp = requests.post(
             f"{self.base_url}/{self.user_id}/threads",
             params=create_params,
+            timeout=30,
         )
 
         if resp.status_code != 200:
@@ -97,6 +102,7 @@ class Threads(Platform):
         resp = requests.post(
             f"{self.base_url}/{self.user_id}/threads_publish",
             params=publish_params,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -136,6 +142,7 @@ class Threads(Platform):
         resp = requests.get(
             f"{self.base_url}/{self.user_id}/threads",
             params=params,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -162,12 +169,17 @@ class Threads(Platform):
         resp = requests.get(
             f"{self.base_url}/{article_id}",
             params=params,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Threads API doesn't support deleting posts via API."""
-        raise NotImplementedError("Threads does not support deletion via API")
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error="Threads API does not support deleting posts. Delete manually at threads.net",
+        )

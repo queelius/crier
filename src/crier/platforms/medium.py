@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Medium(Platform):
@@ -20,8 +20,11 @@ class Medium(Platform):
     """
 
     name = "medium"
+    description = "General blogging platform"
     base_url = "https://api.medium.com/v1"
     compose_url = "https://medium.com/new-story"
+    api_key_url = "https://medium.com/me/settings/security"
+    supports_delete = False
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -63,6 +66,7 @@ class Medium(Platform):
         resp = requests.get(
             f"{self.base_url}/me",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -96,6 +100,7 @@ class Medium(Platform):
             f"{self.base_url}/users/{user_id}/posts",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 201:
@@ -129,6 +134,10 @@ class Medium(Platform):
         """Medium API doesn't support getting posts."""
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Medium API doesn't support deleting posts."""
-        return False
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error="Medium API does not support deleting posts. Delete manually at medium.com",
+        )

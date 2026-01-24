@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult, ThreadPublishResult
 
 
 class Mastodon(Platform):
@@ -15,7 +15,11 @@ class Mastodon(Platform):
     """
 
     name = "mastodon"
+    description = "Short posts (500 chars)"
     max_content_length = 500  # Default Mastodon limit (some instances allow more)
+    api_key_url = None  # Instance-specific
+    supports_threads = True
+    supports_stats = True
 
     def __init__(self, api_key: str, instance: str | None = None):
         """Initialize with access token and instance.
@@ -76,6 +80,7 @@ class Mastodon(Platform):
             f"{self.instance}/api/v1/statuses",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -115,6 +120,7 @@ class Mastodon(Platform):
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
             json={"status": text},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -138,6 +144,7 @@ class Mastodon(Platform):
         resp = requests.get(
             f"{self.instance}/api/v1/accounts/verify_credentials",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code != 200:
@@ -150,6 +157,7 @@ class Mastodon(Platform):
             f"{self.instance}/api/v1/accounts/{account_id}/statuses",
             headers=self.headers,
             params={"limit": limit},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -169,16 +177,126 @@ class Mastodon(Platform):
         resp = requests.get(
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete a toot."""
         resp = requests.delete(
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )
+
+    def get_stats(self, article_id: str) -> ArticleStats | None:
+        """Get engagement stats for a toot.
+
+        Mastodon provides favourites (likes), replies, and reblogs (reposts).
+        Views are not available via the API.
+        """
+        status = self.get_article(article_id)
+        if not status:
+            return None
+
+        return ArticleStats(
+            likes=status.get("favourites_count"),
+            comments=status.get("replies_count"),
+            reposts=status.get("reblogs_count"),
+        )
+
+    def publish_thread(self, posts: list[str]) -> ThreadPublishResult:
+        """Publish a thread of toots to Mastodon.
+
+        Each post is published as a reply to the previous one,
+        creating a connected thread.
+
+        Args:
+            posts: List of post content strings
+
+        Returns:
+            ThreadPublishResult with all post IDs and URLs
+        """
+        results = []
+        post_ids = []
+        post_urls = []
+        reply_to_id = None
+
+        for i, post_text in enumerate(posts):
+            # Check content length
+            if len(post_text) > self.max_content_length:
+                return ThreadPublishResult(
+                    success=False,
+                    platform=self.name,
+                    error=f"Post {i + 1} exceeds character limit ({len(post_text)} > {self.max_content_length})",
+                    results=results,
+                )
+
+            data = {
+                "status": post_text,
+                "visibility": "public",
+            }
+
+            # Add reply reference if not the first post
+            if reply_to_id:
+                data["in_reply_to_id"] = reply_to_id
+
+            resp = requests.post(
+                f"{self.instance}/api/v1/statuses",
+                headers=self.headers,
+                json=data,
+                timeout=30,
+            )
+
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                status_id = str(result.get("id"))
+                url = result.get("url")
+
+                reply_to_id = status_id
+                post_ids.append(status_id)
+                post_urls.append(url)
+
+                results.append(PublishResult(
+                    success=True,
+                    platform=self.name,
+                    article_id=status_id,
+                    url=url,
+                ))
+            else:
+                # Failed to post - return partial results
+                results.append(PublishResult(
+                    success=False,
+                    platform=self.name,
+                    error=f"{resp.status_code}: {resp.text}",
+                ))
+                return ThreadPublishResult(
+                    success=False,
+                    platform=self.name,
+                    error=f"Failed on post {i + 1}: {resp.status_code}: {resp.text}",
+                    root_id=post_ids[0] if post_ids else None,
+                    root_url=post_urls[0] if post_urls else None,
+                    post_ids=post_ids,
+                    post_urls=post_urls,
+                    results=results,
+                )
+
+        return ThreadPublishResult(
+            success=True,
+            platform=self.name,
+            root_id=post_ids[0] if post_ids else None,
+            root_url=post_urls[0] if post_urls else None,
+            post_ids=post_ids,
+            post_urls=post_urls,
+            results=results,
+        )

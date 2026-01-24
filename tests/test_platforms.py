@@ -1,6 +1,7 @@
 """Tests for crier.platforms module."""
 
 import pytest
+import requests
 from unittest.mock import Mock, patch
 
 from crier.platforms import (
@@ -15,7 +16,11 @@ from crier.platforms import (
     Twitter,
     Threads,
     LinkedIn,
+    Telegram,
+    Ghost,
+    WordPress,
 )
+from crier.platforms.devto import sanitize_tags
 
 
 class TestArticleDataclass:
@@ -221,10 +226,13 @@ class TestTwitterManualMode:
         platform = Twitter("manual")
         assert platform.get_article("123") is None
 
-    def test_delete_not_implemented(self):
+    def test_delete_returns_failure(self):
+        """Twitter (manual mode) returns DeleteResult with failure."""
         platform = Twitter("manual")
-        with pytest.raises(NotImplementedError):
-            platform.delete("123")
+        result = platform.delete("123")
+        assert result.success is False
+        assert result.platform == "twitter"
+        assert "twitter.com" in result.error.lower()
 
 
 class TestBluesky:
@@ -463,10 +471,13 @@ class TestThreads:
         assert result.success is False
         assert "not support editing" in result.error
 
-    def test_delete_not_implemented(self):
+    def test_delete_returns_failure(self):
+        """Threads returns DeleteResult with failure (no API support)."""
         platform = Threads("user:token")
-        with pytest.raises(NotImplementedError):
-            platform.delete("123")
+        result = platform.delete("123")
+        assert result.success is False
+        assert result.platform == "threads"
+        assert "threads" in result.error.lower()
 
 
 class TestLinkedIn:
@@ -585,3 +596,126 @@ class TestPlatformRegistry:
             key = special_formats.get(name, "test_key")
             platform = cls(key)
             assert platform.name == name
+
+
+class TestNetworkFailures:
+    """Tests for network failure handling."""
+
+    @patch("crier.platforms.devto.requests.post")
+    def test_devto_timeout(self, mock_post, sample_article):
+        """DevTo handles timeout gracefully."""
+        mock_post.side_effect = requests.Timeout("Connection timed out")
+
+        platform = DevTo("test_key")
+        with pytest.raises(requests.Timeout):
+            platform.publish(sample_article)
+
+    @patch("crier.platforms.devto.requests.post")
+    def test_devto_connection_error(self, mock_post, sample_article):
+        """DevTo handles connection error gracefully."""
+        mock_post.side_effect = requests.ConnectionError("Failed to connect")
+
+        platform = DevTo("test_key")
+        with pytest.raises(requests.ConnectionError):
+            platform.publish(sample_article)
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_bluesky_timeout(self, mock_post, sample_article):
+        """Bluesky handles timeout gracefully."""
+        mock_post.side_effect = requests.Timeout("Connection timed out")
+
+        platform = Bluesky("handle.bsky.social:password")
+        with pytest.raises(requests.Timeout):
+            platform.publish(sample_article)
+
+    @patch("crier.platforms.mastodon.requests.post")
+    def test_mastodon_timeout(self, mock_post, sample_article):
+        """Mastodon handles timeout gracefully."""
+        mock_post.side_effect = requests.Timeout("Connection timed out")
+
+        platform = Mastodon("mastodon.social:token")
+        with pytest.raises(requests.Timeout):
+            platform.publish(sample_article)
+
+
+class TestInvalidApiKeyFormats:
+    """Tests for invalid API key format handling."""
+
+    def test_threads_missing_separator(self):
+        """Threads requires user_id:access_token format."""
+        with pytest.raises(ValueError) as exc:
+            Threads("invalid_format_no_colon")
+        assert "user_id:access_token" in str(exc.value)
+
+    def test_telegram_missing_separator(self):
+        """Telegram requires bot_token:chat_id format."""
+        with pytest.raises(ValueError) as exc:
+            Telegram("invalid_format_no_colon")
+        assert "bot_token:chat_id" in str(exc.value)
+
+    def test_ghost_invalid_format(self):
+        """Ghost requires url:key_id:key_secret format."""
+        with pytest.raises(ValueError) as exc:
+            Ghost("just_a_key")
+        assert "key_id:key_secret" in str(exc.value)
+
+    def test_ghost_two_colons_only(self):
+        """Ghost requires exactly url:key_id:key_secret with URL having http(s)://."""
+        with pytest.raises(ValueError) as exc:
+            Ghost("site.com:key_id")
+        assert "key_id:key_secret" in str(exc.value)
+
+    def test_wordpress_com_missing_token(self):
+        """WordPress.com requires site:token format."""
+        with pytest.raises(ValueError) as exc:
+            WordPress("site.wordpress.com")
+        assert "access_token" in str(exc.value)
+
+    def test_wordpress_self_hosted_invalid_format(self):
+        """Self-hosted WordPress requires url:user:password format."""
+        with pytest.raises(ValueError) as exc:
+            WordPress("https://site.com")
+        assert "username:app_password" in str(exc.value)
+
+
+class TestDevToTagSanitization:
+    """Tests for DevTo tag sanitization."""
+
+    def test_sanitize_tags_basic(self):
+        """Basic tag sanitization works."""
+        tags = ["Python", "Machine-Learning", "AI"]
+        result = sanitize_tags(tags)
+        assert result == ["python", "machinelearning", "ai"]
+
+    def test_sanitize_tags_max_four(self):
+        """Only first 4 valid tags are kept."""
+        tags = ["one", "two", "three", "four", "five", "six"]
+        result = sanitize_tags(tags)
+        assert len(result) == 4
+        assert result == ["one", "two", "three", "four"]
+
+    def test_sanitize_tags_empty_filtered(self):
+        """Empty strings after sanitization are filtered out."""
+        tags = ["---", "python", "___", "testing"]
+        result = sanitize_tags(tags)
+        # "---" and "___" become "" and are filtered out
+        assert result == ["python", "testing"]
+
+    def test_sanitize_tags_all_special_chars(self):
+        """Tags that become empty are filtered."""
+        tags = ["---", "___", "###", "valid"]
+        result = sanitize_tags(tags)
+        assert result == ["valid"]
+
+    def test_sanitize_tags_duplicates_removed(self):
+        """Duplicate tags (after sanitization) are removed."""
+        tags = ["Python", "python", "PYTHON", "testing"]
+        result = sanitize_tags(tags)
+        assert result == ["python", "testing"]
+
+    def test_sanitize_tags_preserves_max_after_filtering(self):
+        """Max 4 tags after filtering empty/duplicates."""
+        tags = ["---", "one", "___", "two", "###", "three", "four", "five"]
+        result = sanitize_tags(tags)
+        # After filtering: one, two, three, four (first 4 valid)
+        assert result == ["one", "two", "three", "four"]

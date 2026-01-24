@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Buttondown(Platform):
@@ -15,7 +15,9 @@ class Buttondown(Platform):
     """
 
     name = "buttondown"
+    description = "Newsletter platform"
     base_url = "https://api.buttondown.email/v1"
+    api_key_url = "https://buttondown.email/settings/programming"
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -39,6 +41,7 @@ class Buttondown(Platform):
             f"{self.base_url}/emails",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -74,6 +77,7 @@ class Buttondown(Platform):
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -99,6 +103,7 @@ class Buttondown(Platform):
             f"{self.base_url}/emails",
             headers=self.headers,
             params={"page_size": limit},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -121,16 +126,24 @@ class Buttondown(Platform):
         resp = requests.get(
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete an email on Buttondown."""
         resp = requests.delete(
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
-        return resp.status_code in (200, 204)
+        if resp.status_code in (200, 204):
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

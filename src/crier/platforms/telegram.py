@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Telegram(Platform):
@@ -18,7 +18,9 @@ class Telegram(Platform):
     """
 
     name = "telegram"
+    description = "Channel announcements"
     max_content_length = 4096  # Telegram message character limit
+    api_key_url = "https://t.me/BotFather"
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -73,6 +75,7 @@ class Telegram(Platform):
         resp = requests.post(
             f"{self.base_url}/sendMessage",
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -117,6 +120,7 @@ class Telegram(Platform):
         resp = requests.post(
             f"{self.base_url}/editMessageText",
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -157,7 +161,7 @@ class Telegram(Platform):
         """Telegram Bot API doesn't support fetching specific messages."""
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete a message from Telegram channel."""
         data = {
             "chat_id": self.chat_id,
@@ -167,9 +171,20 @@ class Telegram(Platform):
         resp = requests.post(
             f"{self.base_url}/deleteMessage",
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             result = resp.json()
-            return result.get("ok", False)
-        return False
+            if result.get("ok"):
+                return DeleteResult(success=True, platform=self.name)
+            return DeleteResult(
+                success=False,
+                platform=self.name,
+                error=result.get("description", "Unknown error"),
+            )
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

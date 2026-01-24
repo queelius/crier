@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Hashnode(Platform):
@@ -18,7 +18,9 @@ class Hashnode(Platform):
     """
 
     name = "hashnode"
+    description = "Developer blogging platform"
     base_url = "https://gql.hashnode.com"
+    api_key_url = "https://hashnode.com/settings/developer"
 
     def __init__(self, api_key: str, publication_id: str | None = None):
         super().__init__(api_key)
@@ -40,6 +42,7 @@ class Hashnode(Platform):
             self.base_url,
             headers=self.headers,
             json={"query": query, "variables": variables or {}},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -231,7 +234,7 @@ class Hashnode(Platform):
         result = self._graphql(query, {"id": article_id})
         return result.get("data", {}).get("post")
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete an article."""
         query = """
         mutation RemovePost($id: ID!) {
@@ -242,4 +245,7 @@ class Hashnode(Platform):
         """
 
         result = self._graphql(query, {"id": article_id})
-        return "errors" not in result
+        if "errors" not in result:
+            return DeleteResult(success=True, platform=self.name)
+        error_msg = result["errors"][0].get("message", "Unknown error")
+        return DeleteResult(success=False, platform=self.name, error=error_msg)

@@ -6,7 +6,7 @@ This implementation generates tweet text for manual posting with confirmation.
 
 from typing import Any
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Twitter(Platform):
@@ -19,8 +19,11 @@ class Twitter(Platform):
     """
 
     name = "twitter"
+    description = "Short posts (280 chars, manual)"
     max_content_length = 280  # Twitter character limit
     compose_url = "https://twitter.com/compose/tweet"
+    api_key_url = None  # Manual mode only
+    supports_delete = False
 
     def __init__(self, api_key: str):
         """API key is ignored - this is manual mode."""
@@ -82,6 +85,10 @@ class Twitter(Platform):
         """Not available in manual mode."""
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Not available in manual mode."""
-        raise NotImplementedError("Manual mode - delete tweets at twitter.com")
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error="Manual mode - delete tweets at twitter.com",
+        )

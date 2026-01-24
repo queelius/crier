@@ -22,6 +22,7 @@ from .platforms import PLATFORMS, get_platform
 from .platforms.base import Article
 from .registry import (
     record_publication,
+    record_thread_publication,
     get_registry_path,
     is_published,
     has_content_changed,
@@ -29,8 +30,16 @@ from .registry import (
     get_publication_info,
     get_platform_publications,
     get_article_by_file,
+    get_article,
     get_all_articles,
     remove_publication,
+    record_deletion,
+    is_deleted,
+    set_archived,
+    is_archived,
+    save_stats,
+    get_cached_stats,
+    get_stats_age_seconds,
 )
 
 console = Console()
@@ -141,8 +150,13 @@ def _parse_date_filter(value: str) -> datetime:
         return datetime.fromisoformat(value)
     except ValueError:
         raise click.BadParameter(
-            f"Invalid date format: {value}. "
-            "Use relative (1d, 1w, 1m, 1y) or absolute (YYYY-MM-DD)."
+            f"Invalid date format: '{value}'\n\n"
+            "Examples:\n"
+            "  --since 1d         (1 day ago)\n"
+            "  --since 1w         (1 week ago)\n"
+            "  --since 1m         (1 month ago)\n"
+            "  --since 1y         (1 year ago)\n"
+            "  --since 2025-01-01 (absolute date)"
         )
 
 
@@ -591,12 +605,20 @@ def init():
               help="Non-interactive batch mode (implies --yes --json, skips manual/import platforms)")
 @click.option("--quiet", "-q", is_flag=True,
               help="Suppress non-essential output (for scripting)")
+@click.option("--schedule", "schedule_time", default=None,
+              help="Schedule publish for later (e.g., 'tomorrow 9am', '2025-01-24 09:00')")
+@click.option("--thread", is_flag=True,
+              help="Split content into a thread for social platforms (Bluesky, Mastodon)")
+@click.option("--thread-style", "thread_style", default="numbered",
+              type=click.Choice(["numbered", "simple", "emoji"]),
+              help="Thread numbering style (default: numbered)")
 def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             draft: bool, dry_run: bool, manual: bool, no_browser: bool,
             rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None,
             auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
             temperature: float | None, model_override: str | None,
-            yes: bool, json_output: bool, batch: bool, quiet: bool):
+            yes: bool, json_output: bool, batch: bool, quiet: bool, schedule_time: str | None,
+            thread: bool, thread_style: str):
     """Publish a markdown file to one or more platforms.
 
     For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
@@ -631,19 +653,13 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             if json_output:
                 print(json_module.dumps({"success": False, "error": "--auto-rewrite requires LLM configuration"}))
             else:
-                console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
+                console.print("[red]Error: LLM not configured for --auto-rewrite[/red]")
                 console.print()
-                console.print("[bold]Simplest setup:[/bold] Set OPENAI_API_KEY environment variable")
-                console.print("[dim]  export OPENAI_API_KEY=sk-...[/dim]")
+                console.print("[bold]Fix:[/bold] export OPENAI_API_KEY=sk-...")
+                console.print("[bold]Or:[/bold]  crier config llm set api_key sk-...")
                 console.print()
-                console.print("[bold]Or configure in ~/.config/crier/config.yaml:[/bold]")
-                console.print("[dim]  llm:[/dim]")
-                console.print("[dim]    api_key: sk-...  # defaults to OpenAI + gpt-4o-mini[/dim]")
-                console.print()
-                console.print("[bold]For Ollama/other providers:[/bold]")
-                console.print("[dim]  llm:[/dim]")
-                console.print("[dim]    base_url: http://localhost:11434/v1[/dim]")
-                console.print("[dim]    model: llama3[/dim]")
+                console.print("[dim]For Ollama: crier config llm set base_url http://localhost:11434/v1[/dim]")
+                console.print("[dim]            crier config llm set model llama3[/dim]")
             raise SystemExit(1)
 
         # Resolve auto-rewrite settings from config if not specified on CLI
@@ -699,13 +715,25 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         if json_output:
             print(json_module.dumps({"success": False, "error": "No platform specified"}))
         else:
-            console.print("[red]Error: No platform specified.[/red]")
-            console.print("[dim]Use --to <platform> or --profile <name> to specify where to publish.[/dim]")
-            console.print("[dim]Or set default_profile in .crier/config.yaml[/dim]")
-            console.print("[dim]Examples:[/dim]")
-            console.print("[dim]  crier publish article.md --to devto[/dim]")
-            console.print("[dim]  crier publish article.md --to bluesky --to mastodon[/dim]")
-            console.print("[dim]  crier publish article.md --profile social[/dim]")
+            console.print("[red]No platform specified.[/red]")
+            console.print()
+
+            # Show available profiles if any
+            all_profiles = get_all_profiles()
+            if all_profiles:
+                console.print("[bold]Available profiles:[/bold]")
+                for pname, plats in list(all_profiles.items())[:5]:  # Show up to 5
+                    expanded = get_profile(pname)
+                    platforms_str = ", ".join(expanded or plats)
+                    console.print(f"  --profile {pname}  [dim]({platforms_str})[/dim]")
+                if len(all_profiles) > 5:
+                    console.print(f"  [dim]... and {len(all_profiles) - 5} more[/dim]")
+                console.print()
+
+            console.print("[bold]Or specify directly:[/bold]")
+            console.print("  --to devto --to bluesky")
+            console.print()
+            console.print("[dim]Set a default: crier config set default_profile <name>[/dim]")
         raise SystemExit(1)
 
     # Use config default for rewrite_author if not specified
@@ -720,6 +748,55 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             seen.add(p)
             unique_platforms.append(p)
     platforms = unique_platforms
+
+    # Handle scheduling if --schedule is provided
+    if schedule_time:
+        from .scheduler import parse_schedule_time, create_scheduled_post
+
+        scheduled_dt = parse_schedule_time(schedule_time)
+        if scheduled_dt is None:
+            if json_output:
+                print(json_module.dumps({"success": False, "error": f"Could not parse schedule time: {schedule_time}"}))
+            else:
+                console.print(f"[red]Could not parse schedule time: {schedule_time}[/red]")
+                console.print()
+                console.print("Examples:")
+                console.print("  --schedule '2025-01-24 09:00'")
+                console.print("  --schedule 'tomorrow 9am'")
+                console.print("  --schedule 'in 2 hours'")
+            raise SystemExit(1)
+
+        # Create scheduled posts for each platform
+        scheduled_posts = []
+        for platform_name in platforms:
+            post = create_scheduled_post(
+                file_path=file,
+                platform=platform_name,
+                scheduled_time=scheduled_dt,
+                rewrite=rewrite_content,
+                auto_rewrite=auto_rewrite,
+                profile=profile_name,
+            )
+            scheduled_posts.append(post)
+
+        if json_output:
+            output = {
+                "command": "publish",
+                "scheduled": True,
+                "file": file,
+                "posts": [p.to_dict() for p in scheduled_posts],
+                "scheduled_time": scheduled_dt.isoformat(),
+            }
+            print(json_module.dumps(output, indent=2, default=str))
+        else:
+            local_time = scheduled_dt.astimezone()
+            console.print(f"[green]✓ Scheduled for {local_time.strftime('%Y-%m-%d %H:%M %Z')}[/green]")
+            for post in scheduled_posts:
+                console.print(f"  • {post.platform}: {post.id}")
+            console.print()
+            console.print("[dim]Run 'crier schedule list' to view scheduled posts.[/dim]")
+            console.print("[dim]Run 'crier schedule run' to process due posts (add to crontab).[/dim]")
+        return
 
     # Batch mode: filter out manual/import platforms
     skipped_platforms = []
@@ -775,8 +852,13 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     # Require canonical_url for registry tracking
     if not article.canonical_url:
-        console.print("[yellow]Warning: No canonical_url in front matter.[/yellow]")
-        console.print("[dim]Publications won't be tracked properly without canonical_url.[/dim]")
+        console.print("[yellow]Warning: Missing canonical_url in front matter[/yellow]")
+        console.print()
+        console.print("[dim]Fix: Add to your file's YAML front matter:[/dim]")
+        console.print("[dim]  canonical_url: https://yoursite.com/path/to/article/[/dim]")
+        console.print()
+        console.print("[dim]Or set site_base_url for auto-inference:[/dim]")
+        console.print("[dim]  crier config set site_base_url https://yoursite.com[/dim]")
         console.print()
 
     # Warn if file is outside content_paths
@@ -820,10 +902,17 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         for platform_name in platforms:
             api_key = get_api_key(platform_name)
             if not api_key:
+                # Get API key URL if available
+                notes = f"crier config set {platform_name}.api_key YOUR_KEY"
+                if platform_name in PLATFORMS:
+                    platform_cls = PLATFORMS[platform_name]
+                    api_url = getattr(platform_cls, 'api_key_url', None)
+                    if api_url:
+                        notes = f"Get key: {api_url}"
                 platform_table.add_row(
                     platform_name,
                     "[red]✗ Not configured[/red]",
-                    f"Run: crier config set {platform_name}.api_key YOUR_KEY"
+                    notes
                 )
             elif platform_name not in PLATFORMS:
                 platform_table.add_row(
@@ -1093,9 +1182,60 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             })
                             continue
 
-                if not silent:
-                    console.print(f"[dim]Publishing to {platform_name}...[/dim]")
-                result = platform.publish(publish_article)
+                # Handle threading if requested
+                thread_result = None
+                if thread and platform.supports_threads:
+                    from .threading import split_into_thread, estimate_thread_count
+
+                    # Use the content to thread (rewrite or original body)
+                    thread_content = publish_article.body
+                    max_len = platform.max_content_length or 300
+
+                    # Split into thread posts
+                    thread_posts = split_into_thread(
+                        thread_content,
+                        max_length=max_len,
+                        style=thread_style,
+                        max_posts=platform.thread_max_posts,
+                    )
+
+                    if len(thread_posts) > 1:
+                        if not silent:
+                            console.print(f"[dim]Publishing thread ({len(thread_posts)} posts) to {platform_name}...[/dim]")
+                        thread_result = platform.publish_thread(thread_posts)
+                    else:
+                        # Single post, use regular publish
+                        if not silent:
+                            console.print(f"[dim]Publishing to {platform_name}...[/dim]")
+                        result = platform.publish(publish_article)
+                elif thread and not platform.supports_threads:
+                    # Platform doesn't support threads
+                    results.append({
+                        "platform": platform_name,
+                        "success": False,
+                        "error": f"{platform_name} does not support thread posting",
+                        "url": None,
+                        "id": None,
+                    })
+                    continue
+                else:
+                    if not silent:
+                        console.print(f"[dim]Publishing to {platform_name}...[/dim]")
+                    result = platform.publish(publish_article)
+
+                # Handle thread result
+                if thread_result is not None:
+                    # Convert thread result to standard result for processing
+                    result = type("Result", (), {
+                        "success": thread_result.success,
+                        "article_id": thread_result.root_id,
+                        "url": thread_result.root_url,
+                        "error": thread_result.error,
+                        "requires_confirmation": False,
+                        "is_thread": True,
+                        "thread_ids": thread_result.post_ids,
+                        "thread_urls": thread_result.post_urls,
+                    })()
 
                 # Track rewrite info for registry
                 if platform_rewritten:
@@ -1196,29 +1336,56 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 continue  # Skip normal result handling
 
             # Normal (non-manual) result handling
-            results.append({
+            result_data = {
                 "platform": platform_name,
                 "success": result.success,
                 "error": result.error,
                 "url": result.url,
                 "id": result.article_id,
-            })
+            }
+
+            # Add thread info if this was a thread (check for True explicitly to handle Mock objects)
+            is_thread_result = getattr(result, 'is_thread', None) is True
+            if is_thread_result:
+                result_data["is_thread"] = True
+                result_data["thread_ids"] = getattr(result, 'thread_ids', None)
+                result_data["thread_urls"] = getattr(result, 'thread_urls', None)
+
+            results.append(result_data)
 
             # Record successful publication to registry
             if result.success and article.canonical_url:
                 content_hash = get_file_content_hash(Path(file))
-                record_publication(
-                    canonical_url=article.canonical_url,
-                    platform=platform_name,
-                    article_id=result.article_id,
-                    url=result.url,
-                    title=article.title,
-                    source_file=file,
-                    content_hash=content_hash,
-                    rewritten=is_rewritten,
-                    rewrite_author=rewrite_author if is_rewritten else None,
-                    posted_content=posted_content if is_rewritten else None,
-                )
+
+                # Use thread-specific recording if this was a thread
+                thread_ids = getattr(result, 'thread_ids', None) if is_thread_result else None
+                if is_thread_result and thread_ids:
+                    record_thread_publication(
+                        canonical_url=article.canonical_url,
+                        platform=platform_name,
+                        root_id=result.article_id,
+                        root_url=result.url,
+                        thread_ids=thread_ids,
+                        thread_urls=getattr(result, 'thread_urls', None),
+                        title=article.title,
+                        source_file=file,
+                        content_hash=content_hash,
+                        rewritten=is_rewritten,
+                        rewrite_author=rewrite_author if is_rewritten else None,
+                    )
+                else:
+                    record_publication(
+                        canonical_url=article.canonical_url,
+                        platform=platform_name,
+                        article_id=result.article_id,
+                        url=result.url,
+                        title=article.title,
+                        source_file=file,
+                        content_hash=content_hash,
+                        rewritten=is_rewritten,
+                        rewrite_author=rewrite_author if is_rewritten else None,
+                        posted_content=posted_content if is_rewritten else None,
+                    )
 
         except Exception as e:
             results.append({
@@ -1299,7 +1466,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
 
 @cli.command(name="list")
-@click.argument("platform")
+@click.argument("platform", required=False, default=None)
 @click.option("--limit", "-n", default=10, help="Number of articles to show")
 @click.option("--verbose", "-v", is_flag=True, help="Show all columns")
 @click.option("--remote", "-r", is_flag=True, help="Query platform API instead of registry")
@@ -1311,13 +1478,29 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     default="table",
     help="Output format: table (default), urls (one per line), json",
 )
-def list_articles(platform: str, limit: int, verbose: bool, remote: bool, output_format: str):
-    """List your crossposted articles on a platform.
+@click.option(
+    "--group-by",
+    "group_by",
+    type=click.Choice(["platform", "article"]),
+    default=None,
+    help="Group results by platform or article (only when listing all platforms)",
+)
+def list_articles(platform: str | None, limit: int, verbose: bool, remote: bool, output_format: str, group_by: str | None):
+    """List your crossposted articles.
+
+    Without PLATFORM argument, shows all publications across all platforms.
+    With PLATFORM argument, shows only that platform's publications.
 
     By default, shows articles from your local registry (what you've published).
-    Use --remote to query the platform's API directly.
+    Use --remote to query the platform's API directly (requires PLATFORM).
     """
     import json as json_module
+
+    # --remote requires a specific platform
+    if remote and not platform:
+        console.print("[red]Error: --remote requires a PLATFORM argument[/red]")
+        console.print("[dim]Example: crier list devto --remote[/dim]")
+        raise SystemExit(1)
 
     if remote:
         # Query platform API directly (old behavior)
@@ -1365,7 +1548,94 @@ def list_articles(platform: str, limit: int, verbose: bool, remote: bool, output
             console.print(f"[red]Error:[/red] {e}")
         return
 
-    # Default: read from registry (what YOU have published)
+    # Handle no platform specified - show all publications
+    if platform is None:
+        all_publications = []
+        for plat_name in PLATFORMS:
+            pubs = get_platform_publications(plat_name)
+            for pub in pubs:
+                pub["platform"] = plat_name
+            all_publications.extend(pubs)
+
+        if not all_publications:
+            console.print("No articles in registry.")
+            console.print("[dim]Publish something first with: crier publish <file> --to <platform>[/dim]")
+            return
+
+        # Sort by published_at descending
+        all_publications.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        all_publications = all_publications[:limit]
+
+        # JSON output
+        if output_format == "json":
+            print(json_module.dumps(all_publications, indent=2))
+            return
+
+        # URLs only output
+        if output_format == "urls":
+            for pub in all_publications:
+                url = pub.get("platform_url", "")
+                if url:
+                    print(url)
+            return
+
+        # Table output - group by article shows unique articles with their platforms
+        if group_by == "article":
+            # Group by canonical_url
+            from collections import defaultdict
+            by_article: dict[str, list[dict]] = defaultdict(list)
+            for pub in all_publications:
+                by_article[pub.get("canonical_url", "")].append(pub)
+
+            table = Table(title="Your publications (grouped by article)")
+            table.add_column("Title", style="green", max_width=40)
+            table.add_column("Platforms", style="cyan")
+            table.add_column("Source", style="dim", max_width=30)
+
+            for canonical_url, pubs in by_article.items():
+                platforms_str = ", ".join(sorted(set(p["platform"] for p in pubs)))
+                title = pubs[0].get("title", "")[:40] if pubs else ""
+                source = pubs[0].get("source_file", "")[:30] if pubs else ""
+                table.add_row(title, platforms_str, source)
+
+            console.print(table)
+        else:
+            # Default or group_by == "platform": show all with platform column
+            table = Table(title="Your publications (all platforms)")
+            if verbose:
+                table.add_column("Title", style="green", max_width=30)
+                table.add_column("Platform", style="cyan")
+                table.add_column("Source", style="dim", max_width=25)
+                table.add_column("URL", style="blue")
+                table.add_column("Rewritten", style="yellow", max_width=10)
+
+                for pub in all_publications:
+                    rewritten = "Yes" if pub.get("rewritten") else ""
+                    if pub.get("rewrite_author"):
+                        rewritten = pub.get("rewrite_author")
+                    table.add_row(
+                        (pub.get("title") or "")[:30],
+                        pub.get("platform", ""),
+                        (pub.get("source_file") or "")[:25],
+                        pub.get("platform_url", ""),
+                        rewritten,
+                    )
+            else:
+                table.add_column("Title", style="green", max_width=40)
+                table.add_column("Platform", style="cyan")
+                table.add_column("URL", style="blue")
+
+                for pub in all_publications:
+                    table.add_row(
+                        (pub.get("title") or "")[:40],
+                        pub.get("platform", ""),
+                        pub.get("platform_url", ""),
+                    )
+
+            console.print(table)
+        return
+
+    # Default: read from registry for specific platform (what YOU have published)
     publications = get_platform_publications(platform)
 
     if not publications:
@@ -1527,6 +1797,67 @@ def doctor():
         console.print(f"\n[dim]No platforms configured yet.[/dim]")
         console.print(f"[dim]Run: crier config set <platform>.api_key YOUR_KEY[/dim]")
         console.print(f"[dim]Or for manual mode: crier config set <platform>.api_key manual[/dim]")
+
+
+@cli.command(name="platforms")
+def show_platforms():
+    """Show all available platforms with their status and descriptions.
+
+    Lists each platform with its configuration status, mode (API/manual/import),
+    character limits, and a brief description.
+    """
+    table = Table(title="Available Platforms")
+    table.add_column("Platform", style="cyan")
+    table.add_column("Status")
+    table.add_column("Mode")
+    table.add_column("Limit", justify="right")
+    table.add_column("Description", style="dim")
+
+    for name in sorted(PLATFORMS.keys()):
+        platform_cls = PLATFORMS[name]
+        api_key = get_api_key(name)
+
+        # Determine status
+        if is_import_mode_key(api_key):
+            status = "[cyan]✓ Import mode[/cyan]"
+            mode = "import"
+        elif is_manual_mode_key(api_key):
+            status = "[blue]✓ Manual mode[/blue]"
+            mode = "paste"
+        elif api_key and is_platform_configured(name):
+            status = "[green]✓ Configured[/green]"
+            mode = "API"
+        else:
+            status = "[dim]✗ Not configured[/dim]"
+            mode = "-"
+
+        # Get character limit
+        max_len = getattr(platform_cls, 'max_content_length', None)
+        limit_str = f"{max_len}" if max_len else "-"
+
+        # Get description
+        description = getattr(platform_cls, 'description', "Publishing platform")
+
+        table.add_row(name, status, mode, limit_str, description)
+
+    console.print(table)
+
+    # Setup hint
+    console.print()
+    console.print("[dim]Setup: crier config set <platform>.api_key YOUR_KEY[/dim]")
+
+    # Show API key URLs for unconfigured platforms
+    unconfigured = [name for name in PLATFORMS if not get_api_key(name)]
+    if unconfigured:
+        console.print()
+        console.print("[bold]Get API keys:[/bold]")
+        for name in sorted(unconfigured)[:5]:  # Show up to 5
+            platform_cls = PLATFORMS[name]
+            url = getattr(platform_cls, 'api_key_url', None)
+            if url:
+                console.print(f"  {name}: {url}")
+        if len(unconfigured) > 5:
+            console.print(f"  [dim]... and {len(unconfigured) - 5} more[/dim]")
 
 
 @cli.group()
@@ -2044,9 +2375,17 @@ def llm_set(key: str, value: str):
     elif key == "model":
         set_llm_config(model=value)
     elif key == "temperature":
-        set_llm_config(temperature=float(value))
+        try:
+            set_llm_config(temperature=float(value))
+        except ValueError:
+            console.print(f"[red]Error: '{value}' is not a valid number for temperature[/red]")
+            raise SystemExit(1)
     elif key == "retry_count":
-        set_llm_config(retry_count=int(value))
+        try:
+            set_llm_config(retry_count=int(value))
+        except ValueError:
+            console.print(f"[red]Error: '{value}' is not a valid integer for retry_count[/red]")
+            raise SystemExit(1)
     elif key == "truncate_fallback":
         set_llm_config(truncate_fallback=value.lower() in ("true", "1", "yes"))
 
@@ -2122,6 +2461,8 @@ def llm_test():
               help="Randomly sample N items for processing")
 @click.option("--include-changed", is_flag=True,
               help="Include changed/dirty items (default: missing only)")
+@click.option("--include-archived", is_flag=True,
+              help="Include archived items (default: skip archived)")
 @click.option("--since", "since_date", default=None,
               help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
 @click.option("--until", "until_date", default=None,
@@ -2140,11 +2481,14 @@ def llm_test():
               help="Retry auto-rewrite N times if output exceeds limit (default from config)")
 @click.option("--auto-rewrite-truncate", "auto_rewrite_truncate", is_flag=True, default=None,
               help="Hard-truncate at sentence boundary if retries fail")
+@click.option("--verbose", "-v", is_flag=True,
+              help="Show detailed output per file")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
-          sample: int | None, include_changed: bool, since_date: str | None, until_date: str | None,
+          sample: int | None, include_changed: bool, include_archived: bool,
+          since_date: str | None, until_date: str | None,
           tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
-          auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None):
+          auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None, verbose: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -2154,12 +2498,13 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     Use --publish --yes to publish all missing items without prompting.
     Use --publish --dry-run to preview what would be published.
 
+    \b
     Bulk operation filters:
-    --only-api: Skip platforms configured for manual/import mode.
-    --long-form: Skip short-form platforms (bluesky, mastodon, twitter, threads).
-    --tag: Filter by tags (case-insensitive, multiple tags use OR logic).
-    --sample N: Randomly select N items from the actionable pool.
-    --include-changed: Also process changed/dirty items (default: missing only).
+      --only-api        Skip platforms configured for manual/import mode
+      --long-form       Skip short-form platforms (bluesky, mastodon, etc.)
+      --tag             Filter by tags (case-insensitive, OR logic)
+      --sample N        Randomly select N items from the actionable pool
+      --include-changed Also process changed/dirty items (default: missing only)
 
     Use --batch for non-interactive automation (implies --yes --json --only-api).
     """
@@ -2260,6 +2605,20 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             # OR logic: include if any tag matches
             if any(tag in filter_tags for tag in content_tags):
                 filtered_files.append(f)
+        files = filtered_files
+
+    # Apply archived filtering (default: exclude archived)
+    if not include_archived:
+        from .registry import is_archived as _is_archived
+        filtered_files = []
+        for f in files:
+            try:
+                article = parse_markdown_file(str(f))
+                if article.canonical_url and _is_archived(article.canonical_url):
+                    continue  # Skip archived
+            except Exception:
+                pass  # Include if we can't check
+            filtered_files.append(f)
         files = filtered_files
 
     if not files:
@@ -2510,7 +2869,13 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
         if not api_key:
             if not silent:
+                hint = f"crier config set {platform}.api_key YOUR_KEY"
+                if platform in PLATFORMS:
+                    api_url = getattr(PLATFORMS[platform], 'api_key_url', None)
+                    if api_url:
+                        hint = f"Get key: {api_url}"
                 console.print(f"[red]✗ {title[:30]} → {platform}: Not configured[/red]")
+                console.print(f"  [dim]{hint}[/dim]")
             publish_results.append({
                 "file": str(file_path),
                 "platform": platform,
@@ -2523,12 +2888,13 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
         if not article.canonical_url:
             if not silent:
-                console.print(f"[yellow]⚠ {title[:30]}: No canonical_url, skipping[/yellow]")
+                console.print(f"[yellow]⚠ {title[:30]}: Missing canonical_url[/yellow]")
+                console.print(f"  [dim]Add canonical_url to front matter or set site_base_url[/dim]")
             publish_results.append({
                 "file": str(file_path),
                 "platform": platform,
                 "success": False,
-                "error": "No canonical_url",
+                "error": "Missing canonical_url",
                 "action": action,
             })
             fail_count += 1
@@ -2754,8 +3120,10 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
               help="Output results as JSON")
 @click.option("--quiet", "-q", is_flag=True,
               help="Suppress non-essential output (for scripting)")
+@click.option("--verbose", "-v", is_flag=True,
+              help="Show all tags and descriptions")
 def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None,
-           until_date: str | None, sample: int | None, json_output: bool, quiet: bool):
+           until_date: str | None, sample: int | None, json_output: bool, quiet: bool, verbose: bool):
     """Search and list content files with metadata.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -2832,6 +3200,7 @@ def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None
                     "date": content_date.isoformat() if content_date else None,
                     "tags": _get_content_tags(f),
                     "words": len(article.body.split()) if article.body else 0,
+                    "description": article.description,
                 })
         except Exception:
             # Skip files that can't be parsed
@@ -2845,31 +3214,50 @@ def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None
         table.add_column("File", style="cyan", max_width=40, overflow="ellipsis")
         table.add_column("Title", style="green", max_width=30, overflow="ellipsis")
         table.add_column("Date", style="yellow", width=10)
-        table.add_column("Tags", style="blue", max_width=20, overflow="ellipsis")
-        table.add_column("Words", style="dim", justify="right", width=6)
+        if verbose:
+            table.add_column("Tags", style="blue", max_width=40)
+            table.add_column("Words", style="dim", justify="right", width=6)
+            table.add_column("Description", style="dim", max_width=30, overflow="ellipsis")
+        else:
+            table.add_column("Tags", style="blue", max_width=20, overflow="ellipsis")
+            table.add_column("Words", style="dim", justify="right", width=6)
 
         for r in results:
             date_str = r["date"][:10] if r["date"] else "-"
 
             tags = r["tags"]
-            tags_str = ", ".join(tags[:3])
-            if len(tags) > 3:
-                tags_str += f" (+{len(tags) - 3})"
+            if verbose:
+                tags_str = ", ".join(tags) if tags else "-"
+            else:
+                tags_str = ", ".join(tags[:3])
+                if len(tags) > 3:
+                    tags_str += f" (+{len(tags) - 3})"
 
-            table.add_row(
-                str(r["file"]),
-                r["title"],
-                date_str,
-                tags_str,
-                str(r["words"]),
-            )
+            if verbose:
+                table.add_row(
+                    str(r["file"]),
+                    r["title"],
+                    date_str,
+                    tags_str,
+                    str(r["words"]),
+                    r.get("description", "-") or "-",
+                )
+            else:
+                table.add_row(
+                    str(r["file"]),
+                    r["title"],
+                    date_str,
+                    tags_str,
+                    str(r["words"]),
+                )
         console.print(table)
 
 
 @cli.command()
 @click.argument("file", type=click.Path(exists=True), required=False)
 @click.option("--all", "-a", "show_all", is_flag=True, hidden=True, help="(deprecated) Show all tracked posts")
-def status(file: str | None, show_all: bool):
+@click.option("--verbose", "-v", is_flag=True, help="Show content hashes and all platforms")
+def status(file: str | None, show_all: bool, verbose: bool):
     """Show publication status for a file or all tracked posts.
 
     Without arguments, shows all tracked posts.
@@ -2891,11 +3279,17 @@ def status(file: str | None, show_all: bool):
 
         # Check if content has changed
         file_path = Path(file)
+        current_hash = None
+        stored_hash = article_data.get("content_hash")
         if file_path.exists():
             current_hash = get_file_content_hash(file_path)
-            stored_hash = article_data.get("content_hash")
             if stored_hash and current_hash != stored_hash:
                 console.print("[yellow]⚠ Content has changed since last publication[/yellow]")
+
+        if verbose:
+            console.print(f"[dim]Stored hash: {stored_hash or 'none'}[/dim]")
+            if current_hash:
+                console.print(f"[dim]Current hash: {current_hash}[/dim]")
 
         console.print()
 
@@ -2904,6 +3298,9 @@ def status(file: str | None, show_all: bool):
         table.add_column("Status")
         table.add_column("URL")
         table.add_column("Published")
+        if verbose:
+            table.add_column("Article ID", style="dim")
+            table.add_column("Rewritten", style="yellow")
 
         publications = article_data.get("platforms", {})
 
@@ -2911,25 +3308,38 @@ def status(file: str | None, show_all: bool):
         for platform_name in PLATFORMS:
             if platform_name in publications:
                 pub = publications[platform_name]
-                table.add_row(
+                row = [
                     platform_name,
                     "[green]✓ Published[/green]",
                     pub.get("url") or "[dim]no url[/dim]",
                     pub.get("published_at", "")[:10] if pub.get("published_at") else "",
-                )
+                ]
+                if verbose:
+                    row.append(pub.get("id") or "[dim]-[/dim]")
+                    rewritten = "Yes" if pub.get("rewritten") else ""
+                    if pub.get("rewrite_author"):
+                        rewritten = pub.get("rewrite_author")
+                    row.append(rewritten or "[dim]-[/dim]")
+                table.add_row(*row)
             else:
                 api_key = get_api_key(platform_name)
                 if api_key:
-                    table.add_row(
+                    row = [
                         platform_name,
                         "[yellow]○ Not published[/yellow]",
                         "",
                         "",
-                    )
-                else:
+                    ]
+                    if verbose:
+                        row.extend(["", ""])
+                    table.add_row(*row)
+                elif verbose:
+                    # Only show unconfigured platforms in verbose mode
                     table.add_row(
                         platform_name,
                         "[dim]- Not configured[/dim]",
+                        "",
+                        "",
                         "",
                         "",
                     )
@@ -2953,17 +3363,20 @@ def status(file: str | None, show_all: bool):
         table.add_column("Title")
         table.add_column("Platforms")
         table.add_column("Changed")
+        if verbose:
+            table.add_column("Canonical URL", style="dim", max_width=35)
+            table.add_column("Hash", style="dim", width=8)
 
         for canonical_url, article_data in all_articles.items():
             platforms = article_data.get("platforms", {})
             platform_list = ", ".join(platforms.keys()) if platforms else "[dim]none[/dim]"
 
             source_file = article_data.get("source_file")
+            stored_hash = article_data.get("content_hash")
             if source_file:
                 full_path = Path(source_file)
                 if full_path.exists():
                     current_hash = get_file_content_hash(full_path)
-                    stored_hash = article_data.get("content_hash")
                     changed = "[yellow]⚠ Yes[/yellow]" if stored_hash and current_hash != stored_hash else "No"
                     display_file = source_file
                 else:
@@ -2973,12 +3386,16 @@ def status(file: str | None, show_all: bool):
                 changed = "[dim]?[/dim]"
                 display_file = "[dim]unknown[/dim]"
 
-            table.add_row(
+            row = [
                 display_file,
                 (article_data.get("title") or "")[:35],
                 platform_list,
                 changed,
-            )
+            ]
+            if verbose:
+                row.append(canonical_url[:35] if canonical_url else "")
+                row.append(stored_hash[:8] if stored_hash else "-")
+            table.add_row(*row)
 
         console.print(table)
 
@@ -3117,8 +3534,13 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
     article = parse_markdown_file(file)
 
     if not article.canonical_url:
-        console.print("[red]Error: File must have canonical_url in front matter.[/red]")
-        console.print("[dim]The canonical_url is the unique identity for tracking publications.[/dim]")
+        console.print("[red]Error: Missing canonical_url in front matter[/red]")
+        console.print()
+        console.print("[dim]Fix: Add to your file's YAML front matter:[/dim]")
+        console.print("[dim]  canonical_url: https://yoursite.com/path/to/article/[/dim]")
+        console.print()
+        console.print("[dim]Or set site_base_url for auto-inference:[/dim]")
+        console.print("[dim]  crier config set site_base_url https://yoursite.com[/dim]")
         return
 
     # Check if already registered
@@ -3160,7 +3582,8 @@ def unregister(file: str, platform_name: str):
     article = parse_markdown_file(file)
 
     if not article.canonical_url:
-        console.print("[red]Error: File must have canonical_url in front matter.[/red]")
+        console.print("[red]Error: Missing canonical_url in front matter[/red]")
+        console.print("[dim]This file is not tracked in the registry.[/dim]")
         return
 
     if not is_published(article.canonical_url, platform_name):
@@ -3171,6 +3594,1047 @@ def unregister(file: str, platform_name: str):
         console.print(f"[green]✓ Unregistered {file} from {platform_name}[/green]")
     else:
         console.print(f"[red]Failed to unregister.[/red]")
+
+
+@cli.group()
+def schedule():
+    """Manage scheduled posts."""
+    pass
+
+
+@schedule.command(name="list")
+@click.option("--status", "-s", type=click.Choice(["pending", "published", "failed", "cancelled"]),
+              help="Filter by status (default: all)")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+def schedule_list(status: str | None, json_output: bool):
+    """List scheduled posts.
+
+    Shows all scheduled posts, optionally filtered by status.
+    """
+    import json as json_module
+    from .scheduler import list_scheduled_posts
+
+    posts = list_scheduled_posts(status=status)
+
+    if json_output:
+        output = {
+            "command": "schedule list",
+            "posts": [p.to_dict() for p in posts],
+            "count": len(posts),
+        }
+        print(json_module.dumps(output, indent=2, default=str))
+        return
+
+    if not posts:
+        console.print("[dim]No scheduled posts.[/dim]")
+        return
+
+    table = Table(title="Scheduled Posts")
+    table.add_column("ID", style="cyan")
+    table.add_column("File", style="green")
+    table.add_column("Platform", style="blue")
+    table.add_column("Scheduled", style="yellow")
+    table.add_column("Status")
+
+    for post in posts:
+        # Format scheduled time nicely
+        from datetime import timezone as tz
+        local_time = post.scheduled_time.astimezone()
+        time_str = local_time.strftime("%Y-%m-%d %H:%M")
+
+        # Format status
+        status_display = {
+            "pending": "[yellow]pending[/yellow]",
+            "published": "[green]published[/green]",
+            "failed": "[red]failed[/red]",
+            "cancelled": "[dim]cancelled[/dim]",
+        }.get(post.status, post.status)
+
+        platform_display = post.profile if post.profile else post.platform
+
+        table.add_row(
+            post.id,
+            str(Path(post.file_path).name),
+            platform_display,
+            time_str,
+            status_display,
+        )
+
+    console.print(table)
+
+
+@schedule.command(name="show")
+@click.argument("post_id")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+def schedule_show(post_id: str, json_output: bool):
+    """Show details of a scheduled post."""
+    import json as json_module
+    from .scheduler import get_scheduled_post
+
+    post = get_scheduled_post(post_id)
+
+    if not post:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": f"Post {post_id} not found"}))
+        else:
+            console.print(f"[red]Post {post_id} not found.[/red]")
+        raise SystemExit(1)
+
+    if json_output:
+        print(json_module.dumps({"success": True, "post": post.to_dict()}, indent=2, default=str))
+        return
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+
+    # Format scheduled time
+    local_time = post.scheduled_time.astimezone()
+
+    table.add_row("ID", post.id)
+    table.add_row("File", post.file_path)
+    table.add_row("Platform", post.profile if post.profile else post.platform)
+    table.add_row("Scheduled", local_time.strftime("%Y-%m-%d %H:%M %Z"))
+    table.add_row("Created", post.created_at.astimezone().strftime("%Y-%m-%d %H:%M %Z"))
+    table.add_row("Status", post.status)
+    if post.error:
+        table.add_row("Error", f"[red]{post.error}[/red]")
+    if post.rewrite:
+        table.add_row("Rewrite", post.rewrite[:50] + "..." if len(post.rewrite) > 50 else post.rewrite)
+    table.add_row("Auto-rewrite", "Yes" if post.auto_rewrite else "No")
+
+    console.print(table)
+
+
+@schedule.command(name="cancel")
+@click.argument("post_id")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+def schedule_cancel(post_id: str, json_output: bool):
+    """Cancel a scheduled post.
+
+    Only pending posts can be cancelled.
+    """
+    import json as json_module
+    from .scheduler import cancel_scheduled_post, get_scheduled_post
+
+    post = get_scheduled_post(post_id)
+    if not post:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": f"Post {post_id} not found"}))
+        else:
+            console.print(f"[red]Post {post_id} not found.[/red]")
+        raise SystemExit(1)
+
+    if post.status != "pending":
+        if json_output:
+            print(json_module.dumps({"success": False, "error": f"Post is {post.status}, not pending"}))
+        else:
+            console.print(f"[yellow]Post is {post.status}, cannot cancel.[/yellow]")
+        raise SystemExit(1)
+
+    if cancel_scheduled_post(post_id):
+        if json_output:
+            print(json_module.dumps({"success": True, "cancelled": post_id}))
+        else:
+            console.print(f"[green]✓ Cancelled scheduled post {post_id}[/green]")
+    else:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Failed to cancel"}))
+        else:
+            console.print("[red]Failed to cancel.[/red]")
+        raise SystemExit(1)
+
+
+@schedule.command(name="run")
+@click.option("--dry-run", is_flag=True,
+              help="Show what would be published without actually publishing")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+def schedule_run(dry_run: bool, json_output: bool):
+    """Process due scheduled posts (for cron).
+
+    Publishes all pending posts where scheduled_time <= now.
+    This command is designed to be called from cron.
+
+    Example crontab entry (run every 5 minutes):
+        */5 * * * * cd /path/to/project && crier schedule run
+    """
+    import json as json_module
+    from .scheduler import get_due_posts, update_scheduled_post
+    from .converters import parse_markdown_file
+    from .platforms import get_platform, PLATFORMS
+
+    due_posts = get_due_posts()
+
+    if not due_posts:
+        if json_output:
+            print(json_module.dumps({"command": "schedule run", "processed": 0, "results": []}))
+        elif not json_output:
+            console.print("[dim]No posts due.[/dim]")
+        return
+
+    if dry_run:
+        if not json_output:
+            console.print("[bold]Dry Run - Due Posts[/bold]\n")
+            for post in due_posts:
+                console.print(f"  • {post.file_path} → {post.platform} (scheduled: {post.scheduled_time})")
+            console.print(f"\n[dim]{len(due_posts)} post(s) would be published.[/dim]")
+        else:
+            output = {
+                "command": "schedule run",
+                "dry_run": True,
+                "due": [p.to_dict() for p in due_posts],
+            }
+            print(json_module.dumps(output, indent=2, default=str))
+        return
+
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    for post in due_posts:
+        # Check file exists
+        file_path = Path(post.file_path)
+        if not file_path.exists():
+            update_scheduled_post(post.id, status="failed", error="Source file not found")
+            results.append({"id": post.id, "success": False, "error": "Source file not found"})
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {post.id}: Source file not found")
+            continue
+
+        # Parse article
+        try:
+            article = parse_markdown_file(str(file_path))
+        except Exception as e:
+            update_scheduled_post(post.id, status="failed", error=str(e))
+            results.append({"id": post.id, "success": False, "error": str(e)})
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {post.id}: {e}")
+            continue
+
+        # Get platform
+        platform_name = post.platform
+        if platform_name not in PLATFORMS:
+            update_scheduled_post(post.id, status="failed", error=f"Unknown platform: {platform_name}")
+            results.append({"id": post.id, "success": False, "error": f"Unknown platform: {platform_name}"})
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {post.id}: Unknown platform {platform_name}")
+            continue
+
+        api_key = get_api_key(platform_name)
+        if not api_key:
+            update_scheduled_post(post.id, status="failed", error=f"No API key for {platform_name}")
+            results.append({"id": post.id, "success": False, "error": f"No API key for {platform_name}"})
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {post.id}: No API key for {platform_name}")
+            continue
+
+        # Handle rewrite if specified
+        if post.rewrite:
+            article = Article(
+                title=article.title,
+                body=post.rewrite,
+                description=article.description,
+                tags=article.tags,
+                canonical_url=article.canonical_url,
+                published=article.published,
+                cover_image=article.cover_image,
+            )
+
+        # Publish
+        try:
+            platform_cls = get_platform(platform_name)
+            platform = platform_cls(api_key)
+            result = platform.publish(article)
+
+            if result.success:
+                update_scheduled_post(post.id, status="published")
+
+                # Record in registry
+                if article.canonical_url:
+                    record_publication(
+                        canonical_url=article.canonical_url,
+                        platform=platform_name,
+                        article_id=result.article_id,
+                        url=result.url,
+                        title=article.title,
+                        source_file=str(file_path),
+                    )
+
+                results.append({
+                    "id": post.id,
+                    "success": True,
+                    "platform": platform_name,
+                    "url": result.url,
+                })
+                success_count += 1
+                if not json_output:
+                    console.print(f"[green]✓[/green] {post.id}: Published to {platform_name}")
+            else:
+                update_scheduled_post(post.id, status="failed", error=result.error)
+                results.append({"id": post.id, "success": False, "error": result.error})
+                fail_count += 1
+                if not json_output:
+                    console.print(f"[red]✗[/red] {post.id}: {result.error}")
+
+        except Exception as e:
+            update_scheduled_post(post.id, status="failed", error=str(e))
+            results.append({"id": post.id, "success": False, "error": str(e)})
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {post.id}: {e}")
+
+    if json_output:
+        output = {
+            "command": "schedule run",
+            "processed": len(due_posts),
+            "results": results,
+            "summary": {"succeeded": success_count, "failed": fail_count},
+        }
+        print(json_module.dumps(output, indent=2, default=str))
+    else:
+        console.print(f"\n[bold]Processed {len(due_posts)} scheduled post(s):[/bold]")
+        console.print(f"  Succeeded: [green]{success_count}[/green]")
+        console.print(f"  Failed: [red]{fail_count}[/red]")
+
+    # Exit code
+    if fail_count > 0:
+        if success_count > 0:
+            raise SystemExit(2)  # Partial failure
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--from", "-f", "platform_args", multiple=True,
+              help="Platform(s) to delete from (can specify multiple)")
+@click.option("--all", "-a", "delete_all", is_flag=True,
+              help="Delete from all platforms where published")
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip confirmation prompt")
+@click.option("--dry-run", is_flag=True,
+              help="Preview what would be deleted without actually deleting")
+@click.option("--batch", is_flag=True,
+              help="Non-interactive batch mode (implies --yes, outputs JSON)")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
+           yes: bool, dry_run: bool, batch: bool, json_output: bool):
+    """Delete content from platform(s).
+
+    Removes the published content from specified platforms via their APIs.
+    Updates the registry to mark the publication as deleted.
+
+    Examples:
+        crier delete article.md --from devto
+        crier delete article.md --from devto --from bluesky
+        crier delete article.md --all
+        crier delete article.md --all --dry-run
+    """
+    import json as json_module
+    from .registry import record_deletion, is_archived
+
+    # Batch mode implies --yes and JSON output
+    if batch:
+        yes = True
+        json_output = True
+
+    article = parse_markdown_file(file)
+
+    if not article.canonical_url:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+        else:
+            console.print("[red]Error: Missing canonical_url in front matter[/red]")
+        raise SystemExit(1)
+
+    # Get article data from registry
+    article_data = get_article_by_file(file)
+    if not article_data:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Not found in registry"}))
+        else:
+            console.print("[yellow]This file is not tracked in the registry.[/yellow]")
+        raise SystemExit(1)
+
+    canonical_url, registry_entry = article_data
+    platforms_data = registry_entry.get("platforms", {})
+
+    # Determine which platforms to delete from
+    platforms_to_delete: list[str] = []
+
+    if delete_all:
+        # Delete from all platforms where not already deleted
+        for platform_name, pub_data in platforms_data.items():
+            if "deleted_at" not in pub_data:
+                platforms_to_delete.append(platform_name)
+    elif platform_args:
+        platforms_to_delete = list(platform_args)
+    else:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Specify platforms with --from or use --all"}))
+        else:
+            console.print("[red]Error: Specify platforms with --from or use --all[/red]")
+            console.print()
+            console.print("Examples:")
+            console.print("  crier delete article.md --from devto")
+            console.print("  crier delete article.md --all")
+        raise SystemExit(1)
+
+    if not platforms_to_delete:
+        if json_output:
+            print(json_module.dumps({"success": True, "message": "No platforms to delete from"}))
+        else:
+            console.print("[yellow]No platforms to delete from (all already deleted?).[/yellow]")
+        return
+
+    # Dry run: preview deletions
+    if dry_run:
+        if not json_output:
+            console.print("[bold]Dry Run Preview[/bold]")
+            console.print("[dim]No changes will be made[/dim]\n")
+
+            table = Table(title=f"Delete: {article.title}")
+            table.add_column("Platform", style="cyan")
+            table.add_column("Status")
+            table.add_column("Article ID")
+
+            for platform_name in platforms_to_delete:
+                pub_data = platforms_data.get(platform_name, {})
+                article_id = pub_data.get("id", "unknown")
+
+                if platform_name not in platforms_data:
+                    table.add_row(platform_name, "[yellow]Not published[/yellow]", "-")
+                elif "deleted_at" in pub_data:
+                    table.add_row(platform_name, "[dim]Already deleted[/dim]", str(article_id))
+                else:
+                    platform_cls = PLATFORMS.get(platform_name)
+                    if platform_cls and not platform_cls.supports_delete:
+                        table.add_row(platform_name, "[yellow]API delete not supported[/yellow]", str(article_id))
+                    else:
+                        table.add_row(platform_name, "[green]Would delete[/green]", str(article_id))
+
+            console.print(table)
+        else:
+            preview = {
+                "command": "delete",
+                "dry_run": True,
+                "file": file,
+                "platforms": platforms_to_delete,
+            }
+            print(json_module.dumps(preview, indent=2))
+        return
+
+    # Confirmation prompt
+    if not yes and not json_output:
+        console.print(f"[bold]Delete from {len(platforms_to_delete)} platform(s):[/bold]")
+        for p in platforms_to_delete:
+            console.print(f"  • {p}")
+        console.print()
+
+        import questionary
+        confirm = questionary.confirm("Proceed with deletion?", default=False).ask()
+        if not confirm:
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    # Execute deletions
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    for platform_name in platforms_to_delete:
+        pub_data = platforms_data.get(platform_name, {})
+        article_id = pub_data.get("id")
+
+        # Check if already deleted
+        if "deleted_at" in pub_data:
+            results.append({
+                "platform": platform_name,
+                "success": True,
+                "skipped": True,
+                "reason": "Already deleted",
+            })
+            continue
+
+        # Check if not published
+        if platform_name not in platforms_data:
+            results.append({
+                "platform": platform_name,
+                "success": False,
+                "error": "Not published to this platform",
+            })
+            fail_count += 1
+            continue
+
+        # Check if platform exists
+        if platform_name not in PLATFORMS:
+            results.append({
+                "platform": platform_name,
+                "success": False,
+                "error": "Unknown platform",
+            })
+            fail_count += 1
+            continue
+
+        platform_cls = PLATFORMS[platform_name]
+
+        # Check if platform supports delete
+        if not platform_cls.supports_delete:
+            url = pub_data.get("url", "")
+            results.append({
+                "platform": platform_name,
+                "success": False,
+                "error": f"Platform does not support API deletion. Delete manually at: {url}",
+            })
+            fail_count += 1
+            continue
+
+        # Get API key
+        api_key = get_api_key(platform_name)
+        if not api_key or is_manual_mode_key(api_key) or is_import_mode_key(api_key):
+            url = pub_data.get("url", "")
+            results.append({
+                "platform": platform_name,
+                "success": False,
+                "error": f"No API key configured. Delete manually at: {url}",
+            })
+            fail_count += 1
+            continue
+
+        # Execute deletion
+        try:
+            platform = platform_cls(api_key)
+            delete_result = platform.delete(article_id)
+
+            if delete_result.success:
+                # Record deletion in registry
+                record_deletion(canonical_url, platform_name)
+                results.append({
+                    "platform": platform_name,
+                    "success": True,
+                    "article_id": article_id,
+                })
+                success_count += 1
+                if not json_output:
+                    console.print(f"[green]✓[/green] Deleted from {platform_name}")
+            else:
+                results.append({
+                    "platform": platform_name,
+                    "success": False,
+                    "error": delete_result.error,
+                })
+                fail_count += 1
+                if not json_output:
+                    console.print(f"[red]✗[/red] {platform_name}: {delete_result.error}")
+
+        except Exception as e:
+            results.append({
+                "platform": platform_name,
+                "success": False,
+                "error": str(e),
+            })
+            fail_count += 1
+            if not json_output:
+                console.print(f"[red]✗[/red] {platform_name}: {e}")
+
+    # Output JSON results
+    if json_output:
+        output = {
+            "command": "delete",
+            "file": file,
+            "results": results,
+            "summary": {
+                "succeeded": success_count,
+                "failed": fail_count,
+            },
+        }
+        print(json_module.dumps(output, indent=2))
+
+    # Exit code
+    if fail_count > 0:
+        if success_count > 0:
+            raise SystemExit(2)  # Partial failure
+        raise SystemExit(1)  # Complete failure
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--json", "json_output", is_flag=True,
+              help="Output result as JSON")
+def archive(file: str, json_output: bool):
+    """Archive content (exclude from audit --publish).
+
+    Archived content is marked as "retired" in the registry. It will be
+    excluded from `crier audit --publish` by default, but remains visible
+    in `crier status`.
+
+    Use this when content is outdated but you don't want to delete it
+    from platforms.
+
+    Example:
+        crier archive article.md
+    """
+    import json as json_module
+    from .registry import set_archived, is_archived
+
+    article = parse_markdown_file(file)
+
+    if not article.canonical_url:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+        else:
+            console.print("[red]Error: Missing canonical_url in front matter[/red]")
+        raise SystemExit(1)
+
+    # Check if already archived
+    if is_archived(article.canonical_url):
+        if json_output:
+            print(json_module.dumps({"success": True, "already_archived": True}))
+        else:
+            console.print("[yellow]Already archived.[/yellow]")
+        return
+
+    # Set archived
+    if set_archived(article.canonical_url, archived=True):
+        if json_output:
+            print(json_module.dumps({"success": True, "archived": True}))
+        else:
+            console.print(f"[green]✓ Archived: {article.title}[/green]")
+            console.print("[dim]This content will be excluded from audit --publish.[/dim]")
+    else:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Not found in registry"}))
+        else:
+            console.print("[yellow]Not found in registry. Publish it first.[/yellow]")
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--json", "json_output", is_flag=True,
+              help="Output result as JSON")
+def unarchive(file: str, json_output: bool):
+    """Unarchive content (include in audit --publish again).
+
+    Reverses the effect of `crier archive`. The content will be included
+    in `crier audit --publish` again.
+
+    Example:
+        crier unarchive article.md
+    """
+    import json as json_module
+    from .registry import set_archived, is_archived
+
+    article = parse_markdown_file(file)
+
+    if not article.canonical_url:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+        else:
+            console.print("[red]Error: Missing canonical_url in front matter[/red]")
+        raise SystemExit(1)
+
+    # Check if archived
+    if not is_archived(article.canonical_url):
+        if json_output:
+            print(json_module.dumps({"success": True, "already_unarchived": True}))
+        else:
+            console.print("[yellow]Not archived.[/yellow]")
+        return
+
+    # Unarchive
+    if set_archived(article.canonical_url, archived=False):
+        if json_output:
+            print(json_module.dumps({"success": True, "archived": False}))
+        else:
+            console.print(f"[green]✓ Unarchived: {article.title}[/green]")
+            console.print("[dim]This content will be included in audit --publish again.[/dim]")
+    else:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "Failed to unarchive"}))
+        else:
+            console.print("[red]Failed to unarchive.[/red]")
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--platform", "-p", "platforms", multiple=True,
+              help="Filter to specific platforms")
+@click.option("--refresh", is_flag=True,
+              help="Refresh stats from platforms (ignore cache)")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output result as JSON")
+@click.option("--top", type=int, default=0,
+              help="Show top N articles by engagement")
+@click.option("--since", "since_str",
+              help="Filter to articles published since (1d, 1w, 1m, or YYYY-MM-DD)")
+def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
+          json_output: bool, top: int, since_str: str | None):
+    """Show engagement stats for published content.
+
+    Without a file argument, shows aggregate stats across all content.
+    With a file argument, shows detailed stats for that article.
+
+    Examples:
+        crier stats article.md
+        crier stats article.md --refresh
+        crier stats --top 10
+        crier stats --since 1m
+        crier stats --platform devto --json
+    """
+    import json as json_module
+    from datetime import timedelta
+    from .registry import (
+        get_all_articles,
+        get_article_by_file,
+        get_cached_stats,
+        save_stats,
+        get_stats_age_seconds,
+    )
+    from .platforms import get_platform
+    from .platforms.base import ArticleStats
+
+    # Parse --since filter
+    since_date = None
+    if since_str:
+        since_date = _parse_date_filter(since_str)
+
+    # Cache TTL: 1 hour
+    CACHE_TTL_SECONDS = 3600
+
+    def fetch_stats_for_platform(canonical_url: str, platform_name: str, article_id: str) -> dict | None:
+        """Fetch stats from platform API and cache them."""
+        try:
+            api_key = get_api_key(platform_name)
+            if not api_key or is_manual_mode_key(api_key) or is_import_mode_key(api_key):
+                return None
+
+            platform_obj = get_platform(platform_name, api_key)
+            if not platform_obj or not platform_obj.supports_stats:
+                return None
+
+            stats_result = platform_obj.get_stats(article_id)
+            if stats_result:
+                # Cache the stats
+                save_stats(
+                    canonical_url,
+                    platform_name,
+                    views=stats_result.views,
+                    likes=stats_result.likes,
+                    comments=stats_result.comments,
+                    reposts=stats_result.reposts,
+                )
+                return {
+                    "views": stats_result.views,
+                    "likes": stats_result.likes,
+                    "comments": stats_result.comments,
+                    "reposts": stats_result.reposts,
+                }
+        except Exception:
+            pass
+        return None
+
+    def get_or_fetch_stats(canonical_url: str, platform_name: str, article_id: str) -> dict | None:
+        """Get cached stats or fetch fresh ones."""
+        if not refresh:
+            # Check cache age
+            age = get_stats_age_seconds(canonical_url, platform_name)
+            if age is not None and age < CACHE_TTL_SECONDS:
+                cached = get_cached_stats(canonical_url, platform_name)
+                if cached:
+                    return {
+                        "views": cached.get("views"),
+                        "likes": cached.get("likes"),
+                        "comments": cached.get("comments"),
+                        "reposts": cached.get("reposts"),
+                        "fetched_at": cached.get("fetched_at"),
+                    }
+
+        # Fetch fresh stats
+        return fetch_stats_for_platform(canonical_url, platform_name, article_id)
+
+    def format_number(n: int | None) -> str:
+        """Format number with commas, or - if None."""
+        if n is None:
+            return "-"
+        return f"{n:,}"
+
+    def format_time_ago(iso_str: str | None) -> str:
+        """Format ISO timestamp as 'X ago'."""
+        if not iso_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            now = datetime.now(dt.tzinfo)
+            delta = now - dt
+            if delta.total_seconds() < 60:
+                return "just now"
+            elif delta.total_seconds() < 3600:
+                mins = int(delta.total_seconds() / 60)
+                return f"{mins}m ago"
+            elif delta.total_seconds() < 86400:
+                hours = int(delta.total_seconds() / 3600)
+                return f"{hours}h ago"
+            else:
+                days = int(delta.total_seconds() / 86400)
+                return f"{days}d ago"
+        except Exception:
+            return "-"
+
+    # Single article mode
+    if file:
+        article = parse_markdown_file(file)
+        if not article.canonical_url:
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+            else:
+                console.print("[red]Error: Missing canonical_url in front matter[/red]")
+            raise SystemExit(1)
+
+        result = get_article_by_file(file)
+        if not result:
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "Not found in registry"}))
+            else:
+                console.print("[yellow]Not found in registry. Publish it first.[/yellow]")
+            raise SystemExit(1)
+
+        canonical_url, article_data = result
+        article_platforms = article_data.get("platforms", {})
+
+        # Filter platforms if specified
+        if platforms:
+            article_platforms = {k: v for k, v in article_platforms.items() if k in platforms}
+
+        if not article_platforms:
+            if json_output:
+                print(json_module.dumps({"success": False, "error": "No matching platforms found"}))
+            else:
+                console.print("[yellow]No matching platforms found.[/yellow]")
+            raise SystemExit(1)
+
+        # Gather stats for each platform
+        stats_data = []
+        totals = {"views": 0, "likes": 0, "comments": 0, "reposts": 0}
+        platforms_without_stats = []
+
+        for platform_name, pub_data in article_platforms.items():
+            if pub_data.get("deleted_at"):
+                continue
+
+            article_id = pub_data.get("id")
+            if not article_id:
+                continue
+
+            stats_result = get_or_fetch_stats(canonical_url, platform_name, article_id)
+            if stats_result:
+                stats_data.append({
+                    "platform": platform_name,
+                    "url": pub_data.get("url"),
+                    **stats_result,
+                })
+                for key in totals:
+                    if stats_result.get(key) is not None:
+                        totals[key] += stats_result[key]
+            else:
+                # Check if platform supports stats
+                try:
+                    api_key = get_api_key(platform_name)
+                    if api_key and not is_manual_mode_key(api_key) and not is_import_mode_key(api_key):
+                        platform_obj = get_platform(platform_name, api_key)
+                        if platform_obj and not platform_obj.supports_stats:
+                            platforms_without_stats.append(platform_name)
+                except Exception:
+                    pass
+
+        if json_output:
+            output = {
+                "success": True,
+                "title": article.title,
+                "canonical_url": canonical_url,
+                "platforms": stats_data,
+                "totals": totals,
+            }
+            if platforms_without_stats:
+                output["platforms_without_stats"] = platforms_without_stats
+            print(json_module.dumps(output, indent=2))
+        else:
+            console.print(f"\n[bold]{article.title}[/bold]")
+            console.print("=" * len(article.title))
+            console.print()
+
+            if stats_data:
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("Platform")
+                table.add_column("Views", justify="right")
+                table.add_column("Likes", justify="right")
+                table.add_column("Comments", justify="right")
+                table.add_column("Reposts", justify="right")
+                table.add_column("Last Updated")
+
+                for s in stats_data:
+                    table.add_row(
+                        s["platform"],
+                        format_number(s.get("views")),
+                        format_number(s.get("likes")),
+                        format_number(s.get("comments")),
+                        format_number(s.get("reposts")),
+                        format_time_ago(s.get("fetched_at")),
+                    )
+
+                # Add totals row
+                table.add_row(
+                    "[bold]Total[/bold]",
+                    format_number(totals["views"] or None),
+                    format_number(totals["likes"] or None),
+                    format_number(totals["comments"] or None),
+                    format_number(totals["reposts"] or None),
+                    "",
+                    style="bold",
+                )
+
+                console.print(table)
+
+            if platforms_without_stats:
+                console.print(f"\n[dim]Note: {', '.join(platforms_without_stats)} do not provide stats via API[/dim]")
+
+        return
+
+    # Aggregate mode (no file specified)
+    all_articles = get_all_articles()
+    if not all_articles:
+        if json_output:
+            print(json_module.dumps({"success": False, "error": "No articles in registry"}))
+        else:
+            console.print("[yellow]No articles in registry. Publish some content first.[/yellow]")
+        raise SystemExit(1)
+
+    # Collect stats for all articles
+    article_stats = []
+    grand_totals = {"views": 0, "likes": 0, "comments": 0, "reposts": 0}
+    platforms_seen = set()
+
+    for canonical_url, article_data in all_articles.items():
+        # Apply --since filter
+        if since_date:
+            # Check if any publication is after since_date
+            any_after = False
+            for pub_data in article_data.get("platforms", {}).values():
+                pub_date_str = pub_data.get("published_at")
+                if pub_date_str:
+                    try:
+                        pub_date = datetime.fromisoformat(pub_date_str)
+                        if pub_date.date() >= since_date:
+                            any_after = True
+                            break
+                    except Exception:
+                        pass
+            if not any_after:
+                continue
+
+        article_totals = {"views": 0, "likes": 0, "comments": 0, "reposts": 0}
+        article_platforms = []
+
+        for platform_name, pub_data in article_data.get("platforms", {}).items():
+            if pub_data.get("deleted_at"):
+                continue
+
+            # Filter platforms if specified
+            if platforms and platform_name not in platforms:
+                continue
+
+            article_id = pub_data.get("id")
+            if not article_id:
+                continue
+
+            stats_result = get_or_fetch_stats(canonical_url, platform_name, article_id)
+            if stats_result:
+                platforms_seen.add(platform_name)
+                article_platforms.append(platform_name)
+                for key in article_totals:
+                    if stats_result.get(key) is not None:
+                        article_totals[key] += stats_result[key]
+                        grand_totals[key] += stats_result[key]
+
+        if article_platforms:
+            engagement_score = (
+                (article_totals["likes"] or 0) +
+                (article_totals["comments"] or 0) * 2 +
+                (article_totals["reposts"] or 0) * 3
+            )
+            article_stats.append({
+                "canonical_url": canonical_url,
+                "title": article_data.get("title", "Untitled"),
+                "platforms": article_platforms,
+                **article_totals,
+                "engagement_score": engagement_score,
+            })
+
+    # Sort by engagement score
+    article_stats.sort(key=lambda x: x["engagement_score"], reverse=True)
+
+    # Apply --top filter
+    if top > 0:
+        article_stats = article_stats[:top]
+
+    if json_output:
+        output = {
+            "success": True,
+            "articles": article_stats,
+            "totals": grand_totals,
+            "platforms": list(platforms_seen),
+        }
+        print(json_module.dumps(output, indent=2))
+    else:
+        title = "Content Stats"
+        if top > 0:
+            title = f"Top {top} Articles by Engagement"
+        if since_str:
+            title += f" (since {since_str})"
+
+        console.print(f"\n[bold]{title}[/bold]")
+        console.print("=" * len(title))
+        console.print()
+
+        if article_stats:
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("#", justify="right")
+            table.add_column("Title", max_width=40)
+            table.add_column("Views", justify="right")
+            table.add_column("Likes", justify="right")
+            table.add_column("Comments", justify="right")
+            table.add_column("Platforms")
+
+            for i, a in enumerate(article_stats, 1):
+                title_str = a["title"][:37] + "..." if len(a["title"]) > 40 else a["title"]
+                table.add_row(
+                    str(i),
+                    title_str,
+                    format_number(a.get("views")),
+                    format_number(a.get("likes")),
+                    format_number(a.get("comments")),
+                    ", ".join(a["platforms"]),
+                )
+
+            console.print(table)
+
+            console.print(f"\n[bold]Summary[/bold]")
+            console.print(f"  Total views: {format_number(grand_totals['views'] or None)}")
+            console.print(f"  Total likes: {format_number(grand_totals['likes'] or None)}")
+            console.print(f"  Total comments: {format_number(grand_totals['comments'] or None)}")
+            console.print(f"  Total reposts: {format_number(grand_totals['reposts'] or None)}")
+            console.print(f"  Platforms: {', '.join(sorted(platforms_seen))}")
+        else:
+            console.print("[yellow]No stats available for the specified criteria.[/yellow]")
 
 
 if __name__ == "__main__":

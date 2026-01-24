@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Discord(Platform):
@@ -16,7 +16,9 @@ class Discord(Platform):
     """
 
     name = "discord"
+    description = "Server announcements"
     max_content_length = 4096  # Discord embed description limit
+    api_key_url = None  # Webhook created in Discord server settings
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -74,6 +76,7 @@ class Discord(Platform):
         resp = requests.post(
             f"{self.webhook_url}?wait=true",
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -111,6 +114,7 @@ class Discord(Platform):
         resp = requests.patch(
             f"{self.webhook_url}/messages/{article_id}",
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -136,15 +140,23 @@ class Discord(Platform):
         """Get a specific webhook message."""
         resp = requests.get(
             f"{self.webhook_url}/messages/{article_id}",
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete a webhook message on Discord."""
         resp = requests.delete(
             f"{self.webhook_url}/messages/{article_id}",
+            timeout=30,
         )
-        return resp.status_code == 204
+        if resp.status_code == 204:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

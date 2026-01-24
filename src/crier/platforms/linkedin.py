@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class LinkedIn(Platform):
@@ -23,9 +23,11 @@ class LinkedIn(Platform):
     """
 
     name = "linkedin"
+    description = "Professional network"
     base_url = "https://api.linkedin.com/v2"
     compose_url = "https://www.linkedin.com/feed/?shareActive=true"
     max_content_length = 3000
+    api_key_url = None  # Requires OAuth app setup
 
     def __init__(self, api_key: str, person_urn: str | None = None):
         super().__init__(api_key)
@@ -69,6 +71,7 @@ class LinkedIn(Platform):
         resp = requests.get(
             f"{self.base_url}/userinfo",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -138,6 +141,7 @@ class LinkedIn(Platform):
             f"{self.base_url}/ugcPosts",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -173,16 +177,24 @@ class LinkedIn(Platform):
         resp = requests.get(
             f"{self.base_url}/ugcPosts/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete a post."""
         resp = requests.delete(
             f"{self.base_url}/ugcPosts/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
-        return resp.status_code == 204
+        if resp.status_code == 204:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

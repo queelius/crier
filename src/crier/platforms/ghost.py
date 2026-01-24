@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, DeleteResult, Platform, PublishResult
 
 
 class Ghost(Platform):
@@ -18,6 +18,8 @@ class Ghost(Platform):
     """
 
     name = "ghost"
+    description = "Self-hosted blogging"
+    api_key_url = None  # Self-hosted, varies
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -93,6 +95,7 @@ class Ghost(Platform):
             headers=self._get_headers(),
             json=data,
             params={"source": "html"},  # Tell Ghost we're sending HTML/markdown
+            timeout=30,
         )
 
         if resp.status_code == 201:
@@ -144,6 +147,7 @@ class Ghost(Platform):
             headers=self._get_headers(),
             json=data,
             params={"source": "html"},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -168,6 +172,7 @@ class Ghost(Platform):
             f"{self.base_url}/ghost/api/admin/posts/",
             headers=self._get_headers(),
             params={"limit": limit},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -189,6 +194,7 @@ class Ghost(Platform):
         resp = requests.get(
             f"{self.base_url}/ghost/api/admin/posts/{article_id}/",
             headers=self._get_headers(),
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -196,10 +202,17 @@ class Ghost(Platform):
             return result["posts"][0] if result.get("posts") else None
         return None
 
-    def delete(self, article_id: str) -> bool:
+    def delete(self, article_id: str) -> DeleteResult:
         """Delete a post on Ghost."""
         resp = requests.delete(
             f"{self.base_url}/ghost/api/admin/posts/{article_id}/",
             headers=self._get_headers(),
+            timeout=30,
         )
-        return resp.status_code == 204
+        if resp.status_code == 204:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )

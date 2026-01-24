@@ -4,7 +4,7 @@ from typing import Any
 
 import requests
 
-from .base import Article, Platform, PublishResult
+from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult
 
 
 def sanitize_tags(tags: list[str]) -> list[str]:
@@ -14,13 +14,17 @@ def sanitize_tags(tags: list[str]) -> list[str]:
     - Alphanumeric only (no hyphens, spaces, special chars)
     - Lowercase
     - Max 4 tags
+    - Non-empty
     """
     sanitized = []
-    for tag in tags[:4]:  # DevTo limit
+    for tag in tags:
         # Remove hyphens, spaces, and other non-alphanumeric chars
         clean = "".join(c for c in tag.lower() if c.isalnum())
+        # Skip empty strings (e.g., tag "---" becomes "")
         if clean and clean not in sanitized:
             sanitized.append(clean)
+            if len(sanitized) >= 4:  # DevTo limit
+                break
     return sanitized
 
 
@@ -28,7 +32,10 @@ class DevTo(Platform):
     """Dev.to publishing platform."""
 
     name = "devto"
+    description = "Developer blogging platform"
     base_url = "https://dev.to/api"
+    api_key_url = "https://dev.to/settings/extensions"
+    supports_stats = True
 
     def __init__(self, api_key: str):
         super().__init__(api_key)
@@ -58,6 +65,7 @@ class DevTo(Platform):
             f"{self.base_url}/articles",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 201:
@@ -96,6 +104,7 @@ class DevTo(Platform):
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
             json=data,
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -119,6 +128,7 @@ class DevTo(Platform):
             f"{self.base_url}/articles/me",
             headers=self.headers,
             params={"per_page": limit},
+            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -130,18 +140,46 @@ class DevTo(Platform):
         resp = requests.get(
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
+            timeout=30,
         )
 
         if resp.status_code == 200:
             return resp.json()
         return None
 
-    def delete(self, article_id: str) -> bool:
-        """Delete an article (unpublish on dev.to)."""
-        # dev.to doesn't have true delete, but we can unpublish
+    def delete(self, article_id: str) -> DeleteResult:
+        """Delete an article (unpublish on dev.to).
+
+        Note: dev.to doesn't have true delete, but we can unpublish.
+        """
         resp = requests.put(
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
             json={"article": {"published": False}},
+            timeout=30,
         )
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return DeleteResult(success=True, platform=self.name)
+        return DeleteResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )
+
+    def get_stats(self, article_id: str) -> ArticleStats | None:
+        """Get article statistics from dev.to.
+
+        Dev.to provides:
+        - page_views_count: Total views
+        - public_reactions_count: Likes/reactions
+        - comments_count: Number of comments
+        """
+        article = self.get_article(article_id)
+        if not article:
+            return None
+
+        return ArticleStats(
+            views=article.get("page_views_count"),
+            likes=article.get("public_reactions_count"),
+            comments=article.get("comments_count"),
+        )

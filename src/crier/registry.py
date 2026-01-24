@@ -347,3 +347,265 @@ def remove_publication(canonical_url: str, platform: str, base_path: Path | None
     return False
 
 
+def record_deletion(
+    canonical_url: str,
+    platform: str,
+    base_path: Path | None = None,
+) -> bool:
+    """Record that a publication was deleted from a platform.
+
+    Instead of removing the record, we mark it with deleted_at timestamp.
+    This preserves history and prevents re-publishing.
+
+    Returns True if the deletion was recorded, False if not found.
+    """
+    registry = load_registry(base_path)
+
+    if canonical_url not in registry["articles"]:
+        return False
+
+    article = registry["articles"][canonical_url]
+    if platform not in article.get("platforms", {}):
+        return False
+
+    # Mark as deleted instead of removing
+    now = datetime.now(timezone.utc).isoformat()
+    article["platforms"][platform]["deleted_at"] = now
+    save_registry(registry, base_path)
+    return True
+
+
+def is_deleted(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+    """Check if a publication has been deleted from a platform."""
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return False
+
+    platform_data = article.get("platforms", {}).get(platform)
+    if not platform_data:
+        return False
+
+    return "deleted_at" in platform_data
+
+
+def set_archived(
+    canonical_url: str,
+    archived: bool = True,
+    base_path: Path | None = None,
+) -> bool:
+    """Set the archived status of an article.
+
+    Archived articles are excluded from audit --publish by default.
+
+    Returns True if the status was changed, False if article not found.
+    """
+    registry = load_registry(base_path)
+
+    if canonical_url not in registry["articles"]:
+        return False
+
+    article = registry["articles"][canonical_url]
+    if archived:
+        article["archived"] = True
+        article["archived_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        article.pop("archived", None)
+        article.pop("archived_at", None)
+
+    save_registry(registry, base_path)
+    return True
+
+
+def is_archived(canonical_url: str, base_path: Path | None = None) -> bool:
+    """Check if an article is archived."""
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return False
+    return article.get("archived", False)
+
+
+def save_stats(
+    canonical_url: str,
+    platform: str,
+    views: int | None = None,
+    likes: int | None = None,
+    comments: int | None = None,
+    reposts: int | None = None,
+    base_path: Path | None = None,
+) -> bool:
+    """Save engagement stats for a publication.
+
+    Stats are cached in the registry to avoid excessive API calls.
+
+    Returns True if stats were saved, False if publication not found.
+    """
+    registry = load_registry(base_path)
+
+    if canonical_url not in registry["articles"]:
+        return False
+
+    article = registry["articles"][canonical_url]
+    if platform not in article.get("platforms", {}):
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    article["platforms"][platform]["stats"] = {
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "reposts": reposts,
+        "fetched_at": now,
+    }
+    save_registry(registry, base_path)
+    return True
+
+
+def get_cached_stats(
+    canonical_url: str,
+    platform: str,
+    base_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Get cached stats for a publication.
+
+    Returns dict with views, likes, comments, reposts, fetched_at.
+    Returns None if no stats cached or publication not found.
+    """
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return None
+
+    platform_data = article.get("platforms", {}).get(platform)
+    if not platform_data:
+        return None
+
+    return platform_data.get("stats")
+
+
+def get_stats_age_seconds(
+    canonical_url: str,
+    platform: str,
+    base_path: Path | None = None,
+) -> float | None:
+    """Get the age of cached stats in seconds.
+
+    Returns None if no stats cached.
+    """
+    stats = get_cached_stats(canonical_url, platform, base_path)
+    if not stats or "fetched_at" not in stats:
+        return None
+
+    fetched_at = datetime.fromisoformat(stats["fetched_at"])
+    now = datetime.now(timezone.utc)
+    return (now - fetched_at).total_seconds()
+
+
+def record_thread_publication(
+    canonical_url: str,
+    platform: str,
+    root_id: str | None,
+    root_url: str | None,
+    thread_ids: list[str],
+    thread_urls: list[str] | None = None,
+    title: str | None = None,
+    source_file: str | Path | None = None,
+    content_hash: str | None = None,
+    rewritten: bool = False,
+    rewrite_author: str | None = None,
+    base_path: Path | None = None,
+) -> None:
+    """Record a thread publication to the registry.
+
+    Similar to record_publication but stores thread-specific data.
+
+    Args:
+        canonical_url: The canonical URL of the source article
+        platform: Platform name (e.g., 'bluesky', 'mastodon')
+        root_id: ID of the first (root) post
+        root_url: URL of the first (root) post
+        thread_ids: List of all post IDs in the thread
+        thread_urls: List of all post URLs in the thread
+        title: Article title
+        source_file: Path to the source file
+        content_hash: Hash of the source content
+        rewritten: Whether content was rewritten
+        rewrite_author: Who rewrote the content
+        base_path: Base path for registry lookup
+    """
+    registry = load_registry(base_path)
+
+    # Initialize article entry if needed
+    if canonical_url not in registry["articles"]:
+        registry["articles"][canonical_url] = {
+            "title": title,
+            "source_file": str(source_file) if source_file else None,
+            "content_hash": content_hash,
+            "platforms": {},
+        }
+
+    article = registry["articles"][canonical_url]
+
+    # Update metadata
+    if title:
+        article["title"] = title
+    if source_file:
+        article["source_file"] = str(source_file)
+    if content_hash:
+        article["content_hash"] = content_hash
+
+    # Record this thread publication
+    now = datetime.now(timezone.utc).isoformat()
+    platform_data: dict[str, Any] = {
+        "id": root_id,  # Use root_id as main ID
+        "url": root_url,
+        "published_at": now,
+        "updated_at": now,
+        "content_hash": content_hash,
+        "is_thread": True,
+        "thread_ids": thread_ids,
+    }
+
+    if thread_urls:
+        platform_data["thread_urls"] = thread_urls
+
+    if rewritten:
+        platform_data["rewritten"] = True
+        if rewrite_author:
+            platform_data["rewrite_author"] = rewrite_author
+
+    article["platforms"][platform] = platform_data
+    save_registry(registry, base_path)
+
+
+def is_thread(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+    """Check if a publication is a thread."""
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return False
+
+    platform_data = article.get("platforms", {}).get(platform)
+    if not platform_data:
+        return False
+
+    return platform_data.get("is_thread", False)
+
+
+def get_thread_ids(
+    canonical_url: str,
+    platform: str,
+    base_path: Path | None = None,
+) -> list[str] | None:
+    """Get the list of post IDs for a thread publication.
+
+    Returns None if not a thread or not found.
+    """
+    article = get_article(canonical_url, base_path)
+    if not article:
+        return None
+
+    platform_data = article.get("platforms", {}).get(platform)
+    if not platform_data:
+        return None
+
+    return platform_data.get("thread_ids")
+
+

@@ -1,8 +1,34 @@
 """Base platform interface for crier."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time (timezone-aware)."""
+    return datetime.now(timezone.utc)
+
+
+@dataclass
+class ArticleStats:
+    """Engagement statistics for an article on a platform."""
+
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    reposts: int | None = None
+    fetched_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class DeleteResult:
+    """Result of a delete operation."""
+
+    success: bool
+    platform: str
+    error: str | None = None
 
 
 @dataclass
@@ -41,10 +67,22 @@ class Platform(ABC):
     """Abstract base class for publishing platforms."""
 
     name: str = "base"
+    # Short description for the platforms command
+    description: str = "Publishing platform"
     # Character limit for content (None means no limit)
     max_content_length: int | None = None
     # URL for manual compose page (e.g., https://twitter.com/compose/tweet)
     compose_url: str | None = None
+    # URL to get API key/credentials
+    api_key_url: str | None = None
+    # Whether the platform supports deletion via API
+    supports_delete: bool = True
+    # Whether the platform supports engagement stats via API
+    supports_stats: bool = False
+    # Whether the platform supports thread posting
+    supports_threads: bool = False
+    # Maximum number of posts in a thread (if supports_threads)
+    thread_max_posts: int = 25
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -93,6 +131,73 @@ class Platform(ABC):
         """Get a specific article by ID."""
         ...
 
-    def delete(self, article_id: str) -> bool:
-        """Delete an article. Not all platforms support this."""
-        raise NotImplementedError(f"{self.name} does not support article deletion")
+    def delete(self, article_id: str) -> DeleteResult:
+        """Delete an article from the platform.
+
+        Returns DeleteResult with success status and optional error message.
+        Subclasses should override if deletion is supported.
+        """
+        if not self.supports_delete:
+            return DeleteResult(
+                success=False,
+                platform=self.name,
+                error=f"{self.name} does not support deletion via API",
+            )
+        raise NotImplementedError(f"{self.name}.delete() not implemented")
+
+    def get_stats(self, article_id: str) -> ArticleStats | None:
+        """Fetch engagement statistics for an article.
+
+        Returns ArticleStats if stats are available, None otherwise.
+        Subclasses should override if stats are supported.
+        """
+        return None
+
+    def publish_thread(self, posts: list[str]) -> "ThreadPublishResult":
+        """Publish a thread of posts.
+
+        Args:
+            posts: List of post content strings (already formatted with thread indicators)
+
+        Returns:
+            ThreadPublishResult with success status and list of individual results.
+            Subclasses should override if threading is supported.
+        """
+        if not self.supports_threads:
+            return ThreadPublishResult(
+                success=False,
+                platform=self.name,
+                error=f"{self.name} does not support thread posting",
+            )
+        raise NotImplementedError(f"{self.name}.publish_thread() not implemented")
+
+
+@dataclass
+class ThreadPublishResult:
+    """Result of publishing a thread."""
+
+    success: bool
+    platform: str
+    # ID of the first post (root of thread) - used as the main article_id
+    root_id: str | None = None
+    # URL of the first post
+    root_url: str | None = None
+    # All post IDs in order
+    post_ids: list[str] | None = None
+    # All post URLs in order
+    post_urls: list[str] | None = None
+    # Individual results for each post
+    results: list[PublishResult] | None = None
+    # Error message if failed
+    error: str | None = None
+
+    def publish_thread(self, posts: list[str]) -> list[PublishResult]:
+        """Publish a thread of multiple posts.
+
+        Args:
+            posts: List of post content strings (already split and formatted)
+
+        Returns:
+            List of PublishResult, one for each post in the thread
+        """
+        raise NotImplementedError(f"{self.name} does not support thread posting")
