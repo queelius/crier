@@ -32,10 +32,14 @@ ruff format --check src/
 
 **CLI Layer** (`cli.py`): Click-based commands that orchestrate the workflow:
 - `init` — Interactive setup wizard
-- `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`)
+- `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`, `--schedule`, `--thread`)
 - `status` — Show publication status for files
-- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`)
+- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`)
 - `search` — Search and list content with metadata (supports `--tag`, `--since`, `--until`, `--sample`, `--json`)
+- `delete` — Delete content from platforms (`--from`, `--all`, `--dry-run`)
+- `archive` / `unarchive` — Exclude/include content from audit --publish
+- `schedule` — Manage scheduled posts (`list`, `show`, `cancel`, `run`)
+- `stats` — View engagement statistics (`--refresh`, `--top`, `--since`, `--json`)
 - `doctor` — Validate API keys
 - `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
 - `skill` — Manage Claude Code skill installation (`install`, `uninstall`, `status`, `show`)
@@ -47,9 +51,20 @@ ruff format --check src/
 - `openai_compat.py`: `OpenAICompatProvider` for OpenAI, Ollama, Groq, etc.
 
 **Platform Abstraction** (`platforms/`):
-- `base.py`: Abstract `Platform` class defining the interface (`publish`, `update`, `list_articles`, `get_article`, `delete`) and core data classes (`Article`, `PublishResult`)
+- `base.py`: Abstract `Platform` class defining the interface (`publish`, `update`, `list_articles`, `get_article`, `delete`, `get_stats`, `publish_thread`) and core data classes (`Article`, `PublishResult`, `DeleteResult`, `ArticleStats`, `ThreadPublishResult`)
+- Platform capabilities: `supports_delete`, `supports_stats`, `supports_threads`, `thread_max_posts`
 - Each platform implements the `Platform` interface
 - `PLATFORMS` registry in `__init__.py` maps platform names to classes
+
+**Scheduler** (`scheduler.py`): Content scheduling for future publication:
+- `ScheduledPost` dataclass for scheduled post data
+- Schedule storage in `.crier/schedule.yaml`
+- Natural language time parsing via `dateparser`
+
+**Threading** (`threading.py`): Thread splitting for social platforms:
+- `split_into_thread()` splits content by manual markers, paragraphs, or sentences
+- `format_thread()` adds thread indicators (numbered, emoji, or simple style)
+- Used by Bluesky and Mastodon `publish_thread()` implementations
 
 **Platform Categories** (13 total):
 - Blog: devto, hashnode, medium, ghost, wordpress
@@ -73,13 +88,15 @@ ruff format --check src/
 
 - **Dry run mode**: Preview before publishing with `--dry-run`
 - **Publishing profiles**: Group platforms (e.g., `--profile blogs`)
-- **Publication tracking**: Registry tracks what's published where
+- **Publication tracking**: Registry tracks what's been published where
 - **Audit & bulk publish**: Find and publish missing content with `audit --publish`
 - **Bulk operation filters**:
   - `--only-api` — Skip manual/import platforms
   - `--long-form` — Skip short-form platforms (bluesky, mastodon, twitter, threads)
+  - `--tag <tag>` — Only include content with matching tags (case-insensitive, OR logic)
   - `--sample N` — Random sample of N items
   - `--include-changed` — Also update changed content
+  - `--include-archived` — Include archived content
   - `--since` / `--until` — Date filtering (supports `1d`, `1w`, `1m`, `1y` or `YYYY-MM-DD`)
 - **Manual mode**: Copy-paste mode for platforms without API access (`--manual` or `api_key: manual`)
 - **Import mode**: URL import for platforms like Medium (`api_key: import`)
@@ -89,6 +106,10 @@ ruff format --check src/
 - **JSON output**: Machine-readable output with `--json` for CI/CD integration
 - **Doctor**: Validate all API keys work
 - **Relative link resolution**: Converts relative links (`/posts/other/`, `../images/`) to absolute URLs using `site_base_url`
+- **Delete/Archive**: Remove content from platforms (`crier delete`) or exclude from audit (`crier archive`)
+- **Scheduling**: Schedule posts for future publication with `--schedule` or `crier schedule` commands
+- **Analytics**: Track engagement stats across platforms with `crier stats`
+- **Threading**: Split long content into threads for Bluesky/Mastodon with `--thread`
 
 ## Automation Modes
 
@@ -278,15 +299,86 @@ crier search --sample 5
 
 JSON output includes: file, title, date, tags, word count.
 
+## Delete & Archive
+
+```bash
+# Delete from specific platform
+crier delete article.md --from devto
+
+# Delete from all platforms
+crier delete article.md --all
+
+# Archive (exclude from audit --publish)
+crier archive article.md
+
+# Unarchive
+crier unarchive article.md
+
+# Include archived in audit
+crier audit --include-archived
+```
+
+## Scheduling
+
+```bash
+# Schedule a post for later
+crier publish article.md --to devto --schedule "tomorrow 9am"
+
+# Manage scheduled posts
+crier schedule list
+crier schedule show ID
+crier schedule cancel ID
+crier schedule run                      # Publish all due posts
+```
+
+Schedule data stored in `.crier/schedule.yaml`.
+
+## Analytics
+
+```bash
+# Stats for all content
+crier stats
+
+# Stats for specific file
+crier stats article.md
+crier stats article.md --refresh        # Force refresh from API
+
+# Top articles by engagement
+crier stats --top 10
+crier stats --since 1m --json
+
+# Filter by platform
+crier stats --platform devto
+```
+
+Stats cached in registry for 1 hour. Platforms with stats: devto (views, likes, comments), bluesky (likes, comments, reposts), mastodon (likes, comments, reposts).
+
+## Threading
+
+```bash
+# Split content into thread
+crier publish article.md --to bluesky --thread
+
+# Thread styles
+crier publish article.md --to mastodon --thread --thread-style numbered  # 1/5, 2/5...
+crier publish article.md --to bluesky --thread --thread-style emoji      # 🧵 1/5...
+crier publish article.md --to mastodon --thread --thread-style simple    # No prefix
+```
+
+Thread splitting priority: manual markers (`<!-- thread -->`) → paragraph boundaries → sentence boundaries. Supported platforms: bluesky, mastodon.
+
 ## Adding a New Platform
 
 1. Create `platforms/newplatform.py` implementing the `Platform` abstract class
-2. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
-3. Update README.md with API key format
+2. Set class attributes: `name`, `description`, `max_content_length`, `supports_delete`, `supports_stats`, `supports_threads`
+3. Implement required methods: `publish`, `update`, `list_articles`, `get_article`
+4. Optionally implement: `delete` → `DeleteResult`, `get_stats` → `ArticleStats`, `publish_thread` → `ThreadPublishResult`
+5. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
+6. Update README.md with API key format
 
 ## Testing
 
-Tests are in `tests/` with ~1800 lines covering config, registry, converters, CLI, and platforms.
+Tests are in `tests/` with 418 tests covering config, registry, converters, CLI, platforms, scheduler, stats, and threading.
 
 **Running tests:**
 ```bash

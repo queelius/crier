@@ -220,16 +220,37 @@ Your content here...
 ## Commands
 
 ```bash
+# Publishing
 crier init                              # Interactive setup wizard
 crier publish FILE --to PLATFORM        # Publish to platform(s)
 crier publish FILE --to PLATFORM --manual  # Manual copy-paste mode
+crier publish FILE --to bluesky --thread   # Publish as thread
 crier audit                             # See what's missing/changed
 crier audit --publish                   # Bulk publish interactively
 crier audit --publish --yes             # Bulk publish without prompting
+
+# Content Management
 crier search                            # List all content
 crier search --tag python --since 1w    # Filter by tag and date
 crier status [FILE]                     # Show publication status
 crier list PLATFORM                     # List your articles
+crier delete FILE --from PLATFORM       # Delete from platform
+crier archive FILE                      # Archive (exclude from audit)
+crier unarchive FILE                    # Unarchive
+
+# Scheduling
+crier schedule list                     # List scheduled posts
+crier schedule show ID                  # Show scheduled post details
+crier schedule cancel ID                # Cancel scheduled post
+crier schedule run                      # Publish due posts
+
+# Analytics
+crier stats                             # Show stats for all content
+crier stats FILE                        # Show stats for specific file
+crier stats --top 10                    # Top 10 by engagement
+crier stats --refresh                   # Refresh from platforms
+
+# Configuration
 crier config show                       # Show configuration
 crier config set KEY VALUE              # Set configuration
 crier config llm show                   # Show LLM configuration
@@ -349,6 +370,111 @@ crier audit content/post --since 1m --only-api --long-form --sample 10 --publish
 | `--json` | Output results as JSON |
 
 Filters are applied in order: path → date → platform mode → content type → changed → sampling
+
+## Delete & Archive
+
+### Deleting Content
+
+Remove published content from platforms:
+
+```bash
+# Delete from specific platform
+crier delete post.md --from devto
+
+# Delete from all platforms
+crier delete post.md --all
+
+# Preview what would be deleted
+crier delete post.md --all --dry-run
+```
+
+Deletion records are preserved in the registry (marked as deleted) to prevent accidental re-publishing.
+
+### Archiving Content
+
+Archive content to exclude it from `audit --publish`:
+
+```bash
+# Archive (exclude from bulk publishing)
+crier archive post.md
+
+# Unarchive (include again)
+crier unarchive post.md
+
+# Include archived in audit
+crier audit --include-archived
+```
+
+## Scheduling
+
+Schedule posts for future publication:
+
+```bash
+# Schedule a post
+crier publish post.md --to devto --schedule "tomorrow 9am"
+crier publish post.md --to bluesky --schedule "2025-02-01 14:00"
+
+# View scheduled posts
+crier schedule list
+
+# Show details
+crier schedule show abc123
+
+# Cancel a scheduled post
+crier schedule cancel abc123
+
+# Publish all due posts
+crier schedule run
+```
+
+Supports natural language times ("tomorrow", "next monday 9am") and ISO format.
+
+## Analytics
+
+Track engagement across platforms:
+
+```bash
+# Show stats for all content
+crier stats
+
+# Stats for specific file
+crier stats post.md
+
+# Top articles by engagement
+crier stats --top 10
+
+# Filter by date
+crier stats --since 1m
+
+# Refresh from platforms (ignore cache)
+crier stats --refresh
+
+# JSON output
+crier stats --json
+```
+
+Stats are cached for 1 hour. Supported platforms: dev.to, Bluesky, Mastodon.
+
+## Threading
+
+Split long content into threads for social platforms:
+
+```bash
+# Auto-split into thread
+crier publish post.md --to bluesky --thread
+
+# Choose thread style
+crier publish post.md --to mastodon --thread --thread-style numbered  # 1/5, 2/5...
+crier publish post.md --to bluesky --thread --thread-style emoji      # 🧵 1/5...
+crier publish post.md --to mastodon --thread --thread-style simple    # No prefix
+```
+
+Thread splitting priority:
+1. Manual markers: `<!-- thread -->` in content
+2. Paragraph boundaries (double newline)
+3. Sentence boundaries (if paragraph too long)
+
+Supported platforms: Bluesky, Mastodon.
 
 ## Getting API Keys
 
