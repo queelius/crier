@@ -501,3 +501,182 @@ class TestArchiveOperations:
     def test_is_archived_article_not_found(self, tmp_registry):
         """is_archived returns False for nonexistent article."""
         assert is_archived("https://example.com/nonexistent") is False
+
+
+class TestArchiveReArchive:
+    """Tests for archive/unarchive round trips."""
+
+    def test_archive_and_unarchive_roundtrip(self, tmp_registry):
+        """Archive then unarchive restores original state."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        # Archive
+        set_archived("https://example.com/article", archived=True)
+        assert is_archived("https://example.com/article") is True
+
+        # Unarchive
+        set_archived("https://example.com/article", archived=False)
+        assert is_archived("https://example.com/article") is False
+
+        # Verify no leftover keys
+        article = get_article("https://example.com/article")
+        assert "archived" not in article
+        assert "archived_at" not in article
+
+
+class TestDeletionPreservesHistory:
+    """Tests for deletion preserving publication history."""
+
+    def test_deletion_preserves_other_fields(self, tmp_registry):
+        """Recording deletion preserves other publication fields."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            content_hash="sha256:abc",
+        )
+
+        record_deletion("https://example.com/article", "devto")
+
+        article = get_article("https://example.com/article")
+        platform_data = article["platforms"]["devto"]
+        assert platform_data["id"] == "123"
+        assert platform_data["url"] == "https://dev.to/article"
+        assert "deleted_at" in platform_data
+
+    def test_is_published_still_true_after_deletion(self, tmp_registry):
+        """is_published still returns True after deletion (record preserved)."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        record_deletion("https://example.com/article", "devto")
+
+        # The record is still there, just marked as deleted
+        assert is_published("https://example.com/article", "devto") is True
+        assert is_deleted("https://example.com/article", "devto") is True
+
+
+class TestRemoveVsDelete:
+    """Tests contrasting remove (hard delete) vs record_deletion (soft delete)."""
+
+    def test_remove_publication_fully_removes(self, tmp_registry):
+        """remove_publication fully removes the platform entry."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            article_id="456",
+            url=None,
+        )
+
+        remove_publication("https://example.com/article", "devto")
+
+        # devto is gone, bluesky remains
+        assert not is_published("https://example.com/article", "devto")
+        assert is_published("https://example.com/article", "bluesky")
+        assert not is_deleted("https://example.com/article", "devto")
+
+    def test_record_deletion_soft_delete(self, tmp_registry):
+        """record_deletion preserves the record with deleted_at."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+
+        record_deletion("https://example.com/article", "devto")
+
+        # Record still exists with deleted_at
+        assert is_published("https://example.com/article", "devto")
+        assert is_deleted("https://example.com/article", "devto")
+
+        # Can still get publication info
+        info = get_publication_info("https://example.com/article", "devto")
+        assert info is not None
+        assert info["article_id"] == "123"
+
+
+class TestGetPublicationIdEdgeCases:
+    """Edge case tests for get_publication_id."""
+
+    def test_nonexistent_article_returns_none(self, tmp_registry):
+        """get_publication_id returns None for nonexistent article."""
+        result = get_publication_id("https://nonexistent.com", "devto")
+        assert result is None
+
+    def test_nonexistent_platform_returns_none(self, tmp_registry):
+        """get_publication_id returns None for unpublished platform."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        result = get_publication_id("https://example.com/article", "bluesky")
+        assert result is None
+
+
+class TestGetPublicationInfoEdgeCases:
+    """Edge case tests for get_publication_info."""
+
+    def test_nonexistent_article_returns_none(self, tmp_registry):
+        """get_publication_info returns None for nonexistent article."""
+        result = get_publication_info("https://nonexistent.com", "devto")
+        assert result is None
+
+    def test_nonexistent_platform_returns_none(self, tmp_registry):
+        """get_publication_info returns None for unpublished platform."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+        )
+        result = get_publication_info("https://example.com/article", "bluesky")
+        assert result is None
+
+
+class TestContentChangedEdgeCases:
+    """Edge case tests for has_content_changed."""
+
+    def test_no_hash_stored_means_changed(self, tmp_registry):
+        """Article with no hash stored is considered changed."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+            # No content_hash
+        )
+
+        assert has_content_changed("https://example.com/article", "sha256:new") is True
+
+    def test_platform_not_published_means_changed(self, tmp_registry):
+        """Checking change for unpublished platform returns True."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url=None,
+            content_hash="sha256:abc",
+        )
+
+        assert has_content_changed(
+            "https://example.com/article", "sha256:abc", platform="bluesky"
+        ) is True

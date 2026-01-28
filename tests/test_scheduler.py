@@ -371,3 +371,372 @@ class TestCleanupOldPosts:
 
         posts = list_scheduled_posts(base_path=tmp_schedule)
         assert len(posts) == 1
+
+    def test_cleanup_with_no_posts(self, tmp_schedule):
+        """Cleanup with empty schedule returns 0."""
+        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        assert removed == 0
+
+
+class TestScheduledPostEdgeCases:
+    """Edge case tests for ScheduledPost."""
+
+    def test_to_dict_with_all_optional_fields(self):
+        """Conversion includes all optional fields."""
+        now = datetime.now(timezone.utc)
+        post = ScheduledPost(
+            id="abc123",
+            file_path="/path/to/file.md",
+            platform="bluesky",
+            scheduled_time=now,
+            created_at=now,
+            status="pending",
+            error="Some error",
+            rewrite="Custom rewrite text",
+            auto_rewrite=True,
+            profile="social",
+        )
+
+        data = post.to_dict()
+        assert data["error"] == "Some error"
+        assert data["rewrite"] == "Custom rewrite text"
+        assert data["auto_rewrite"] is True
+        assert data["profile"] == "social"
+
+    def test_from_dict_with_all_optional_fields(self):
+        """Creation from dict handles all optional fields."""
+        now = datetime.now(timezone.utc)
+        data = {
+            "id": "abc123",
+            "file_path": "/path/to/file.md",
+            "platform": "bluesky",
+            "scheduled_time": now.isoformat(),
+            "created_at": now.isoformat(),
+            "status": "failed",
+            "error": "API error",
+            "rewrite": "Custom rewrite",
+            "auto_rewrite": True,
+            "profile": "blogs",
+        }
+
+        post = ScheduledPost.from_dict(data)
+        assert post.error == "API error"
+        assert post.rewrite == "Custom rewrite"
+        assert post.auto_rewrite is True
+        assert post.profile == "blogs"
+
+    def test_from_dict_missing_optional_fields(self):
+        """Creation from dict uses defaults for missing optional fields."""
+        now = datetime.now(timezone.utc)
+        data = {
+            "id": "abc123",
+            "file_path": "/path/to/file.md",
+            "platform": "devto",
+            "scheduled_time": now.isoformat(),
+            "created_at": now.isoformat(),
+            "status": "pending",
+        }
+
+        post = ScheduledPost.from_dict(data)
+        assert post.error is None
+        assert post.rewrite is None
+        assert post.auto_rewrite is False
+        assert post.profile is None
+
+    def test_roundtrip_serialization(self):
+        """to_dict -> from_dict preserves all data."""
+        now = datetime.now(timezone.utc)
+        original = ScheduledPost(
+            id="test1",
+            file_path="article.md",
+            platform="devto",
+            scheduled_time=now,
+            created_at=now,
+            status="pending",
+            rewrite="Short version",
+            auto_rewrite=True,
+            profile="social",
+        )
+
+        data = original.to_dict()
+        restored = ScheduledPost.from_dict(data)
+
+        assert restored.id == original.id
+        assert restored.file_path == original.file_path
+        assert restored.platform == original.platform
+        assert restored.status == original.status
+        assert restored.rewrite == original.rewrite
+        assert restored.auto_rewrite == original.auto_rewrite
+        assert restored.profile == original.profile
+
+
+class TestCreateScheduledPostEdgeCases:
+    """Edge case tests for create_scheduled_post."""
+
+    def test_create_with_naive_datetime(self, tmp_schedule):
+        """Creating with naive datetime gets UTC timezone applied."""
+        naive_time = datetime(2030, 6, 15, 10, 0, 0)
+
+        post = create_scheduled_post(
+            file_path="test.md",
+            platform="devto",
+            scheduled_time=naive_time,
+            base_path=tmp_schedule,
+        )
+
+        assert post.scheduled_time.tzinfo is not None
+
+    def test_create_with_profile(self, tmp_schedule):
+        """Creating a post with profile stores it."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        post = create_scheduled_post(
+            file_path="test.md",
+            platform="",
+            scheduled_time=future_time,
+            profile="blogs",
+            base_path=tmp_schedule,
+        )
+
+        assert post.profile == "blogs"
+        assert post.platform == ""
+
+        # Verify persisted
+        saved = get_scheduled_post(post.id, tmp_schedule)
+        assert saved.profile == "blogs"
+
+    def test_create_multiple_posts_for_same_file(self, tmp_schedule):
+        """Multiple scheduled posts for the same file are stored separately."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        post1 = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post2 = create_scheduled_post("test.md", "bluesky", future_time, base_path=tmp_schedule)
+
+        assert post1.id != post2.id
+
+        all_posts = list_scheduled_posts(base_path=tmp_schedule)
+        assert len(all_posts) == 2
+
+
+class TestGetScheduledPostEdgeCases:
+    """Edge case tests for get_scheduled_post."""
+
+    def test_get_by_partial_id(self, tmp_schedule):
+        """Get post by partial ID prefix."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        # Get by first 4 chars of ID
+        found = get_scheduled_post(post.id[:4], tmp_schedule)
+        assert found is not None
+        assert found.id == post.id
+
+    def test_get_nonexistent_returns_none(self, tmp_schedule):
+        """Getting nonexistent post returns None."""
+        result = get_scheduled_post("nonexistent", tmp_schedule)
+        assert result is None
+
+
+class TestUpdateScheduledPostEdgeCases:
+    """Edge case tests for update_scheduled_post."""
+
+    def test_update_by_partial_id(self, tmp_schedule):
+        """Update works with partial ID prefix."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        result = update_scheduled_post(post.id[:4], status="published", base_path=tmp_schedule)
+        assert result is True
+
+        updated = get_scheduled_post(post.id, tmp_schedule)
+        assert updated.status == "published"
+
+    def test_update_error_only(self, tmp_schedule):
+        """Update can set error without changing status."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        result = update_scheduled_post(post.id, error="Rate limited", base_path=tmp_schedule)
+        assert result is True
+
+        updated = get_scheduled_post(post.id, tmp_schedule)
+        assert updated.error == "Rate limited"
+        assert updated.status == "pending"  # Status unchanged
+
+
+class TestCancelScheduledPostEdgeCases:
+    """Edge case tests for cancel_scheduled_post."""
+
+    def test_cancel_by_partial_id(self, tmp_schedule):
+        """Cancel works with partial ID prefix."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        result = cancel_scheduled_post(post.id[:4], tmp_schedule)
+        assert result is True
+
+    def test_cancel_failed_post_returns_false(self, tmp_schedule):
+        """Cannot cancel a failed post."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="failed", base_path=tmp_schedule)
+
+        result = cancel_scheduled_post(post.id, tmp_schedule)
+        assert result is False
+
+    def test_cancel_cancelled_post_returns_false(self, tmp_schedule):
+        """Cannot cancel an already-cancelled post."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        cancel_scheduled_post(post.id, tmp_schedule)
+
+        result = cancel_scheduled_post(post.id, tmp_schedule)
+        assert result is False
+
+
+class TestDeleteScheduledPostEdgeCases:
+    """Edge case tests for delete_scheduled_post."""
+
+    def test_delete_by_partial_id(self, tmp_schedule):
+        """Delete works with partial ID prefix."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        result = delete_scheduled_post(post.id[:4], tmp_schedule)
+        assert result is True
+
+        all_posts = list_scheduled_posts(base_path=tmp_schedule)
+        assert len(all_posts) == 0
+
+    def test_delete_removes_any_status(self, tmp_schedule):
+        """Delete removes posts regardless of status."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+
+        result = delete_scheduled_post(post.id, tmp_schedule)
+        assert result is True
+
+
+class TestListScheduledPostsEdgeCases:
+    """Edge case tests for list_scheduled_posts."""
+
+    def test_list_sorted_by_scheduled_time(self, tmp_schedule):
+        """Posts are returned sorted by scheduled_time."""
+        now = datetime.now(timezone.utc)
+        create_scheduled_post("late.md", "devto", now + timedelta(hours=5), base_path=tmp_schedule)
+        create_scheduled_post("early.md", "devto", now + timedelta(hours=1), base_path=tmp_schedule)
+        create_scheduled_post("mid.md", "devto", now + timedelta(hours=3), base_path=tmp_schedule)
+
+        posts = list_scheduled_posts(base_path=tmp_schedule)
+        assert len(posts) == 3
+        assert posts[0].file_path == "early.md"
+        assert posts[1].file_path == "mid.md"
+        assert posts[2].file_path == "late.md"
+
+    def test_list_with_status_no_matches(self, tmp_schedule):
+        """Filtering by status with no matches returns empty list."""
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+
+        posts = list_scheduled_posts(status="published", base_path=tmp_schedule)
+        assert posts == []
+
+
+class TestGetDuePostsEdgeCases:
+    """Edge case tests for get_due_posts."""
+
+    def test_boundary_time_post_is_due(self, tmp_schedule):
+        """Post scheduled exactly at now is due."""
+        # Create a post with past time
+        past_time = datetime.now(timezone.utc) - timedelta(seconds=1)
+        create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
+
+        due = get_due_posts(tmp_schedule)
+        assert len(due) == 1
+
+    def test_due_posts_excludes_cancelled(self, tmp_schedule):
+        """Due posts exclude cancelled posts."""
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        post = create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
+        cancel_scheduled_post(post.id, tmp_schedule)
+
+        due = get_due_posts(tmp_schedule)
+        assert len(due) == 0
+
+    def test_due_posts_excludes_failed(self, tmp_schedule):
+        """Due posts exclude failed posts."""
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        post = create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="failed", base_path=tmp_schedule)
+
+        due = get_due_posts(tmp_schedule)
+        assert len(due) == 0
+
+    def test_mixed_due_and_future_posts(self, tmp_schedule):
+        """Only past posts are returned as due."""
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        create_scheduled_post("past.md", "devto", past_time, base_path=tmp_schedule)
+        create_scheduled_post("future.md", "devto", future_time, base_path=tmp_schedule)
+
+        due = get_due_posts(tmp_schedule)
+        assert len(due) == 1
+        assert due[0].file_path == "past.md"
+
+
+class TestParseScheduleTimeEdgeCases:
+    """Edge case tests for parse_schedule_time."""
+
+    def test_parse_iso_with_timezone(self):
+        """Parse ISO format with timezone info."""
+        result = parse_schedule_time("2025-06-15T10:00:00+00:00")
+        assert result is not None
+        assert result.tzinfo is not None
+
+    def test_parse_relative_time(self):
+        """Parse relative time like 'in 30 minutes'."""
+        result = parse_schedule_time("in 30 minutes")
+        assert result is not None
+        assert result > datetime.now(timezone.utc)
+
+
+class TestCleanupOldPostsEdgeCases:
+    """Edge case tests for cleanup_old_posts."""
+
+    def test_cleanup_removes_old_failed_posts(self, tmp_schedule):
+        """Old failed posts are also removed."""
+        old_time = datetime.now(timezone.utc) - timedelta(days=60)
+        post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="failed", error="API Error", base_path=tmp_schedule)
+
+        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        assert removed == 1
+
+    def test_cleanup_removes_old_cancelled_posts(self, tmp_schedule):
+        """Old cancelled posts are also removed."""
+        old_time = datetime.now(timezone.utc) - timedelta(days=60)
+        post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
+        cancel_scheduled_post(post.id, tmp_schedule)
+
+        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        assert removed == 1
+
+    def test_cleanup_with_mixed_ages(self, tmp_schedule):
+        """Cleanup handles mix of old and recent posts."""
+        old_time = datetime.now(timezone.utc) - timedelta(days=60)
+        recent_time = datetime.now(timezone.utc) - timedelta(days=7)
+
+        old_post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
+        update_scheduled_post(old_post.id, status="published", base_path=tmp_schedule)
+
+        recent_post = create_scheduled_post("recent.md", "devto", recent_time, base_path=tmp_schedule)
+        update_scheduled_post(recent_post.id, status="published", base_path=tmp_schedule)
+
+        pending_post = create_scheduled_post("pending.md", "devto", old_time, base_path=tmp_schedule)
+
+        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        assert removed == 1  # Only old published post removed
+
+        posts = list_scheduled_posts(base_path=tmp_schedule)
+        assert len(posts) == 2  # recent + pending remain

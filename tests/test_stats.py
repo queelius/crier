@@ -420,3 +420,310 @@ Content here.
         assert data["articles"][0]["likes"] == 40
         assert data["articles"][1]["likes"] == 30
         assert data["articles"][2]["likes"] == 20
+
+
+class TestRegistryStatsEdgeCases:
+    """Edge case tests for registry stats caching."""
+
+    def test_save_stats_with_all_fields(self, tmp_registry):
+        """Save stats including reposts field."""
+        canonical_url = "https://example.com/article"
+
+        record_publication(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            article_id="at://...",
+            url="https://bsky.app/...",
+            base_path=tmp_registry,
+        )
+
+        result = save_stats(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            views=None,
+            likes=42,
+            comments=7,
+            reposts=15,
+            base_path=tmp_registry,
+        )
+        assert result is True
+
+        stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+        assert stats["views"] is None
+        assert stats["likes"] == 42
+        assert stats["comments"] == 7
+        assert stats["reposts"] == 15
+
+    def test_save_stats_overwrites_previous(self, tmp_registry):
+        """Saving stats overwrites previous values."""
+        canonical_url = "https://example.com/article"
+
+        record_publication(
+            canonical_url=canonical_url,
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            base_path=tmp_registry,
+        )
+
+        save_stats(canonical_url=canonical_url, platform="devto", views=100, base_path=tmp_registry)
+        save_stats(canonical_url=canonical_url, platform="devto", views=200, base_path=tmp_registry)
+
+        stats = get_cached_stats(canonical_url, "devto", tmp_registry)
+        assert stats["views"] == 200
+
+    def test_get_cached_stats_wrong_platform(self, tmp_registry):
+        """Getting stats for existing article but wrong platform returns None."""
+        canonical_url = "https://example.com/article"
+
+        record_publication(
+            canonical_url=canonical_url,
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            base_path=tmp_registry,
+        )
+
+        save_stats(canonical_url=canonical_url, platform="devto", views=100, base_path=tmp_registry)
+
+        stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+        assert stats is None
+
+    def test_stats_age_nonexistent_article(self, tmp_registry):
+        """Stats age for nonexistent article returns None."""
+        age = get_stats_age_seconds("https://nonexistent.com", "devto", tmp_registry)
+        assert age is None
+
+    def test_stats_age_nonexistent_platform(self, tmp_registry):
+        """Stats age for nonexistent platform returns None."""
+        canonical_url = "https://example.com/article"
+
+        record_publication(
+            canonical_url=canonical_url,
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            base_path=tmp_registry,
+        )
+
+        age = get_stats_age_seconds(canonical_url, "bluesky", tmp_registry)
+        assert age is None
+
+    def test_multiple_platforms_independent_stats(self, tmp_registry):
+        """Stats for different platforms on same article are independent."""
+        canonical_url = "https://example.com/article"
+
+        record_publication(canonical_url=canonical_url, platform="devto", article_id="123", url="u1", base_path=tmp_registry)
+        record_publication(canonical_url=canonical_url, platform="bluesky", article_id="456", url="u2", base_path=tmp_registry)
+
+        save_stats(canonical_url=canonical_url, platform="devto", views=1000, likes=50, base_path=tmp_registry)
+        save_stats(canonical_url=canonical_url, platform="bluesky", likes=25, reposts=10, base_path=tmp_registry)
+
+        devto_stats = get_cached_stats(canonical_url, "devto", tmp_registry)
+        bluesky_stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+
+        assert devto_stats["views"] == 1000
+        assert devto_stats["likes"] == 50
+        assert bluesky_stats["likes"] == 25
+        assert bluesky_stats["reposts"] == 10
+
+
+class TestPlatformStatsEdgeCases:
+    """Edge case tests for platform get_stats implementations."""
+
+    def test_devto_get_stats_partial_data(self):
+        """DevTo get_stats handles missing fields."""
+        from crier.platforms.devto import DevTo
+
+        platform = DevTo("fake-api-key")
+
+        with patch.object(platform, "get_article") as mock_get:
+            mock_get.return_value = {
+                "page_views_count": 100,
+                # Missing public_reactions_count and comments_count
+            }
+
+            stats = platform.get_stats("123")
+            assert stats is not None
+            assert stats.views == 100
+            assert stats.likes is None
+            assert stats.comments is None
+
+    def test_bluesky_get_stats_not_found(self):
+        """Bluesky get_stats returns None when post not found."""
+        from crier.platforms.bluesky import Bluesky
+
+        platform = Bluesky("handle:password")
+
+        with patch.object(platform, "get_article") as mock_get:
+            mock_get.return_value = None
+            stats = platform.get_stats("at://did:plc:xxx/post/yyy")
+            assert stats is None
+
+    def test_mastodon_get_stats_not_found(self):
+        """Mastodon get_stats returns None when status not found."""
+        from crier.platforms.mastodon import Mastodon
+
+        platform = Mastodon("mastodon.social:token")
+
+        with patch.object(platform, "get_article") as mock_get:
+            mock_get.return_value = None
+            stats = platform.get_stats("123456")
+            assert stats is None
+
+    def test_base_platform_get_stats_default(self):
+        """Base Platform.get_stats returns None by default."""
+        from crier.platforms.twitter import Twitter
+
+        platform = Twitter("manual")
+        stats = platform.get_stats("123")
+        assert stats is None
+
+    def test_linkedin_supports_stats_flag(self):
+        """LinkedIn does not support stats."""
+        from crier.platforms.linkedin import LinkedIn
+
+        assert LinkedIn.supports_stats is False
+
+    def test_telegram_supports_stats_flag(self):
+        """Telegram does not support stats."""
+        from crier.platforms.telegram import Telegram
+
+        assert Telegram.supports_stats is False
+
+
+class TestStatsCLIEdgeCases:
+    """Edge case tests for stats CLI command."""
+
+    def test_stats_help_text(self, tmp_path, monkeypatch):
+        """Stats help shows relevant options."""
+        from click.testing import CliRunner
+        from crier.cli import cli
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", "--help"])
+
+        assert result.exit_code == 0
+        assert "--json" in result.output
+        assert "--top" in result.output
+
+    def test_stats_with_file_found_in_registry(self, tmp_path, monkeypatch):
+        """Stats for file tracked in registry shows platform info."""
+        from click.testing import CliRunner
+        from crier.cli import cli
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        md_file = tmp_path / "article.md"
+        md_file.write_text("---\ntitle: My Article\ncanonical_url: https://example.com/my\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/my",
+            platform="devto",
+            article_id="42",
+            url="https://dev.to/my",
+            title="My Article",
+            source_file=str(md_file),
+            base_path=tmp_path,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", str(md_file)])
+
+        assert result.exit_code == 0
+        assert "My Article" in result.output or "devto" in result.output
+
+    def test_stats_json_no_stats_cached(self, tmp_path, monkeypatch):
+        """Stats JSON for article with no cached stats returns empty platforms list."""
+        import json
+        from click.testing import CliRunner
+        from crier.cli import cli
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        md_file = tmp_path / "article.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            title="Test",
+            source_file=str(md_file),
+            base_path=tmp_path,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", str(md_file), "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["success"] is True
+        # No stats cached and no API key = empty platforms list
+        assert isinstance(data["platforms"], list)
+        assert data["totals"]["views"] == 0
+
+    def test_stats_json_with_cached_stats(self, tmp_path, monkeypatch):
+        """Stats JSON returns cached stats when available."""
+        import json
+        from click.testing import CliRunner
+        from crier.cli import cli
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        md_file = tmp_path / "article.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            title="Test",
+            source_file=str(md_file),
+            base_path=tmp_path,
+        )
+
+        # Pre-populate cache
+        save_stats(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            views=500,
+            likes=42,
+            comments=7,
+            base_path=tmp_path,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", str(md_file), "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["success"] is True
+        assert len(data["platforms"]) == 1
+        assert data["platforms"][0]["platform"] == "devto"
+        assert data["platforms"][0]["views"] == 500
+        assert data["platforms"][0]["likes"] == 42
+
+    def test_stats_top_with_no_articles(self, tmp_path, monkeypatch):
+        """Stats --top with no articles in registry."""
+        from click.testing import CliRunner
+        from crier.cli import cli
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stats", "--top", "5"])
+
+        assert result.exit_code == 1
+        assert "No articles" in result.output

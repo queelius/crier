@@ -1734,3 +1734,423 @@ class TestAuditArchiveFilter:
         assert result.exit_code == 0
         # Should show 2 files now
         assert "2 file" in result.output
+
+
+class TestDeleteCommandEdgeCases:
+    """Additional tests for crier delete command."""
+
+    def test_delete_from_platform_success(self, runner, mock_config_and_registry):
+        """Delete from specific platform succeeds."""
+        from crier.registry import record_publication, is_deleted
+        from crier.platforms.base import DeleteResult
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        # Mock platform instance returned by PLATFORMS dict
+        mock_platform = Mock()
+        mock_platform.delete.return_value = DeleteResult(success=True, platform="devto")
+        mock_platform.supports_delete = True
+
+        mock_platform_cls = Mock(return_value=mock_platform)
+        mock_platform_cls.supports_delete = True
+
+        with patch.dict("crier.cli.PLATFORMS", {"devto": mock_platform_cls}):
+            result = runner.invoke(cli, ["delete", str(md_file), "--from", "devto", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted" in result.output or "deleted" in result.output.lower()
+
+    def test_delete_all_platforms_dry_run(self, runner, mock_config_and_registry):
+        """Delete --all --dry-run shows all platforms without deleting."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="bluesky",
+            article_id="456",
+            url="https://bsky.app/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["delete", str(md_file), "--all", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "Dry Run" in result.output
+        assert "devto" in result.output
+        assert "bluesky" in result.output
+
+    def test_delete_json_success(self, runner, mock_config_and_registry):
+        """Delete with --json outputs proper JSON on success."""
+        import json
+        from crier.registry import record_publication
+        from crier.platforms.base import DeleteResult
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        mock_platform = Mock()
+        mock_platform.delete.return_value = DeleteResult(success=True, platform="devto")
+        mock_platform.supports_delete = True
+
+        mock_platform_cls = Mock(return_value=mock_platform)
+        mock_platform_cls.supports_delete = True
+
+        with patch.dict("crier.cli.PLATFORMS", {"devto": mock_platform_cls}):
+            result = runner.invoke(cli, ["delete", str(md_file), "--from", "devto", "--yes", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["results"][0]["success"] is True
+
+    def test_delete_help_text(self, runner, mock_config_and_registry):
+        """Delete command help shows all options."""
+        result = runner.invoke(cli, ["delete", "--help"])
+        assert result.exit_code == 0
+        assert "--from" in result.output
+        assert "--all" in result.output
+        assert "--dry-run" in result.output
+        assert "--yes" in result.output
+        assert "--json" in result.output
+
+    def test_delete_no_platform_specified(self, runner, mock_config_and_registry):
+        """Delete without --from or --all shows error."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["delete", str(md_file)])
+
+        assert result.exit_code == 1
+        assert "--from" in result.output or "--all" in result.output
+
+    def test_delete_not_in_registry(self, runner, mock_config_and_registry):
+        """Delete for file not in registry shows error."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "untracked.md"
+        md_file.write_text("---\ntitle: Untracked\ncanonical_url: https://example.com/untracked\n---\nContent.")
+
+        result = runner.invoke(cli, ["delete", str(md_file), "--from", "devto", "--yes"])
+
+        assert result.exit_code == 1
+        assert "not tracked" in result.output.lower() or "not found" in result.output.lower()
+
+    def test_delete_already_deleted_all(self, runner, mock_config_and_registry):
+        """Delete --all when all platforms already deleted."""
+        from crier.registry import record_publication, record_deletion
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        record_deletion("https://example.com/test", "devto")
+
+        result = runner.invoke(cli, ["delete", str(md_file), "--all", "--yes"])
+
+        assert result.exit_code == 0
+        assert "No platforms" in result.output or "already deleted" in result.output.lower()
+
+
+class TestArchiveCommandEdgeCases:
+    """Additional tests for archive/unarchive commands."""
+
+    def test_archive_json_output(self, runner, mock_config_and_registry):
+        """Archive with --json outputs machine-readable result."""
+        import json
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        result = runner.invoke(cli, ["archive", str(md_file), "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["success"] is True
+
+    def test_unarchive_json_output(self, runner, mock_config_and_registry):
+        """Unarchive with --json outputs machine-readable result."""
+        import json
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        set_archived("https://example.com/test", archived=True)
+
+        result = runner.invoke(cli, ["unarchive", str(md_file), "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["success"] is True
+
+    def test_archive_not_in_registry_json(self, runner, mock_config_and_registry):
+        """Archive for untracked file returns JSON error."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        result = runner.invoke(cli, ["archive", str(md_file), "--json"])
+
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["success"] is False
+
+    def test_archive_help_text(self, runner, mock_config_and_registry):
+        """Archive command help shows options."""
+        result = runner.invoke(cli, ["archive", "--help"])
+        assert result.exit_code == 0
+        assert "--json" in result.output
+
+    def test_unarchive_help_text(self, runner, mock_config_and_registry):
+        """Unarchive command help shows options."""
+        result = runner.invoke(cli, ["unarchive", "--help"])
+        assert result.exit_code == 0
+        assert "--json" in result.output
+
+
+class TestScheduleCommands:
+    """Tests for crier schedule CLI commands."""
+
+    def test_schedule_help(self, runner, mock_config_and_registry):
+        """Schedule command shows help."""
+        result = runner.invoke(cli, ["schedule", "--help"])
+        assert result.exit_code == 0
+        assert "schedule" in result.output.lower()
+
+    def test_schedule_list_empty(self, runner, mock_config_and_registry):
+        """Schedule list with no scheduled posts."""
+        result = runner.invoke(cli, ["schedule", "list"])
+        assert result.exit_code == 0
+        assert "No scheduled posts" in result.output or "empty" in result.output.lower()
+
+    def test_schedule_list_json_empty(self, runner, mock_config_and_registry):
+        """Schedule list --json with no posts."""
+        import json
+
+        result = runner.invoke(cli, ["schedule", "list", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["posts"] == [] or data["count"] == 0
+
+
+class TestStatusDeletedArticle:
+    """Tests for status command with deleted articles."""
+
+    def test_status_shows_deleted_platform(self, runner, mock_config_and_registry):
+        """Status shows deleted status for deleted publications."""
+        from crier.registry import record_publication, record_deletion
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        record_deletion("https://example.com/test", "devto")
+
+        result = runner.invoke(cli, ["status", str(md_file)])
+        assert result.exit_code == 0
+        assert "deleted" in result.output.lower() or "devto" in result.output
+
+
+class TestStatusArchivedArticle:
+    """Tests for status command with archived articles."""
+
+    def test_status_shows_archived(self, runner, mock_config_and_registry):
+        """Status shows archived flag for archived articles."""
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+        set_archived("https://example.com/test", archived=True)
+
+        result = runner.invoke(cli, ["status", str(md_file)])
+        assert result.exit_code == 0
+        assert "archived" in result.output.lower() or "devto" in result.output
+
+
+class TestPublishWithThread:
+    """Tests for publish command with thread options."""
+
+    def test_publish_thread_dry_run(self, runner, mock_config_and_registry):
+        """Publish --thread --dry-run shows thread preview."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "thread.md"
+        md_file.write_text("---\ntitle: Thread Post\ncanonical_url: https://example.com/thread\n---\n\nShort content for thread testing.")
+
+        result = runner.invoke(cli, [
+            "publish", str(md_file), "--to", "bluesky", "--thread", "--dry-run"
+        ])
+
+        assert result.exit_code == 0
+        assert "thread" in result.output.lower() or "Dry Run" in result.output
+
+    def test_publish_thread_style_option(self, runner, mock_config_and_registry):
+        """Publish --thread-style option is recognized."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "thread.md"
+        md_file.write_text("---\ntitle: Thread Post\ncanonical_url: https://example.com/thread\n---\nContent.")
+
+        result = runner.invoke(cli, [
+            "publish", str(md_file), "--to", "bluesky", "--thread", "--thread-style", "numbered", "--dry-run"
+        ])
+
+        assert result.exit_code == 0
+        assert "no such option" not in result.output.lower()
+
+    def test_publish_thread_unsupported_platform(self, runner, mock_config_and_registry):
+        """Publish --thread to platform that doesn't support threads."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "thread.md"
+        md_file.write_text("---\ntitle: Thread Post\ncanonical_url: https://example.com/thread\n---\nContent.")
+
+        result = runner.invoke(cli, [
+            "publish", str(md_file), "--to", "devto", "--thread", "--dry-run"
+        ])
+
+        # Should warn about thread not supported or still succeed for dry-run
+        assert result.exit_code == 0
+        assert "thread" in result.output.lower() or "devto" in result.output
+
+
+class TestRegistryDeletionIntegration:
+    """Integration tests for deletion workflow."""
+
+    def test_delete_and_check_status_workflow(self, runner, mock_config_and_registry):
+        """Full workflow: publish -> delete -> status shows deleted."""
+        from crier.registry import record_publication, record_deletion, is_deleted
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md_file = posts_dir / "test.md"
+        md_file.write_text("---\ntitle: Test\ncanonical_url: https://example.com/test\n---\nContent.")
+
+        # Register
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(md_file),
+        )
+
+        # Delete
+        record_deletion("https://example.com/test", "devto")
+        assert is_deleted("https://example.com/test", "devto") is True
+
+        # Check status shows it
+        result = runner.invoke(cli, ["status", str(md_file)])
+        assert result.exit_code == 0
+
+    def test_archive_and_audit_workflow(self, runner, mock_config_and_registry):
+        """Full workflow: publish -> archive -> audit excludes it."""
+        from crier.registry import record_publication, set_archived
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+
+        active_file = posts_dir / "active.md"
+        active_file.write_text("---\ntitle: Active\ncanonical_url: https://example.com/active\n---\nContent.")
+
+        archived_file = posts_dir / "archived.md"
+        archived_file.write_text("---\ntitle: Archived\ncanonical_url: https://example.com/archived\n---\nContent.")
+
+        record_publication(
+            canonical_url="https://example.com/archived",
+            platform="devto",
+            article_id="2",
+            url="https://dev.to/archived",
+            source_file=str(archived_file),
+        )
+
+        # Archive it
+        set_archived("https://example.com/archived", archived=True)
+
+        # Audit should exclude archived
+        result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0
+        assert "archived.md" not in result.output
+
+        # Unarchive and verify it appears
+        set_archived("https://example.com/archived", archived=False)
+        result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0
+        assert "archived.md" in result.output

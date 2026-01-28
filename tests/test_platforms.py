@@ -719,3 +719,445 @@ class TestDevToTagSanitization:
         result = sanitize_tags(tags)
         # After filtering: one, two, three, four (first 4 valid)
         assert result == ["one", "two", "three", "four"]
+
+
+class TestDeleteResult:
+    """Tests for DeleteResult dataclass."""
+
+    def test_success_delete_result(self):
+        """Create a successful DeleteResult."""
+        from crier.platforms.base import DeleteResult
+
+        result = DeleteResult(success=True, platform="devto")
+        assert result.success is True
+        assert result.platform == "devto"
+        assert result.error is None
+
+    def test_failure_delete_result(self):
+        """Create a failed DeleteResult."""
+        from crier.platforms.base import DeleteResult
+
+        result = DeleteResult(
+            success=False,
+            platform="bluesky",
+            error="Authentication failed",
+        )
+        assert result.success is False
+        assert result.error == "Authentication failed"
+
+
+class TestPlatformDeleteOperations:
+    """Tests for platform delete operations."""
+
+    @patch("crier.platforms.devto.requests.put")
+    def test_devto_delete_success(self, mock_put):
+        """DevTo delete (unpublish) succeeds."""
+        mock_put.return_value = Mock(status_code=200)
+
+        platform = DevTo("test_key")
+        result = platform.delete("12345")
+
+        assert result.success is True
+        assert result.platform == "devto"
+        mock_put.assert_called_once()
+        call_json = mock_put.call_args.kwargs.get("json") or mock_put.call_args[1].get("json")
+        assert call_json["article"]["published"] is False
+
+    @patch("crier.platforms.devto.requests.put")
+    def test_devto_delete_failure(self, mock_put):
+        """DevTo delete fails with API error."""
+        mock_put.return_value = Mock(status_code=404, text="Not found")
+
+        platform = DevTo("test_key")
+        result = platform.delete("12345")
+
+        assert result.success is False
+        assert "404" in result.error
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_bluesky_delete_auth_failure(self, mock_post):
+        """Bluesky delete fails when auth fails."""
+        mock_post.return_value = Mock(status_code=401)
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.delete("at://did:plc:xxx/app.bsky.feed.post/yyy")
+
+        assert result.success is False
+        assert "authenticate" in result.error.lower()
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_bluesky_delete_invalid_format(self, mock_post):
+        """Bluesky delete with invalid AT URI format."""
+        # Auth succeeds
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+        mock_post.return_value = auth_response
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.delete("invalid-uri")
+
+        assert result.success is False
+        assert "Invalid" in result.error
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_bluesky_delete_success(self, mock_post):
+        """Bluesky delete succeeds."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        delete_response = Mock(status_code=200)
+
+        mock_post.side_effect = [auth_response, delete_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.delete("at://did:plc:abc/app.bsky.feed.post/xyz")
+
+        assert result.success is True
+        assert result.platform == "bluesky"
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_bluesky_delete_api_error(self, mock_post):
+        """Bluesky delete fails with API error after auth."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        delete_response = Mock(status_code=500, text="Internal error")
+
+        mock_post.side_effect = [auth_response, delete_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.delete("at://did:plc:abc/app.bsky.feed.post/xyz")
+
+        assert result.success is False
+        assert "500" in result.error
+
+    @patch("crier.platforms.mastodon.requests.delete")
+    def test_mastodon_delete_success(self, mock_delete):
+        """Mastodon delete succeeds."""
+        mock_delete.return_value = Mock(status_code=200)
+
+        platform = Mastodon("mastodon.social:token")
+        result = platform.delete("123456")
+
+        assert result.success is True
+        assert result.platform == "mastodon"
+
+    @patch("crier.platforms.mastodon.requests.delete")
+    def test_mastodon_delete_failure(self, mock_delete):
+        """Mastodon delete fails with API error."""
+        mock_delete.return_value = Mock(status_code=403, text="Forbidden")
+
+        platform = Mastodon("mastodon.social:token")
+        result = platform.delete("123456")
+
+        assert result.success is False
+        assert "403" in result.error
+
+
+class TestBasePlatformDefaults:
+    """Tests for base Platform default methods."""
+
+    def test_default_delete_unsupported(self):
+        """Platform with supports_delete=False returns proper result."""
+        from crier.platforms.base import Platform, DeleteResult
+
+        # Twitter has supports_delete = False (inherited from manual-mode logic)
+        platform = Twitter("manual")
+        result = platform.delete("123")
+        assert result.success is False
+        assert isinstance(result, DeleteResult)
+
+    def test_default_get_stats_returns_none(self):
+        """Base Platform.get_stats returns None by default."""
+        platform = Twitter("manual")
+        assert platform.get_stats("123") is None
+
+    def test_default_publish_thread_unsupported(self):
+        """Platform without thread support returns error."""
+        from crier.platforms.base import ThreadPublishResult
+
+        platform = DevTo("test_key")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+        assert result.success is False
+        assert "does not support" in result.error
+
+    def test_supports_delete_flag(self):
+        """Check supports_delete flags on platforms."""
+        assert DevTo.supports_delete is True
+        assert Bluesky.supports_delete is True
+        assert Mastodon.supports_delete is True
+
+    def test_supports_threads_flag(self):
+        """Check supports_threads flags on platforms."""
+        assert Bluesky.supports_threads is True
+        assert Mastodon.supports_threads is True
+        assert DevTo.supports_threads is False
+        assert Twitter.supports_threads is False
+
+    def test_thread_max_posts(self):
+        """Check thread_max_posts default."""
+        assert Bluesky.thread_max_posts == 25
+        assert Mastodon.thread_max_posts == 25
+
+
+class TestBlueskyPublishThread:
+    """Tests for Bluesky publish_thread."""
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_publish_thread_auth_failure(self, mock_post):
+        """Thread publish fails when authentication fails."""
+        mock_post.return_value = Mock(status_code=401)
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is False
+        assert "authenticate" in result.error.lower()
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_publish_thread_success(self, mock_post):
+        """Thread publish succeeds with all posts."""
+        from crier.platforms.base import ThreadPublishResult
+
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/111",
+            "cid": "cid111",
+        }
+
+        post2_response = Mock(status_code=200)
+        post2_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/222",
+            "cid": "cid222",
+        }
+
+        post3_response = Mock(status_code=200)
+        post3_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/333",
+            "cid": "cid333",
+        }
+
+        mock_post.side_effect = [auth_response, post1_response, post2_response, post3_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.publish_thread(["Post 1", "Post 2", "Post 3"])
+
+        assert result.success is True
+        assert isinstance(result, ThreadPublishResult)
+        assert len(result.post_ids) == 3
+        assert len(result.post_urls) == 3
+        assert result.root_id == "at://did:plc:abc/app.bsky.feed.post/111"
+        assert len(result.results) == 3
+        for r in result.results:
+            assert r.success is True
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_publish_thread_partial_failure(self, mock_post):
+        """Thread publish fails mid-way, returns partial results."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/111",
+            "cid": "cid111",
+        }
+
+        post2_response = Mock(status_code=500, text="Server error")
+
+        mock_post.side_effect = [auth_response, post1_response, post2_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.publish_thread(["Post 1", "Post 2", "Post 3"])
+
+        assert result.success is False
+        assert "Failed on post 2" in result.error
+        assert len(result.post_ids) == 1
+        assert result.root_id == "at://did:plc:abc/app.bsky.feed.post/111"
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_publish_thread_content_too_long(self, mock_post):
+        """Thread fails if any post exceeds max_content_length."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+        mock_post.return_value = auth_response
+
+        platform = Bluesky("handle.bsky.social:password")
+        # Second post exceeds 300 char limit
+        result = platform.publish_thread(["Short post", "A" * 400, "Another short"])
+
+        assert result.success is False
+        assert "exceeds character limit" in result.error
+
+
+class TestMastodonPublishThread:
+    """Tests for Mastodon publish_thread."""
+
+    @patch("crier.platforms.mastodon.requests.post")
+    def test_publish_thread_success(self, mock_post):
+        """Thread publish succeeds with all posts."""
+        from crier.platforms.base import ThreadPublishResult
+
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {
+            "id": "111",
+            "url": "https://mastodon.social/@user/111",
+        }
+
+        post2_response = Mock(status_code=200)
+        post2_response.json.return_value = {
+            "id": "222",
+            "url": "https://mastodon.social/@user/222",
+        }
+
+        mock_post.side_effect = [post1_response, post2_response]
+
+        platform = Mastodon("mastodon.social:token")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is True
+        assert len(result.post_ids) == 2
+        assert result.root_id == "111"
+        assert result.post_urls[0] == "https://mastodon.social/@user/111"
+
+    @patch("crier.platforms.mastodon.requests.post")
+    def test_publish_thread_partial_failure(self, mock_post):
+        """Thread publish fails mid-way, returns partial results."""
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {
+            "id": "111",
+            "url": "https://mastodon.social/@user/111",
+        }
+
+        post2_response = Mock(status_code=422, text="Validation failed")
+
+        mock_post.side_effect = [post1_response, post2_response]
+
+        platform = Mastodon("mastodon.social:token")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is False
+        assert "Failed on post 2" in result.error
+        assert len(result.post_ids) == 1
+        assert result.root_id == "111"
+
+    @patch("crier.platforms.mastodon.requests.post")
+    def test_publish_thread_content_too_long(self, mock_post):
+        """Thread fails if any post exceeds max_content_length."""
+        platform = Mastodon("mastodon.social:token")
+        # First post exceeds 500 char limit
+        result = platform.publish_thread(["A" * 600, "Short post"])
+
+        assert result.success is False
+        assert "exceeds character limit" in result.error
+
+    @patch("crier.platforms.mastodon.requests.post")
+    def test_publish_thread_sets_reply_to(self, mock_post):
+        """Thread posts after the first include in_reply_to_id."""
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {"id": "111", "url": "url1"}
+
+        post2_response = Mock(status_code=200)
+        post2_response.json.return_value = {"id": "222", "url": "url2"}
+
+        mock_post.side_effect = [post1_response, post2_response]
+
+        platform = Mastodon("mastodon.social:token")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is True
+        # Verify the second post was sent with in_reply_to_id
+        second_call = mock_post.call_args_list[1]
+        json_data = second_call.kwargs.get("json") or second_call[1].get("json")
+        assert json_data["in_reply_to_id"] == "111"
+
+
+class TestBlueskyThreadReplyReference:
+    """Tests for Bluesky thread reply reference structure."""
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_first_post_has_no_reply(self, mock_post):
+        """First post in thread has no reply reference."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        post_response = Mock(status_code=200)
+        post_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/111",
+            "cid": "cid111",
+        }
+
+        mock_post.side_effect = [auth_response, post_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.publish_thread(["Single post thread"])
+
+        assert result.success is True
+
+        # Verify the post was sent without reply field
+        post_call = mock_post.call_args_list[1]  # Second call is the post (first is auth)
+        json_data = post_call.kwargs.get("json") or post_call[1].get("json")
+        record = json_data["record"]
+        assert "reply" not in record
+
+    @patch("crier.platforms.bluesky.requests.post")
+    def test_second_post_has_reply_reference(self, mock_post):
+        """Second post includes root and parent reply references."""
+        auth_response = Mock(status_code=200)
+        auth_response.json.return_value = {
+            "accessJwt": "token",
+            "did": "did:plc:abc",
+        }
+
+        post1_response = Mock(status_code=200)
+        post1_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/111",
+            "cid": "cid111",
+        }
+
+        post2_response = Mock(status_code=200)
+        post2_response.json.return_value = {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/222",
+            "cid": "cid222",
+        }
+
+        mock_post.side_effect = [auth_response, post1_response, post2_response]
+
+        platform = Bluesky("handle.bsky.social:password")
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is True
+
+        # Verify second post has reply reference
+        post2_call = mock_post.call_args_list[2]
+        json_data = post2_call.kwargs.get("json") or post2_call[1].get("json")
+        record = json_data["record"]
+        assert "reply" in record
+        assert record["reply"]["root"]["uri"] == "at://did:plc:abc/app.bsky.feed.post/111"
+        assert record["reply"]["root"]["cid"] == "cid111"
+        assert record["reply"]["parent"]["uri"] == "at://did:plc:abc/app.bsky.feed.post/111"
+        assert record["reply"]["parent"]["cid"] == "cid111"
