@@ -574,3 +574,19 @@ def get_llm_truncate_fallback() -> bool:
     """Get default truncate fallback setting (default: False)."""
     llm_config = get_llm_config()
     return bool(llm_config.get("truncate_fallback", False))
+
+
+def get_check_overrides() -> dict[str, str]:
+    """Get check severity overrides from local config.
+
+    Configure in .crier/config.yaml:
+        checks:
+          missing-title: error       # default
+          missing-tags: disabled     # don't care about tags
+          short-body: disabled       # allow short posts
+
+    Returns:
+        Dict mapping check_name to severity string (or "disabled").
+    """
+    config = load_local_config()
+    return config.get("checks", {})

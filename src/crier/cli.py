@@ -83,6 +83,26 @@ def _has_valid_front_matter(file_path: Path) -> bool:
         return False
 
 
+_SEVERITY_LABELS = {
+    "error": "[red]ERROR[/red]",
+    "warning": "[yellow]WARNING[/yellow]",
+    "info": "[blue]INFO[/blue]",
+}
+
+# Padded for aligned tabular output in the check command
+_SEVERITY_LABELS_PADDED = {
+    "error": "[red]ERROR  [/red]",
+    "warning": "[yellow]WARNING[/yellow]",
+    "info": "[blue]INFO   [/blue]",
+}
+
+
+def _severity_label(severity: str, padded: bool = False) -> str:
+    """Return a Rich-formatted label for a check severity level."""
+    labels = _SEVERITY_LABELS_PADDED if padded else _SEVERITY_LABELS
+    return labels.get(severity, severity)
+
+
 def _is_in_content_paths(file_path: Path) -> bool:
     """Check if a file is within configured content_paths."""
     content_paths = get_content_paths()
@@ -612,13 +632,17 @@ def init():
 @click.option("--thread-style", "thread_style", default="numbered",
               type=click.Choice(["numbered", "simple", "emoji"]),
               help="Thread numbering style (default: numbered)")
+@click.option("--no-check", is_flag=True,
+              help="Skip pre-publish validation checks")
+@click.option("--strict", is_flag=True,
+              help="Treat check warnings as errors (block publish)")
 def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             draft: bool, dry_run: bool, manual: bool, no_browser: bool,
             rewrite_content: str | None, rewrite_file: str | None, rewrite_author: str | None,
             auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
             temperature: float | None, model_override: str | None,
             yes: bool, json_output: bool, batch: bool, quiet: bool, schedule_time: str | None,
-            thread: bool, thread_style: str):
+            thread: bool, thread_style: str, no_check: bool, strict: bool):
     """Publish a markdown file to one or more platforms.
 
     For short-form platforms (Bluesky, Twitter, etc.), use --rewrite to provide
@@ -748,6 +772,50 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             seen.add(p)
             unique_platforms.append(p)
     platforms = unique_platforms
+
+    # Pre-publish validation checks
+    if not no_check:
+        from .checker import check_file
+        from .config import get_check_overrides, get_site_base_url
+
+        report = check_file(
+            file,
+            platforms=platforms,
+            severity_overrides=get_check_overrides(),
+            site_base_url=get_site_base_url(),
+        )
+
+        if strict:
+            report = report.with_elevated_warnings()
+
+        if report.results:
+            if report.has_errors:
+                if json_output:
+                    print(json_module.dumps({
+                        "success": False,
+                        "error": "Pre-publish check failed",
+                        "checks": [
+                            {"severity": r.severity, "check": r.check_name, "message": r.message}
+                            for r in report.results
+                        ],
+                    }))
+                else:
+                    console.print("\n[red]Pre-publish check failed:[/red]")
+                    for r in report.results:
+                        console.print(f"  {_severity_label(r.severity)} {r.check_name}: {r.message}")
+                    console.print("\n[dim]Use --no-check to skip validation.[/dim]")
+                raise SystemExit(1)
+
+            # Warnings present but no errors — show and continue
+            if not silent:
+                warning_count = sum(1 for r in report.results if r.severity == "warning")
+                info_count = sum(1 for r in report.results if r.severity == "info")
+                parts = []
+                if warning_count:
+                    parts.append(f"{warning_count} warning{'s' if warning_count != 1 else ''}")
+                if info_count:
+                    parts.append(f"{info_count} info")
+                console.print(f"[dim]Pre-publish check: {', '.join(parts)}. Continuing...[/dim]")
 
     # Handle scheduling if --schedule is provided
     if schedule_time:
@@ -2483,12 +2551,15 @@ def llm_test():
               help="Hard-truncate at sentence boundary if retries fail")
 @click.option("--verbose", "-v", is_flag=True,
               help="Show detailed output per file")
+@click.option("--check", "run_checks", is_flag=True,
+              help="Validate content before publishing (skip files that fail)")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
           sample: int | None, include_changed: bool, include_archived: bool,
           since_date: str | None, until_date: str | None,
           tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
-          auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None, verbose: bool):
+          auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
+          verbose: bool, run_checks: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -2766,6 +2837,37 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     # Apply sampling if requested
     if sample is not None and len(actionable_items) > sample:
         actionable_items = random.sample(actionable_items, sample)
+
+    # Apply check filtering if --check is used with --publish
+    if run_checks and publish and actionable_items:
+        from .checker import check_file
+        from .config import get_check_overrides, get_site_base_url
+
+        severity_overrides = get_check_overrides()
+        site_base_url = get_site_base_url()
+
+        checked_items = []
+        skipped_count = 0
+        for item in actionable_items:
+            file_path = item[0]
+            platform = item[1]
+            report = check_file(
+                file_path,
+                platforms=[platform],
+                severity_overrides=severity_overrides,
+                site_base_url=site_base_url,
+            )
+            if report.has_errors:
+                skipped_count += 1
+                if not silent:
+                    error_msgs = [r.message for r in report.results if r.severity == "error"]
+                    console.print(f"  [yellow]Skipping {file_path.name} → {platform}: {error_msgs[0]}[/yellow]")
+            else:
+                checked_items.append(item)
+
+        if skipped_count and not silent:
+            console.print(f"[yellow]Skipped {skipped_count} item{'s' if skipped_count != 1 else ''} due to check failures[/yellow]")
+        actionable_items = checked_items
 
     # Dry run mode - show what would be published without doing it
     if dry_run:
@@ -3251,6 +3353,141 @@ def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None
                     str(r["words"]),
                 )
         console.print(table)
+
+
+@cli.command()
+@click.argument("files", nargs=-1, type=click.Path(exists=True))
+@click.option("--to", "-t", "platform_args", multiple=True,
+              help="Check against specific platform(s)")
+@click.option("--all", "-a", "check_all", is_flag=True,
+              help="Check all content files")
+@click.option("--json", "json_output", is_flag=True,
+              help="Output results as JSON")
+@click.option("--strict", is_flag=True,
+              help="Treat warnings as errors")
+@click.option("--check-links", is_flag=True,
+              help="Also check external links (slow)")
+def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: bool,
+          json_output: bool, strict: bool, check_links: bool):
+    """Validate content before publishing.
+
+    Checks front matter, content, and platform-specific requirements.
+
+    \b
+    Examples:
+      crier check article.md
+      crier check article.md --to bluesky --to devto
+      crier check --all --strict
+      crier check article.md --json
+      crier check article.md --check-links
+    """
+    import json as json_module
+    import sys
+    from .checker import check_file, CheckReport
+    from .config import get_check_overrides, get_site_base_url
+
+    # Determine which files to check
+    if check_all:
+        file_paths = _find_content_files()
+        if not file_paths:
+            if json_output:
+                click.echo(json_module.dumps({"error": "No content files found"}))
+            else:
+                console.print("[yellow]No content files found.[/yellow]")
+            sys.exit(1)
+    elif files:
+        file_paths = [Path(f) for f in files]
+    else:
+        click.echo("Error: Provide file(s) or use --all to check all content.")
+        sys.exit(1)
+
+    # Load config
+    severity_overrides = get_check_overrides()
+    site_base_url = get_site_base_url()
+
+    platforms = list(platform_args) if platform_args else None
+
+    # Run checks
+    reports: list[CheckReport] = []
+    for fp in file_paths:
+        report = check_file(
+            fp,
+            platforms=platforms,
+            severity_overrides=severity_overrides,
+            site_base_url=site_base_url,
+            check_links=check_links,
+        )
+        if strict:
+            report = report.with_elevated_warnings()
+        reports.append(report)
+
+    # Output
+    if json_output:
+        output = {
+            "reports": [
+                {
+                    "file": r.file,
+                    "passed": r.passed,
+                    "results": [
+                        {
+                            "severity": cr.severity,
+                            "check": cr.check_name,
+                            "message": cr.message,
+                            **({"line": cr.line} if cr.line else {}),
+                            **({"platform": cr.platform} if cr.platform else {}),
+                        }
+                        for cr in r.results
+                    ],
+                }
+                for r in reports
+            ],
+            "summary": {
+                "files": len(reports),
+                "passed": sum(1 for r in reports if r.passed),
+                "failed": sum(1 for r in reports if not r.passed),
+            },
+        }
+        click.echo(json_module.dumps(output, indent=2))
+    else:
+        for report in reports:
+            if not report.results:
+                console.print(f"\n[green]✓[/green] {report.file}")
+                continue
+
+            console.print(f"\n{report.file}")
+            for result in report.results:
+                line_info = f":{result.line}" if result.line else ""
+                platform_info = f" [{result.platform}]" if result.platform else ""
+                console.print(f"  {_severity_label(result.severity, padded=True)} {result.check_name:<24} {result.message}{line_info}{platform_info}")
+
+        # Summary
+        total_errors = sum(1 for r in reports for cr in r.results if cr.severity == "error")
+        total_warnings = sum(1 for r in reports for cr in r.results if cr.severity == "warning")
+        total_info = sum(1 for r in reports for cr in r.results if cr.severity == "info")
+
+        parts = []
+        if total_errors:
+            parts.append(f"[red]{total_errors} error{'s' if total_errors != 1 else ''}[/red]")
+        if total_warnings:
+            parts.append(f"[yellow]{total_warnings} warning{'s' if total_warnings != 1 else ''}[/yellow]")
+        if total_info:
+            parts.append(f"[blue]{total_info} info[/blue]")
+
+        if parts:
+            console.print(f"\n{', '.join(parts)}")
+        else:
+            console.print(f"\n[green]All {len(reports)} file{'s' if len(reports) != 1 else ''} passed.[/green]")
+
+    # Exit code
+    any_errors = any(not r.passed for r in reports)
+    all_failed = all(not r.passed for r in reports) if reports else False
+
+    if not any_errors:
+        sys.exit(0)
+    elif all_failed or len(reports) == 1:
+        sys.exit(1)
+    else:
+        sys.exit(2)  # Partial failure
 
 
 @cli.command()

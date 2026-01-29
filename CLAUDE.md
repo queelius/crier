@@ -32,9 +32,10 @@ ruff format --check src/
 
 **CLI Layer** (`cli.py`): Click-based commands that orchestrate the workflow:
 - `init` — Interactive setup wizard
-- `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`, `--schedule`, `--thread`)
+- `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`, `--schedule`, `--thread`, `--no-check`, `--strict`)
+- `check` — Pre-publish content validation (supports `--to`, `--all`, `--json`, `--strict`, `--check-links`)
 - `status` — Show publication status for files
-- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`)
+- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`, `--check`)
 - `search` — Search and list content with metadata (supports `--tag`, `--since`, `--until`, `--sample`, `--json`)
 - `delete` — Delete content from platforms (`--from`, `--all`, `--dry-run`)
 - `archive` / `unarchive` — Exclude/include content from audit --publish
@@ -60,6 +61,14 @@ ruff format --check src/
 - `ScheduledPost` dataclass for scheduled post data
 - Schedule storage in `.crier/schedule.yaml`
 - Natural language time parsing via `dateparser`
+
+**Checker** (`checker.py`): Pre-publish content validation:
+- `CheckResult` and `CheckReport` dataclasses for validation findings
+- `check_article()` — Pure validation (no I/O): front matter, content, platform-specific checks
+- `check_file()` — I/O wrapper that reads file and calls `check_article()`
+- `check_external_links()` — Optional external URL validation via HEAD requests
+- Configurable severity overrides in `.crier/config.yaml` `checks:` section
+- Integrated into `publish` (pre-publish gate) and `audit` (filter with `--check`)
 
 **Threading** (`threading.py`): Thread splitting for social platforms:
 - `split_into_thread()` splits content by manual markers, paragraphs, or sentences
@@ -367,6 +376,46 @@ crier publish article.md --to mastodon --thread --thread-style simple    # No pr
 
 Thread splitting priority: manual markers (`<!-- thread -->`) → paragraph boundaries → sentence boundaries. Supported platforms: bluesky, mastodon.
 
+## Pre-Publish Validation
+
+```bash
+# Check a single file
+crier check article.md
+
+# Check with platform context
+crier check article.md --to bluesky --to devto
+
+# Check all content
+crier check --all
+
+# Strict mode: warnings become errors
+crier check article.md --strict
+
+# Check external links (slow, opt-in)
+crier check article.md --check-links
+
+# JSON output
+crier check article.md --json
+```
+
+**Checks performed:**
+- Front matter: missing-title (error), missing-date (warning), future-date (info), missing-tags (warning), empty-tags (warning), title-length (warning), missing-description (info)
+- Content: empty-body (error), short-body (warning), broken-relative-links (warning), image-alt-text (info)
+- Platform-specific: bluesky-length (warning), mastodon-length (warning), devto-canonical (info)
+- External: broken-external-link (warning, opt-in with `--check-links`)
+
+**Publish integration:** Pre-publish checks run automatically. Use `--no-check` to skip, `--strict` to block on warnings.
+
+**Audit integration:** Use `--check` with `--publish` to skip files that fail validation.
+
+**Configure severity overrides** in `.crier/config.yaml`:
+```yaml
+checks:
+  missing-tags: disabled    # Don't care about tags
+  missing-date: error       # Promote to error
+  short-body: disabled      # Allow short posts
+```
+
 ## Adding a New Platform
 
 1. Create `platforms/newplatform.py` implementing the `Platform` abstract class
@@ -378,7 +427,7 @@ Thread splitting priority: manual markers (`<!-- thread -->`) → paragraph boun
 
 ## Testing
 
-Tests are in `tests/` with 418 tests covering config, registry, converters, CLI, platforms, scheduler, stats, and threading.
+Tests are in `tests/` with 643 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, and checker.
 
 **Running tests:**
 ```bash
