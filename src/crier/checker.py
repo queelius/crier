@@ -423,6 +423,15 @@ def check_file(
 
     try:
         content = file_path.read_text()
+    except UnicodeDecodeError:
+        return CheckReport(
+            file=str(file_path),
+            results=[CheckResult(
+                severity="error",
+                check_name="file-read-error",
+                message="Not a text file (binary content)",
+            )],
+        )
     except OSError as e:
         return CheckReport(
             file=str(file_path),

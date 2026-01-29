@@ -484,6 +484,14 @@ class TestCheckFile:
         assert not report.passed
         assert any(r.check_name == "file-read-error" for r in report.results)
 
+    def test_binary_file(self, tmp_path):
+        binary_file = tmp_path / "image.png"
+        binary_file.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 100)
+        report = check_file(binary_file)
+        assert not report.passed
+        assert any(r.check_name == "file-read-error" for r in report.results)
+        assert "binary" in report.results[0].message.lower()
+
     def test_no_front_matter(self, tmp_path):
         md_file = _make_md_raw(tmp_path, "Just some plain text without front matter.")
         report = check_file(md_file)
