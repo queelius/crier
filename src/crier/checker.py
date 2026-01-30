@@ -68,7 +68,7 @@ DEFAULT_SEVERITIES: dict[str, str] = {
     "missing-tags": "warning",
     "empty-tags": "warning",
     "title-length": "warning",
-    "missing-description": "info",
+    "missing-description": "warning",
     # Content checks
     "empty-body": "error",
     "short-body": "warning",
@@ -186,12 +186,16 @@ def check_front_matter(
     # missing-description
     sev = get_effective_severity("missing-description", severity_overrides)
     if sev:
-        has_desc = front_matter.get("description") or front_matter.get("excerpt")
+        has_desc = (
+            front_matter.get("description")
+            or front_matter.get("excerpt")
+            or front_matter.get("summary")
+        )
         if not has_desc:
             results.append(CheckResult(
                 severity=sev,
                 check_name="missing-description",
-                message="No 'description' or 'excerpt' in front matter",
+                message="No 'description', 'excerpt', or 'summary' in front matter",
             ))
 
     return results

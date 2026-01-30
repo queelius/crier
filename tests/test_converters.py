@@ -85,6 +85,80 @@ Paragraph three.
         assert "Paragraph three." in body
 
 
+    def test_parse_toml_front_matter(self):
+        content = """\
++++
+title = "My TOML Title"
+description = "A TOML description"
+draft = false
++++
+
+Body content here.
+"""
+        front_matter, body = parse_front_matter(content)
+        assert front_matter["title"] == "My TOML Title"
+        assert front_matter["description"] == "A TOML description"
+        assert front_matter["draft"] is False
+        assert body == "Body content here."
+
+    def test_parse_toml_with_arrays(self):
+        content = """\
++++
+title = "Tagged TOML"
+tags = ['python', 'testing', 'crier']
++++
+
+Body.
+"""
+        front_matter, body = parse_front_matter(content)
+        assert front_matter["title"] == "Tagged TOML"
+        assert front_matter["tags"] == ["python", "testing", "crier"]
+
+    def test_parse_toml_hugo_style(self):
+        """Test TOML front matter as used by Hugo sites."""
+        content = """\
++++
+title = 'CTK: Conversation Archive'
+date = 2025-12-18T11:11:23-06:00
+draft = true
+tags = ['ctk', 'long-echo', 'python']
+categories = ['tools', 'personal']
+description = 'A tool for exporting AI conversations.'
++++
+
+Following the Long Echo philosophy, I built CTK.
+"""
+        front_matter, body = parse_front_matter(content)
+        assert front_matter["title"] == "CTK: Conversation Archive"
+        assert front_matter["description"] == "A tool for exporting AI conversations."
+        assert front_matter["draft"] is True
+        assert "tags" in front_matter
+        assert "Following the Long Echo philosophy" in body
+
+    def test_parse_empty_toml_front_matter(self):
+        content = """\
++++
+
++++
+
+Body only.
+"""
+        front_matter, body = parse_front_matter(content)
+        assert front_matter == {}
+        assert body == "Body only."
+
+    def test_parse_malformed_toml(self):
+        content = """\
++++
+this is not valid toml [[[
++++
+
+Body.
+"""
+        front_matter, body = parse_front_matter(content)
+        assert front_matter == {} or isinstance(front_matter, dict)
+
+
 class TestParseMarkdownFile:
     """Tests for parse_markdown_file()."""
 

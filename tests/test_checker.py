@@ -287,6 +287,10 @@ class TestCheckFrontMatter:
         results = check_front_matter({"title": "Test", "excerpt": "Excerpt"})
         assert not any(r.check_name == "missing-description" for r in results)
 
+    def test_summary_counts_as_description(self):
+        results = check_front_matter({"title": "Test", "summary": "Summary text"})
+        assert not any(r.check_name == "missing-description" for r in results)
+
     def test_disabled_check_not_reported(self):
         overrides = {"missing-tags": "disabled"}
         results = check_front_matter({"title": "Test"}, severity_overrides=overrides)

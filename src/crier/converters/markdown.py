@@ -92,14 +92,18 @@ def resolve_relative_links(body: str, base_url: str) -> str:
 
 
 def parse_front_matter(content: str) -> tuple[dict[str, Any], str]:
-    """Parse YAML front matter from markdown content.
+    """Parse front matter from markdown content (YAML or TOML).
+
+    Supports:
+        - YAML front matter between ``---`` markers
+        - TOML front matter between ``+++`` markers
 
     Returns:
         Tuple of (front_matter_dict, body_content)
     """
     # Match YAML front matter between --- markers
-    pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
-    match = re.match(pattern, content, re.DOTALL)
+    yaml_pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
+    match = re.match(yaml_pattern, content, re.DOTALL)
 
     if match:
         front_matter_str = match.group(1)
@@ -112,8 +116,70 @@ def parse_front_matter(content: str) -> tuple[dict[str, Any], str]:
 
         return front_matter, body
 
+    # Match TOML front matter between +++ markers
+    toml_pattern = r'^\+\+\+\s*\n(.*?)\n\+\+\+\s*\n(.*)$'
+    match = re.match(toml_pattern, content, re.DOTALL)
+
+    if match:
+        front_matter_str = match.group(1)
+        body = match.group(2).strip()
+
+        try:
+            front_matter = _parse_toml(front_matter_str)
+        except Exception:
+            front_matter = {}
+
+        return front_matter, body
+
     # No front matter found
     return {}, content.strip()
+
+
+def _parse_toml(toml_str: str) -> dict[str, Any]:
+    """Parse TOML front matter string into a dict.
+
+    Uses tomllib (Python 3.11+) with fallback to a basic key=value parser.
+    """
+    try:
+        import tomllib
+        return tomllib.loads(toml_str)
+    except ImportError:
+        pass
+
+    # Basic fallback for Python 3.10: parse simple key = value pairs
+    result: dict[str, Any] = {}
+    for line in toml_str.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or line.startswith('['):
+            continue
+        if '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip()
+        # Strip quotes
+        if (value.startswith("'") and value.endswith("'")) or \
+           (value.startswith('"') and value.endswith('"')):
+            value = value[1:-1]
+        # Parse arrays
+        elif value.startswith('[') and value.endswith(']'):
+            inner = value[1:-1]
+            items = [
+                item.strip().strip("'\"")
+                for item in inner.split(',')
+                if item.strip()
+            ]
+            result[key] = items
+            continue
+        # Parse booleans
+        elif value == 'true':
+            result[key] = True
+            continue
+        elif value == 'false':
+            result[key] = False
+            continue
+        result[key] = value
+    return result
 
 
 def parse_markdown_file(
