@@ -437,7 +437,7 @@ checks:
 
 ## Testing
 
-Tests are in `tests/` with 721+ tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, and skill.
+Tests are in `tests/` with 978 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, and skill.
 
 **Running tests:**
 ```bash
