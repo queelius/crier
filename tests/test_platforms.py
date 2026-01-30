@@ -19,6 +19,10 @@ from crier.platforms import (
     Telegram,
     Ghost,
     WordPress,
+    Hashnode,
+    Medium,
+    Buttondown,
+    Discord,
 )
 from crier.platforms.devto import sanitize_tags
 
@@ -1161,3 +1165,1647 @@ class TestBlueskyThreadReplyReference:
         assert record["reply"]["root"]["cid"] == "cid111"
         assert record["reply"]["parent"]["uri"] == "at://did:plc:abc/app.bsky.feed.post/111"
         assert record["reply"]["parent"]["cid"] == "cid111"
+
+
+class TestGhost:
+    """Tests for Ghost platform."""
+
+    def _make_ghost(self) -> Ghost:
+        """Create a Ghost instance with a valid hex secret."""
+        # Ghost requires hex-decodable secret for JWT signing
+        return Ghost("https://myblog.com:key_id_123:aabbccdd00112233aabbccdd00112233")
+
+    def test_ghost_properties(self):
+        ghost = self._make_ghost()
+        assert ghost.name == "ghost"
+        assert ghost.base_url == "https://myblog.com"
+        assert ghost.key_id == "key_id_123"
+        assert ghost.key_secret == "aabbccdd00112233aabbccdd00112233"
+
+    def test_ghost_invalid_format_no_colons(self):
+        with pytest.raises(ValueError) as exc:
+            Ghost("just_a_key")
+        assert "key_id:key_secret" in str(exc.value)
+
+    def test_ghost_invalid_format_one_colon(self):
+        with pytest.raises(ValueError) as exc:
+            Ghost("site.com:key_id")
+        assert "key_id:key_secret" in str(exc.value)
+
+    def test_ghost_strips_trailing_slash(self):
+        ghost = Ghost("https://myblog.com/:key_id:aabbccdd00112233aabbccdd00112233")
+        assert ghost.base_url == "https://myblog.com"
+
+    def test_make_token_returns_jwt_string(self):
+        ghost = self._make_ghost()
+        token = ghost._make_token()
+        # JWT has three dot-separated parts
+        parts = token.split(".")
+        assert len(parts) == 3
+
+    def test_get_headers_includes_ghost_auth(self):
+        ghost = self._make_ghost()
+        headers = ghost._get_headers()
+        assert "Authorization" in headers
+        assert headers["Authorization"].startswith("Ghost ")
+        assert headers["Content-Type"] == "application/json"
+
+    @patch("crier.platforms.ghost.requests.post")
+    def test_publish_success(self, mock_post, sample_article):
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "posts": [{
+                "id": "ghost_post_1",
+                "url": "https://myblog.com/test-article/",
+            }]
+        }
+        mock_post.return_value = mock_response
+
+        ghost = self._make_ghost()
+        result = ghost.publish(sample_article)
+
+        assert result.success is True
+        assert result.platform == "ghost"
+        assert result.article_id == "ghost_post_1"
+        assert result.url == "https://myblog.com/test-article/"
+
+        # Verify request payload
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        post_data = json_data["posts"][0]
+        assert post_data["title"] == sample_article.title
+        assert post_data["html"] == sample_article.body
+        assert post_data["status"] == "published"
+        assert post_data["custom_excerpt"] == sample_article.description
+        assert post_data["canonical_url"] == sample_article.canonical_url
+        assert len(post_data["tags"]) == 3
+        assert post_data["tags"][0] == {"name": "python"}
+
+    @patch("crier.platforms.ghost.requests.post")
+    def test_publish_draft(self, mock_post):
+        article = Article(title="Draft Post", body="Content", published=False)
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "posts": [{"id": "d1", "url": "https://myblog.com/draft/"}]
+        }
+        mock_post.return_value = mock_response
+
+        ghost = self._make_ghost()
+        result = ghost.publish(article)
+
+        assert result.success is True
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["posts"][0]["status"] == "draft"
+
+    @patch("crier.platforms.ghost.requests.post")
+    def test_publish_minimal_article(self, mock_post):
+        article = Article(title="Simple", body="Hello")
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "posts": [{"id": "s1", "url": "https://myblog.com/simple/"}]
+        }
+        mock_post.return_value = mock_response
+
+        ghost = self._make_ghost()
+        result = ghost.publish(article)
+
+        assert result.success is True
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        post_data = json_data["posts"][0]
+        assert "custom_excerpt" not in post_data
+        assert "tags" not in post_data
+        assert "canonical_url" not in post_data
+
+    @patch("crier.platforms.ghost.requests.post")
+    def test_publish_failure(self, mock_post, sample_article):
+        mock_response = Mock()
+        mock_response.status_code = 422
+        mock_response.text = "Validation failed: title is required"
+        mock_post.return_value = mock_response
+
+        ghost = self._make_ghost()
+        result = ghost.publish(sample_article)
+
+        assert result.success is False
+        assert "422" in result.error
+        assert "Validation failed" in result.error
+
+    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.ghost.requests.put")
+    def test_update_success(self, mock_put, mock_get, sample_article):
+        # Mock get_article (fetches current post for updated_at)
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "posts": [{"id": "g1", "updated_at": "2025-01-01T00:00:00Z"}]
+            }),
+        )
+        # Mock update response
+        mock_put.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "posts": [{"id": "g1", "url": "https://myblog.com/updated/"}]
+            }),
+        )
+
+        ghost = self._make_ghost()
+        result = ghost.update("g1", sample_article)
+
+        assert result.success is True
+        assert result.article_id == "g1"
+        assert result.url == "https://myblog.com/updated/"
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_update_article_not_found(self, mock_get, sample_article):
+        mock_get.return_value = Mock(status_code=404, json=Mock(return_value={}))
+
+        ghost = self._make_ghost()
+        result = ghost.update("nonexistent", sample_article)
+
+        assert result.success is False
+        assert "not found" in result.error
+
+    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.ghost.requests.put")
+    def test_update_api_error(self, mock_put, mock_get, sample_article):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "posts": [{"id": "g1", "updated_at": "2025-01-01T00:00:00Z"}]
+            }),
+        )
+        mock_put.return_value = Mock(status_code=500, text="Internal Server Error")
+
+        ghost = self._make_ghost()
+        result = ghost.update("g1", sample_article)
+
+        assert result.success is False
+        assert "500" in result.error
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_list_articles_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "posts": [
+                    {"id": "p1", "title": "First Post", "status": "published", "url": "https://myblog.com/first/"},
+                    {"id": "p2", "title": "Draft Post", "status": "draft", "url": "https://myblog.com/draft/"},
+                ]
+            }),
+        )
+
+        ghost = self._make_ghost()
+        articles = ghost.list_articles(limit=5)
+
+        assert len(articles) == 2
+        assert articles[0]["id"] == "p1"
+        assert articles[0]["title"] == "First Post"
+        assert articles[0]["published"] is True
+        assert articles[1]["published"] is False
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_list_articles_api_error(self, mock_get):
+        mock_get.return_value = Mock(status_code=401, text="Unauthorized")
+
+        ghost = self._make_ghost()
+        articles = ghost.list_articles()
+
+        assert articles == []
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_get_article_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "posts": [{"id": "g1", "title": "My Post", "html": "<p>Content</p>"}]
+            }),
+        )
+
+        ghost = self._make_ghost()
+        article = ghost.get_article("g1")
+
+        assert article is not None
+        assert article["id"] == "g1"
+        assert article["title"] == "My Post"
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_get_article_not_found(self, mock_get):
+        mock_get.return_value = Mock(status_code=404)
+
+        ghost = self._make_ghost()
+        article = ghost.get_article("nonexistent")
+
+        assert article is None
+
+    @patch("crier.platforms.ghost.requests.get")
+    def test_get_article_empty_posts(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"posts": []}),
+        )
+
+        ghost = self._make_ghost()
+        article = ghost.get_article("g1")
+
+        assert article is None
+
+    @patch("crier.platforms.ghost.requests.delete")
+    def test_delete_success(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=204)
+
+        ghost = self._make_ghost()
+        result = ghost.delete("g1")
+
+        assert result.success is True
+        assert result.platform == "ghost"
+
+    @patch("crier.platforms.ghost.requests.delete")
+    def test_delete_failure(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=404, text="Not found")
+
+        ghost = self._make_ghost()
+        result = ghost.delete("nonexistent")
+
+        assert result.success is False
+        assert "404" in result.error
+
+
+class TestWordPress:
+    """Tests for WordPress platform."""
+
+    def test_wpcom_properties(self):
+        wp = WordPress("site.wordpress.com:access_token")
+        assert wp.name == "wordpress"
+        assert wp.is_wpcom is True
+        assert wp.site == "site.wordpress.com"
+        assert wp.access_token == "access_token"
+        assert "Bearer" in wp.headers["Authorization"]
+        assert "public-api.wordpress.com" in wp.base_url
+
+    def test_self_hosted_properties(self):
+        wp = WordPress("https://myblog.com:admin:app_pass_123")
+        assert wp.name == "wordpress"
+        assert wp.is_wpcom is False
+        assert wp.username == "admin"
+        assert wp.password == "app_pass_123"
+        assert "Basic" in wp.headers["Authorization"]
+        assert wp.base_url == "https://myblog.com/wp-json/wp/v2"
+
+    def test_wpcom_missing_token(self):
+        with pytest.raises(ValueError) as exc:
+            WordPress("site.wordpress.com")
+        assert "access_token" in str(exc.value)
+
+    def test_self_hosted_missing_password(self):
+        with pytest.raises(ValueError) as exc:
+            WordPress("https://site.com")
+        assert "username:app_password" in str(exc.value)
+
+    def test_self_hosted_username_only_no_password(self):
+        """Self-hosted with URL and username but no app_password should fail."""
+        with pytest.raises(ValueError) as exc:
+            WordPress("https://site.com:usernameonly")
+        assert "username:app_password" in str(exc.value)
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_success_wpcom(self, mock_post, sample_article):
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "id": 42,
+            "link": "https://site.wordpress.com/2025/01/test-article/",
+        }
+        mock_post.return_value = mock_response
+
+        wp = WordPress("site.wordpress.com:token123")
+        result = wp.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "42"
+        assert result.url == "https://site.wordpress.com/2025/01/test-article/"
+        assert result.platform == "wordpress"
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_success_200(self, mock_post, sample_article):
+        """WordPress can return 200 or 201 on publish success."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": 1, "link": "https://wp.com/post/"}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.publish(sample_article)
+
+        assert result.success is True
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_sends_correct_payload(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": 1, "link": "https://wp.com/p/"}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        wp.publish(sample_article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["title"] == sample_article.title
+        assert json_data["content"] == sample_article.body
+        assert json_data["status"] == "publish"
+        assert json_data["excerpt"] == sample_article.description
+        assert json_data["tags"] == sample_article.tags
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_draft(self, mock_post):
+        article = Article(title="Draft", body="Content", published=False)
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": 2, "link": "https://wp.com/draft/"}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        wp.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["status"] == "draft"
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_minimal_article(self, mock_post):
+        article = Article(title="Simple", body="Hello")
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": 3, "link": "https://wp.com/simple/"}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        wp.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "excerpt" not in json_data
+        assert "tags" not in json_data
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_publish_failure(self, mock_post, sample_article):
+        mock_post.return_value = Mock(status_code=403, text="Forbidden")
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.publish(sample_article)
+
+        assert result.success is False
+        assert "403" in result.error
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_update_success(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": 42, "link": "https://wp.com/updated/"}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.update("42", sample_article)
+
+        assert result.success is True
+        assert result.article_id == "42"
+        assert result.url == "https://wp.com/updated/"
+
+    @patch("crier.platforms.wordpress.requests.post")
+    def test_update_failure(self, mock_post, sample_article):
+        mock_post.return_value = Mock(status_code=404, text="Not found")
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.update("999", sample_article)
+
+        assert result.success is False
+        assert "404" in result.error
+
+    @patch("crier.platforms.wordpress.requests.get")
+    def test_list_articles_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value=[
+                {"id": 1, "title": {"rendered": "Post One"}, "status": "publish", "link": "https://wp.com/one/"},
+                {"id": 2, "title": {"rendered": "Post Two"}, "status": "draft", "link": "https://wp.com/two/"},
+            ]),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        articles = wp.list_articles(limit=5)
+
+        assert len(articles) == 2
+        assert articles[0]["id"] == 1
+        assert articles[0]["title"] == "Post One"
+        assert articles[0]["published"] is True
+        assert articles[1]["published"] is False
+
+    @patch("crier.platforms.wordpress.requests.get")
+    def test_list_articles_api_error(self, mock_get):
+        mock_get.return_value = Mock(status_code=401, text="Unauthorized")
+
+        wp = WordPress("site.wordpress.com:token")
+        articles = wp.list_articles()
+
+        assert articles == []
+
+    @patch("crier.platforms.wordpress.requests.get")
+    def test_get_article_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": 42, "title": {"rendered": "My Post"}}),
+        )
+
+        wp = WordPress("site.wordpress.com:token")
+        article = wp.get_article("42")
+
+        assert article is not None
+        assert article["id"] == 42
+
+    @patch("crier.platforms.wordpress.requests.get")
+    def test_get_article_not_found(self, mock_get):
+        mock_get.return_value = Mock(status_code=404)
+
+        wp = WordPress("site.wordpress.com:token")
+        article = wp.get_article("999")
+
+        assert article is None
+
+    @patch("crier.platforms.wordpress.requests.delete")
+    def test_delete_success(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=200)
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.delete("42")
+
+        assert result.success is True
+        assert result.platform == "wordpress"
+
+    @patch("crier.platforms.wordpress.requests.delete")
+    def test_delete_failure(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=403, text="Forbidden")
+
+        wp = WordPress("site.wordpress.com:token")
+        result = wp.delete("42")
+
+        assert result.success is False
+        assert "403" in result.error
+
+
+class TestHashnode:
+    """Tests for Hashnode platform."""
+
+    def test_hashnode_properties(self):
+        hn = Hashnode("mytoken:pub123")
+        assert hn.name == "hashnode"
+        assert hn.token == "mytoken"
+        assert hn.publication_id == "pub123"
+
+    def test_hashnode_token_only(self):
+        hn = Hashnode("mytoken")
+        assert hn.token == "mytoken"
+        assert hn.publication_id is None
+
+    def test_hashnode_with_explicit_publication_id(self):
+        hn = Hashnode("mytoken", publication_id="explicit_pub")
+        assert hn.token == "mytoken"
+        assert hn.publication_id == "explicit_pub"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_graphql_success(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"me": {"id": "user1"}}}),
+        )
+
+        hn = Hashnode("token:pub1")
+        result = hn._graphql("query { me { id } }")
+
+        assert result["data"]["me"]["id"] == "user1"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_graphql_failure(self, mock_post):
+        mock_post.return_value = Mock(status_code=401, text="Unauthorized")
+
+        hn = Hashnode("bad_token:pub1")
+        result = hn._graphql("query { me { id } }")
+
+        assert "errors" in result
+        assert "401" in result["errors"][0]["message"]
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_get_publication_id_cached(self, mock_post):
+        """When publication_id is already set, no API call is made."""
+        hn = Hashnode("token:pub123")
+        result = hn._get_publication_id()
+
+        assert result == "pub123"
+        mock_post.assert_not_called()
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_get_publication_id_from_api(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {
+                    "me": {
+                        "publications": {
+                            "edges": [{"node": {"id": "fetched_pub_id"}}]
+                        }
+                    }
+                }
+            }),
+        )
+
+        hn = Hashnode("token")
+        result = hn._get_publication_id()
+
+        assert result == "fetched_pub_id"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_get_publication_id_no_publications(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {"me": {"publications": {"edges": []}}}
+            }),
+        )
+
+        hn = Hashnode("token")
+        result = hn._get_publication_id()
+
+        assert result is None
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_publish_success(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {
+                    "publishPost": {
+                        "post": {
+                            "id": "hn_post_1",
+                            "url": "https://blog.hashnode.dev/test-article",
+                            "slug": "test-article",
+                        }
+                    }
+                }
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "hn_post_1"
+        assert result.url == "https://blog.hashnode.dev/test-article"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_publish_sends_correct_variables(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {"publishPost": {"post": {"id": "1", "url": "https://x.com/1"}}}
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        hn.publish(sample_article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        variables = json_data["variables"]
+        input_data = variables["input"]
+
+        assert input_data["publicationId"] == "pub123"
+        assert input_data["title"] == sample_article.title
+        assert input_data["contentMarkdown"] == sample_article.body
+        assert input_data["originalArticleURL"] == sample_article.canonical_url
+        assert len(input_data["tags"]) == 3
+        assert input_data["subtitle"] == sample_article.description[:150]
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_publish_no_publication(self, mock_post, sample_article):
+        """Publish fails when no publication is found."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {"me": {"publications": {"edges": []}}}
+            }),
+        )
+
+        hn = Hashnode("token")
+        result = hn.publish(sample_article)
+
+        assert result.success is False
+        assert "No publication found" in result.error
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_publish_graphql_error(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "errors": [{"message": "Invalid slug format"}]
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.publish(sample_article)
+
+        assert result.success is False
+        assert "Invalid slug format" in result.error
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_update_success(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {
+                    "updatePost": {
+                        "post": {
+                            "id": "hn_post_1",
+                            "url": "https://blog.hashnode.dev/updated",
+                        }
+                    }
+                }
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.update("hn_post_1", sample_article)
+
+        assert result.success is True
+        assert result.article_id == "hn_post_1"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_update_graphql_error(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "errors": [{"message": "Post not found"}]
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.update("bad_id", sample_article)
+
+        assert result.success is False
+        assert "Post not found" in result.error
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_list_articles_success(self, mock_post):
+        # First call: publish id is already set, so it goes straight to posts query
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {
+                    "publication": {
+                        "posts": {
+                            "edges": [
+                                {"node": {"id": "p1", "title": "Long Title That Gets Truncated To Fifty Characters For Display", "url": "https://hn.dev/p1", "publishedAt": "2025-01-01"}},
+                                {"node": {"id": "p2", "title": "Short", "url": "https://hn.dev/p2", "publishedAt": "2025-01-02"}},
+                            ]
+                        }
+                    }
+                }
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        articles = hn.list_articles(limit=5)
+
+        assert len(articles) == 2
+        assert articles[0]["id"] == "p1"
+        assert len(articles[0]["title"]) <= 50
+        assert articles[0]["published"] is True
+        assert articles[1]["title"] == "Short"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_list_articles_no_publication(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {"me": {"publications": {"edges": []}}}
+            }),
+        )
+
+        hn = Hashnode("token")
+        articles = hn.list_articles()
+
+        assert articles == []
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_get_article_success(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {
+                    "post": {
+                        "id": "p1",
+                        "title": "My Post",
+                        "content": {"markdown": "Hello world"},
+                        "url": "https://hn.dev/p1",
+                    }
+                }
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        article = hn.get_article("p1")
+
+        assert article is not None
+        assert article["id"] == "p1"
+        assert article["title"] == "My Post"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_get_article_not_found(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"post": None}}),
+        )
+
+        hn = Hashnode("token:pub123")
+        article = hn.get_article("nonexistent")
+
+        assert article is None
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_delete_success(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "data": {"removePost": {"post": {"id": "p1"}}}
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.delete("p1")
+
+        assert result.success is True
+        assert result.platform == "hashnode"
+
+    @patch("crier.platforms.hashnode.requests.post")
+    def test_delete_error(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "errors": [{"message": "Not authorized to delete this post"}]
+            }),
+        )
+
+        hn = Hashnode("token:pub123")
+        result = hn.delete("p1")
+
+        assert result.success is False
+        assert "Not authorized" in result.error
+
+
+class TestMedium:
+    """Tests for Medium platform."""
+
+    def test_medium_properties(self):
+        m = Medium("integration_token")
+        assert m.name == "medium"
+        assert m.supports_delete is False
+        assert m.compose_url == "https://medium.com/new-story"
+
+    def test_format_for_manual_full(self):
+        article = Article(
+            title="My Article",
+            body="Full body content here.",
+            description="A brief description",
+            tags=["python", "testing", "dev"],
+            canonical_url="https://example.com/article",
+        )
+        m = Medium("token")
+        result = m.format_for_manual(article)
+
+        assert "# My Article" in result
+        assert "*A brief description*" in result
+        assert "Full body content here." in result
+        assert "Tags: python, testing, dev" in result
+        assert "Originally published at: https://example.com/article" in result
+
+    def test_format_for_manual_minimal(self):
+        article = Article(title="Simple", body="Just body")
+        m = Medium("token")
+        result = m.format_for_manual(article)
+
+        assert "# Simple" in result
+        assert "Just body" in result
+        assert "Tags:" not in result
+        assert "Originally published" not in result
+
+    def test_format_for_manual_limits_tags(self):
+        article = Article(
+            title="T", body="B",
+            tags=["one", "two", "three", "four", "five", "six"],
+        )
+        m = Medium("token")
+        result = m.format_for_manual(article)
+
+        assert "one" in result
+        assert "five" in result
+        assert "six" not in result
+
+    @patch("crier.platforms.medium.requests.get")
+    def test_get_user_id_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"id": "user_abc123"}}),
+        )
+
+        m = Medium("token")
+        user_id = m._get_user_id()
+
+        assert user_id == "user_abc123"
+
+    @patch("crier.platforms.medium.requests.get")
+    def test_get_user_id_cached(self, mock_get):
+        """User ID is cached after first fetch."""
+        m = Medium("token")
+        m._user_id = "cached_id"
+        user_id = m._get_user_id()
+
+        assert user_id == "cached_id"
+        mock_get.assert_not_called()
+
+    @patch("crier.platforms.medium.requests.get")
+    def test_get_user_id_failure(self, mock_get):
+        mock_get.return_value = Mock(status_code=401)
+
+        m = Medium("bad_token")
+        user_id = m._get_user_id()
+
+        assert user_id is None
+
+    @patch("crier.platforms.medium.requests.post")
+    @patch("crier.platforms.medium.requests.get")
+    def test_publish_success(self, mock_get, mock_post, sample_article):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"id": "user1"}}),
+        )
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={
+                "data": {
+                    "id": "medium_post_1",
+                    "url": "https://medium.com/@user/test-article-abc123",
+                }
+            }),
+        )
+
+        m = Medium("token")
+        result = m.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "medium_post_1"
+        assert "medium.com" in result.url
+
+    @patch("crier.platforms.medium.requests.post")
+    @patch("crier.platforms.medium.requests.get")
+    def test_publish_sends_correct_payload(self, mock_get, mock_post, sample_article):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"id": "user1"}}),
+        )
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"data": {"id": "1", "url": "https://medium.com/x"}}),
+        )
+
+        m = Medium("token")
+        m.publish(sample_article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["title"] == sample_article.title
+        assert json_data["contentFormat"] == "markdown"
+        assert json_data["content"] == sample_article.body
+        assert json_data["publishStatus"] == "public"
+        assert json_data["tags"] == sample_article.tags[:5]
+        assert json_data["canonicalUrl"] == sample_article.canonical_url
+
+    @patch("crier.platforms.medium.requests.post")
+    @patch("crier.platforms.medium.requests.get")
+    def test_publish_draft(self, mock_get, mock_post):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"id": "user1"}}),
+        )
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"data": {"id": "1", "url": "https://medium.com/x"}}),
+        )
+
+        article = Article(title="Draft", body="Content", published=False)
+        m = Medium("token")
+        m.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["publishStatus"] == "draft"
+
+    @patch("crier.platforms.medium.requests.get")
+    def test_publish_auth_failure(self, mock_get, sample_article):
+        mock_get.return_value = Mock(status_code=401)
+
+        m = Medium("bad_token")
+        result = m.publish(sample_article)
+
+        assert result.success is False
+        assert "authenticate" in result.error.lower() or "Failed" in result.error
+
+    @patch("crier.platforms.medium.requests.post")
+    @patch("crier.platforms.medium.requests.get")
+    def test_publish_api_error(self, mock_get, mock_post, sample_article):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"data": {"id": "user1"}}),
+        )
+        mock_post.return_value = Mock(status_code=400, text="Bad request")
+
+        m = Medium("token")
+        result = m.publish(sample_article)
+
+        assert result.success is False
+        assert "400" in result.error
+
+    def test_update_not_supported(self, sample_article):
+        m = Medium("token")
+        result = m.update("123", sample_article)
+
+        assert result.success is False
+        assert "not support" in result.error.lower() or "does not support" in result.error
+
+    def test_list_articles_returns_empty(self):
+        m = Medium("token")
+        assert m.list_articles() == []
+
+    def test_get_article_returns_none(self):
+        m = Medium("token")
+        assert m.get_article("123") is None
+
+    def test_delete_not_supported(self):
+        m = Medium("token")
+        result = m.delete("123")
+
+        assert result.success is False
+        assert "does not support" in result.error
+
+
+class TestButtondown:
+    """Tests for Buttondown platform."""
+
+    def test_buttondown_properties(self):
+        bd = Buttondown("api_key_123")
+        assert bd.name == "buttondown"
+        assert bd.headers["Authorization"] == "Token api_key_123"
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_success(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": "email_abc"}),
+        )
+
+        bd = Buttondown("api_key")
+        result = bd.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "email_abc"
+        assert result.url == "https://buttondown.email/archive/email_abc"
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_success_200(self, mock_post, sample_article):
+        """Buttondown can return 200 or 201 on publish success."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "email_def"}),
+        )
+
+        bd = Buttondown("api_key")
+        result = bd.publish(sample_article)
+
+        assert result.success is True
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_sends_correct_payload(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": "1"}),
+        )
+
+        bd = Buttondown("api_key")
+        bd.publish(sample_article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["subject"] == sample_article.title
+        assert json_data["body"] == sample_article.body
+        assert json_data["status"] == "published"
+        assert json_data["description"] == sample_article.description
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_draft(self, mock_post):
+        article = Article(title="Newsletter", body="Content", published=False)
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={"id": "d1"}),
+        )
+
+        bd = Buttondown("api_key")
+        bd.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert json_data["status"] == "draft"
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_no_id_in_response(self, mock_post, sample_article):
+        """If id is missing from response, url should be None."""
+        mock_post.return_value = Mock(
+            status_code=201,
+            json=Mock(return_value={}),
+        )
+
+        bd = Buttondown("api_key")
+        result = bd.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id is None
+        assert result.url is None
+
+    @patch("crier.platforms.buttondown.requests.post")
+    def test_publish_failure(self, mock_post, sample_article):
+        mock_post.return_value = Mock(status_code=422, text="Invalid email")
+
+        bd = Buttondown("api_key")
+        result = bd.publish(sample_article)
+
+        assert result.success is False
+        assert "422" in result.error
+
+    @patch("crier.platforms.buttondown.requests.patch")
+    def test_update_success(self, mock_patch, sample_article):
+        mock_patch.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "email_abc"}),
+        )
+
+        bd = Buttondown("api_key")
+        result = bd.update("email_abc", sample_article)
+
+        assert result.success is True
+        assert result.article_id == "email_abc"
+        assert "buttondown.email" in result.url
+
+    @patch("crier.platforms.buttondown.requests.patch")
+    def test_update_failure(self, mock_patch, sample_article):
+        mock_patch.return_value = Mock(status_code=404, text="Not found")
+
+        bd = Buttondown("api_key")
+        result = bd.update("nonexistent", sample_article)
+
+        assert result.success is False
+        assert "404" in result.error
+
+    @patch("crier.platforms.buttondown.requests.get")
+    def test_list_articles_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "results": [
+                    {"id": "e1", "subject": "Newsletter #1", "status": "published"},
+                    {"id": "e2", "subject": "Newsletter #2", "status": "draft"},
+                ]
+            }),
+        )
+
+        bd = Buttondown("api_key")
+        articles = bd.list_articles(limit=5)
+
+        assert len(articles) == 2
+        assert articles[0]["id"] == "e1"
+        assert articles[0]["title"] == "Newsletter #1"
+        assert articles[0]["published"] is True
+        assert articles[1]["published"] is False
+        assert "buttondown.email/archive/e1" in articles[0]["url"]
+
+    @patch("crier.platforms.buttondown.requests.get")
+    def test_list_articles_as_list_response(self, mock_get):
+        """Buttondown may return a plain list instead of paginated results."""
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value=[
+                {"id": "e1", "subject": "Newsletter #1", "status": "published"},
+            ]),
+        )
+
+        bd = Buttondown("api_key")
+        articles = bd.list_articles()
+
+        assert len(articles) == 1
+
+    @patch("crier.platforms.buttondown.requests.get")
+    def test_list_articles_api_error(self, mock_get):
+        mock_get.return_value = Mock(status_code=401, text="Unauthorized")
+
+        bd = Buttondown("api_key")
+        articles = bd.list_articles()
+
+        assert articles == []
+
+    @patch("crier.platforms.buttondown.requests.get")
+    def test_get_article_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "e1", "subject": "Test", "body": "Content"}),
+        )
+
+        bd = Buttondown("api_key")
+        article = bd.get_article("e1")
+
+        assert article is not None
+        assert article["id"] == "e1"
+
+    @patch("crier.platforms.buttondown.requests.get")
+    def test_get_article_not_found(self, mock_get):
+        mock_get.return_value = Mock(status_code=404)
+
+        bd = Buttondown("api_key")
+        article = bd.get_article("nonexistent")
+
+        assert article is None
+
+    @patch("crier.platforms.buttondown.requests.delete")
+    def test_delete_success_204(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=204)
+
+        bd = Buttondown("api_key")
+        result = bd.delete("e1")
+
+        assert result.success is True
+
+    @patch("crier.platforms.buttondown.requests.delete")
+    def test_delete_success_200(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=200)
+
+        bd = Buttondown("api_key")
+        result = bd.delete("e1")
+
+        assert result.success is True
+
+    @patch("crier.platforms.buttondown.requests.delete")
+    def test_delete_failure(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=403, text="Forbidden")
+
+        bd = Buttondown("api_key")
+        result = bd.delete("e1")
+
+        assert result.success is False
+        assert "403" in result.error
+
+
+class TestTelegram:
+    """Tests for Telegram platform."""
+
+    def test_telegram_properties(self):
+        tg = Telegram("123456:ABC-DEF:@mychannel")
+        assert tg.name == "telegram"
+        assert tg.max_content_length == 4096
+
+    def test_api_key_parsing(self):
+        tg = Telegram("123456:ABC-DEF:@mychannel")
+        assert tg.bot_token == "123456:ABC-DEF"
+        assert tg.chat_id == "@mychannel"
+        assert tg.base_url == "https://api.telegram.org/bot123456:ABC-DEF"
+
+    def test_invalid_api_key_no_colon(self):
+        with pytest.raises(ValueError) as exc:
+            Telegram("noformat")
+        assert "bot_token:chat_id" in str(exc.value)
+
+    def test_format_message_full(self):
+        article = Article(
+            title="New Post",
+            body="Full body here",
+            description="Short description",
+            canonical_url="https://example.com/post",
+            tags=["python", "web-dev", "testing"],
+        )
+        tg = Telegram("bot_token:chat_id")
+        msg = tg._format_message(article)
+
+        assert "*New Post*" in msg
+        assert "Short description" in msg
+        assert "https://example.com/post" in msg
+        assert "#python" in msg
+        assert "#web_dev" in msg  # Hyphens converted to underscores
+        assert "#testing" in msg
+
+    def test_format_message_minimal(self):
+        article = Article(title="Simple", body="Body")
+        tg = Telegram("bot_token:chat_id")
+        msg = tg._format_message(article)
+
+        assert "*Simple*" in msg
+        assert "#" not in msg  # No tags
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_publish_success_public_channel(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": True,
+                "result": {
+                    "message_id": 42,
+                    "chat": {"username": "mychannel"},
+                }
+            }),
+        )
+
+        article = Article(title="News", body="Breaking news")
+        tg = Telegram("bot_token:@mychannel")
+        result = tg.publish(article)
+
+        assert result.success is True
+        assert result.article_id == "42"
+        assert result.url == "https://t.me/mychannel/42"
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_publish_success_private_channel(self, mock_post):
+        """Private channels have no username, so URL should be None."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": True,
+                "result": {
+                    "message_id": 99,
+                    "chat": {},  # No username for private channels
+                }
+            }),
+        )
+
+        article = Article(title="Private", body="Secret content")
+        tg = Telegram("bot_token:-100123456")
+        result = tg.publish(article)
+
+        assert result.success is True
+        assert result.article_id == "99"
+        assert result.url is None
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_publish_telegram_error(self, mock_post):
+        """Telegram returns 200 but ok=false."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": False,
+                "description": "Bad Request: chat not found",
+            }),
+        )
+
+        article = Article(title="Test", body="Content")
+        tg = Telegram("bot_token:bad_chat")
+        result = tg.publish(article)
+
+        assert result.success is False
+        assert "chat not found" in result.error
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_publish_http_error(self, mock_post):
+        mock_post.return_value = Mock(status_code=401, text="Unauthorized")
+
+        article = Article(title="Test", body="Content")
+        tg = Telegram("bad_token:chat_id")
+        result = tg.publish(article)
+
+        assert result.success is False
+        assert "401" in result.error
+
+    def test_publish_content_too_long(self):
+        """Message exceeding 4096 chars should fail."""
+        # _format_message uses title, description, URL, tags -- not body
+        # So we need enough content in those fields to exceed 4096
+        article = Article(
+            title="A" * 3900,
+            body="ignored body",
+            description="D" * 200,
+            canonical_url="https://example.com/very-long-url",
+            tags=["python", "testing", "web"],
+        )
+        tg = Telegram("bot_token:chat_id")
+        result = tg.publish(article)
+
+        assert result.success is False
+        assert "too long" in result.error.lower()
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_update_success(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": True,
+                "result": {
+                    "message_id": 42,
+                    "chat": {"username": "mychannel"},
+                }
+            }),
+        )
+
+        article = Article(title="Updated Title", body="Updated content")
+        tg = Telegram("bot_token:@mychannel")
+        result = tg.update("42", article)
+
+        assert result.success is True
+        assert result.article_id == "42"
+        assert result.url == "https://t.me/mychannel/42"
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_update_telegram_error(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": False,
+                "description": "Bad Request: message to edit not found",
+            }),
+        )
+
+        article = Article(title="T", body="B")
+        tg = Telegram("bot_token:chat_id")
+        result = tg.update("999", article)
+
+        assert result.success is False
+        assert "message to edit not found" in result.error
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_update_http_error(self, mock_post):
+        mock_post.return_value = Mock(status_code=400, text="Bad Request")
+
+        article = Article(title="T", body="B")
+        tg = Telegram("bot_token:chat_id")
+        result = tg.update("42", article)
+
+        assert result.success is False
+        assert "400" in result.error
+
+    def test_list_articles_returns_empty(self):
+        tg = Telegram("bot_token:chat_id")
+        assert tg.list_articles() == []
+
+    def test_get_article_returns_none(self):
+        tg = Telegram("bot_token:chat_id")
+        assert tg.get_article("42") is None
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_delete_success(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"ok": True}),
+        )
+
+        tg = Telegram("bot_token:chat_id")
+        result = tg.delete("42")
+
+        assert result.success is True
+        assert result.platform == "telegram"
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_delete_telegram_error(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "ok": False,
+                "description": "Bad Request: message can't be deleted",
+            }),
+        )
+
+        tg = Telegram("bot_token:chat_id")
+        result = tg.delete("42")
+
+        assert result.success is False
+        assert "can't be deleted" in result.error
+
+    @patch("crier.platforms.telegram.requests.post")
+    def test_delete_http_error(self, mock_post):
+        mock_post.return_value = Mock(status_code=403, text="Forbidden")
+
+        tg = Telegram("bot_token:chat_id")
+        result = tg.delete("42")
+
+        assert result.success is False
+        assert "403" in result.error
+
+
+class TestDiscord:
+    """Tests for Discord platform."""
+
+    WEBHOOK_URL = "https://discord.com/api/webhooks/123456789/abcdef_token"
+
+    def test_discord_properties(self):
+        d = Discord(self.WEBHOOK_URL)
+        assert d.name == "discord"
+        assert d.max_content_length == 4096
+        assert d.webhook_url == self.WEBHOOK_URL
+
+    def test_invalid_webhook_url(self):
+        with pytest.raises(ValueError) as exc:
+            Discord("https://example.com/not-a-webhook")
+        assert "webhook URL" in str(exc.value)
+
+    def test_create_embed_full(self):
+        article = Article(
+            title="New Release",
+            body="Full body here",
+            description="Check out our new release!",
+            canonical_url="https://example.com/release",
+            tags=["release", "python", "v2"],
+        )
+        d = Discord(self.WEBHOOK_URL)
+        embed = d._create_embed(article)
+
+        assert embed["title"] == "New Release"
+        assert embed["description"] == "Check out our new release!"
+        assert embed["url"] == "https://example.com/release"
+        assert embed["color"] == 5814783
+        assert "#release" in embed["footer"]["text"]
+        assert "#python" in embed["footer"]["text"]
+
+    def test_create_embed_minimal(self):
+        article = Article(title="Simple", body="Body")
+        d = Discord(self.WEBHOOK_URL)
+        embed = d._create_embed(article)
+
+        assert embed["title"] == "Simple"
+        assert "description" not in embed
+        assert "url" not in embed
+        assert "footer" not in embed
+
+    @patch("crier.platforms.discord.requests.post")
+    def test_publish_success(self, mock_post, sample_article):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_123456"}),
+        )
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.publish(sample_article)
+
+        assert result.success is True
+        assert result.article_id == "msg_123456"
+        assert result.url is None  # Webhooks don't return URLs
+        assert result.platform == "discord"
+
+    @patch("crier.platforms.discord.requests.post")
+    def test_publish_with_canonical_url(self, mock_post):
+        """Articles with canonical_url get a different content prefix."""
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_1"}),
+        )
+
+        article = Article(
+            title="My Post",
+            body="Content",
+            canonical_url="https://example.com/post",
+        )
+        d = Discord(self.WEBHOOK_URL)
+        d.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "New post" in json_data["content"]
+
+    @patch("crier.platforms.discord.requests.post")
+    def test_publish_without_canonical_url(self, mock_post):
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_2"}),
+        )
+
+        article = Article(title="My Post", body="Content")
+        d = Discord(self.WEBHOOK_URL)
+        d.publish(article)
+
+        call_kwargs = mock_post.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "**My Post**" in json_data["content"]
+        assert "New post" not in json_data["content"]
+
+    @patch("crier.platforms.discord.requests.post")
+    def test_publish_failure(self, mock_post, sample_article):
+        mock_post.return_value = Mock(status_code=400, text="Bad Request")
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.publish(sample_article)
+
+        assert result.success is False
+        assert "400" in result.error
+
+    def test_publish_description_too_long(self):
+        """Embed description exceeding 4096 chars should fail."""
+        article = Article(
+            title="Title",
+            body="body",
+            description="D" * 5000,
+        )
+        d = Discord(self.WEBHOOK_URL)
+        result = d.publish(article)
+
+        assert result.success is False
+        assert "too long" in result.error.lower()
+
+    @patch("crier.platforms.discord.requests.patch")
+    def test_update_success(self, mock_patch, sample_article):
+        mock_patch.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_123"}),
+        )
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.update("msg_123", sample_article)
+
+        assert result.success is True
+        assert result.article_id == "msg_123"
+        assert result.url is None
+
+    @patch("crier.platforms.discord.requests.patch")
+    def test_update_without_canonical_url(self, mock_patch):
+        """Update message without canonical_url uses plain title format."""
+        mock_patch.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_456"}),
+        )
+
+        article = Article(title="Plain Title", body="Content")
+        d = Discord(self.WEBHOOK_URL)
+        result = d.update("msg_456", article)
+
+        assert result.success is True
+        call_kwargs = mock_patch.call_args
+        json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert "**Plain Title**" in json_data["content"]
+        assert "New post" not in json_data["content"]
+
+    @patch("crier.platforms.discord.requests.patch")
+    def test_update_failure(self, mock_patch, sample_article):
+        mock_patch.return_value = Mock(status_code=404, text="Unknown Message")
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.update("bad_msg", sample_article)
+
+        assert result.success is False
+        assert "404" in result.error
+
+    def test_list_articles_returns_empty(self):
+        d = Discord(self.WEBHOOK_URL)
+        assert d.list_articles() == []
+
+    @patch("crier.platforms.discord.requests.get")
+    def test_get_article_success(self, mock_get):
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={"id": "msg_123", "content": "Hello"}),
+        )
+
+        d = Discord(self.WEBHOOK_URL)
+        article = d.get_article("msg_123")
+
+        assert article is not None
+        assert article["id"] == "msg_123"
+
+    @patch("crier.platforms.discord.requests.get")
+    def test_get_article_not_found(self, mock_get):
+        mock_get.return_value = Mock(status_code=404)
+
+        d = Discord(self.WEBHOOK_URL)
+        article = d.get_article("nonexistent")
+
+        assert article is None
+
+    @patch("crier.platforms.discord.requests.delete")
+    def test_delete_success(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=204)
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.delete("msg_123")
+
+        assert result.success is True
+        assert result.platform == "discord"
+
+    @patch("crier.platforms.discord.requests.delete")
+    def test_delete_failure(self, mock_delete):
+        mock_delete.return_value = Mock(status_code=404, text="Unknown Message")
+
+        d = Discord(self.WEBHOOK_URL)
+        result = d.delete("bad_msg")
+
+        assert result.success is False
+        assert "404" in result.error
