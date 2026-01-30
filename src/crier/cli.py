@@ -931,94 +931,25 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 platform_rewrite_content = None
 
                 if auto_rewrite and llm_provider and platform.max_content_length:
-                    # Check if content exceeds platform limit
                     max_len = platform.max_content_length
                     if len(article.body) > max_len:
-                        if not silent:
-                            console.print(f"[dim]Content too long for {platform_name} ({len(article.body)} > {max_len})[/dim]")
-                            retry_info = f" (max {auto_rewrite_retry} retries)" if auto_rewrite_retry else ""
-                            console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}{retry_info}...[/dim]")
+                        from .rewrite import auto_rewrite_for_platform
 
-                        try:
-                            from .llm import LLMProviderError
-
-                            # Retry loop
-                            rewrite_result = None
-                            prev_text = None
-                            last_length = None
-                            max_attempts = (auto_rewrite_retry or 0) + 1
-
-                            for attempt in range(max_attempts):
-                                if attempt > 0 and not silent:
-                                    console.print(f"[yellow]Retry {attempt}/{auto_rewrite_retry} (previous: {last_length}/{max_len} chars, {last_length - max_len} over)[/yellow]")
-
-                                rewrite_result = llm_provider.rewrite(
-                                    title=article.title,
-                                    body=article.body,
-                                    max_chars=max_len,
-                                    platform=platform_name,
-                                    previous_attempt=prev_text,
-                                    previous_length=last_length,
-                                )
-
-                                last_length = len(rewrite_result.text)
-
-                                if last_length <= max_len:
-                                    break  # Success!
-
-                                prev_text = rewrite_result.text
-
-                            # Check final result
-                            final_text = rewrite_result.text
-                            if len(final_text) <= max_len:
-                                # Success
-                                pct = len(final_text) * 100 // max_len
-                                platform_rewrite_content = final_text
-                                platform_rewritten = True
-                                publish_article = Article(
-                                    title=article.title,
-                                    body=final_text,
-                                    description=article.description,
-                                    tags=article.tags,
-                                    canonical_url=article.canonical_url,
-                                    published=article.published,
-                                    cover_image=article.cover_image,
-                                )
-                                if not silent:
-                                    console.print(f"[green]✓ Generated {len(final_text)}/{max_len} char rewrite ({pct}%)[/green]")
-                            elif auto_rewrite_truncate:
-                                # Fallback: truncate at sentence boundary
-                                truncated = _truncate_at_sentence(final_text, max_len)
-                                pct = len(truncated) * 100 // max_len
-                                platform_rewrite_content = truncated
-                                platform_rewritten = True
-                                publish_article = Article(
-                                    title=article.title,
-                                    body=truncated,
-                                    description=article.description,
-                                    tags=article.tags,
-                                    canonical_url=article.canonical_url,
-                                    published=article.published,
-                                    cover_image=article.cover_image,
-                                )
-                                if not silent:
-                                    console.print(f"[yellow]⚠ Truncated to {len(truncated)}/{max_len} chars ({pct}%)[/yellow]")
-                            else:
-                                # All retries failed, no truncate fallback
-                                results.append({
-                                    "platform": platform_name,
-                                    "success": False,
-                                    "error": f"Auto-rewrite still too long after {max_attempts} attempt(s): {len(final_text)} chars (limit: {max_len}). Use --auto-rewrite-retry or --auto-rewrite-truncate.",
-                                    "url": None,
-                                    "id": None,
-                                })
-                                continue
-
-                        except LLMProviderError as e:
+                        rw = auto_rewrite_for_platform(
+                            article, platform_name, max_len, llm_provider,
+                            retry_count=auto_rewrite_retry or 0,
+                            truncate_fallback=bool(auto_rewrite_truncate),
+                            silent=silent, console=console,
+                        )
+                        if rw.success:
+                            publish_article = rw.article
+                            platform_rewritten = True
+                            platform_rewrite_content = rw.rewrite_text
+                        else:
                             results.append({
                                 "platform": platform_name,
                                 "success": False,
-                                "error": f"Auto-rewrite failed: {e}",
+                                "error": rw.error,
                                 "url": None,
                                 "id": None,
                             })
@@ -2787,93 +2718,24 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             rewrite_content = None
 
             if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
-                if not silent:
-                    console.print(f"[dim]Content too long for {platform} ({len(article.body)} > {max_len})[/dim]")
-                    retry_info = f" (max {auto_rewrite_retry} retries)" if auto_rewrite_retry else ""
-                    console.print(f"[dim]Generating auto-rewrite using {llm_provider.model}{retry_info}...[/dim]")
+                from .rewrite import auto_rewrite_for_platform
 
-                try:
-                    from .llm import LLMProviderError
-
-                    # Retry loop
-                    rewrite_result = None
-                    prev_text = None
-                    last_length = None
-                    max_attempts = (auto_rewrite_retry or 0) + 1
-
-                    for attempt in range(max_attempts):
-                        if attempt > 0 and not silent:
-                            console.print(f"[yellow]Retry {attempt}/{auto_rewrite_retry} (previous: {last_length}/{max_len} chars, {last_length - max_len} over)[/yellow]")
-
-                        rewrite_result = llm_provider.rewrite(
-                            title=article.title,
-                            body=article.body,
-                            max_chars=max_len,
-                            platform=platform,
-                            previous_attempt=prev_text,
-                            previous_length=last_length,
-                        )
-
-                        last_length = len(rewrite_result.text)
-
-                        if last_length <= max_len and not rewrite_result.was_truncated:
-                            break  # Success!
-
-                        prev_text = rewrite_result.text
-
-                    # Check final result
-                    final_text = rewrite_result.text
-                    if len(final_text) <= max_len:
-                        # Success
-                        pct = len(final_text) * 100 // max_len
-                        rewrite_content = final_text
-                        rewritten = True
-                        publish_article = Article(
-                            title=article.title,
-                            body=final_text,
-                            description=article.description,
-                            tags=article.tags,
-                            canonical_url=article.canonical_url,
-                            published=article.published,
-                            cover_image=article.cover_image,
-                        )
-                        if not silent:
-                            console.print(f"[green]✓ Generated {len(final_text)}/{max_len} char rewrite ({pct}%)[/green]")
-                    elif auto_rewrite_truncate:
-                        # Fallback: truncate at sentence boundary
-                        truncated = _truncate_at_sentence(final_text, max_len)
-                        pct = len(truncated) * 100 // max_len
-                        rewrite_content = truncated
-                        rewritten = True
-                        publish_article = Article(
-                            title=article.title,
-                            body=truncated,
-                            description=article.description,
-                            tags=article.tags,
-                            canonical_url=article.canonical_url,
-                            published=article.published,
-                            cover_image=article.cover_image,
-                        )
-                        if not silent:
-                            console.print(f"[yellow]⚠ Truncated to {len(truncated)}/{max_len} chars ({pct}%)[/yellow]")
-                    else:
-                        # All retries failed, no truncate fallback
-                        publish_results.append({
-                            "file": str(file_path),
-                            "platform": platform,
-                            "success": False,
-                            "error": f"Auto-rewrite still too long after {max_attempts} attempt(s): {len(final_text)} chars (limit: {max_len}). Use --auto-rewrite-retry or --auto-rewrite-truncate.",
-                            "action": action,
-                        })
-                        fail_count += 1
-                        continue
-
-                except LLMProviderError as e:
+                rw = auto_rewrite_for_platform(
+                    article, platform, max_len, llm_provider,
+                    retry_count=auto_rewrite_retry or 0,
+                    truncate_fallback=bool(auto_rewrite_truncate),
+                    silent=silent, console=console,
+                )
+                if rw.success:
+                    publish_article = rw.article
+                    rewritten = True
+                    rewrite_content = rw.rewrite_text
+                else:
                     publish_results.append({
                         "file": str(file_path),
                         "platform": platform,
                         "success": False,
-                        "error": f"Auto-rewrite failed: {e}",
+                        "error": rw.error,
                         "action": action,
                     })
                     fail_count += 1
