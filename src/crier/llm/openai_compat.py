@@ -11,6 +11,7 @@ Works with:
 
 import requests
 
+from ..utils import truncate_at_sentence
 from .provider import LLMProvider, LLMProviderError, RewriteResult, DEFAULT_REWRITE_PROMPT, RETRY_PROMPT_ADDITION
 
 
@@ -124,16 +125,7 @@ class OpenAICompatProvider(LLMProvider):
         # Ensure result fits within limit
         if len(text) > max_chars:
             was_truncated = True
-            # Try to truncate at sentence boundary
-            truncated = text[:max_chars]
-            last_period = truncated.rfind('.')
-            last_question = truncated.rfind('?')
-            last_exclaim = truncated.rfind('!')
-            last_sentence = max(last_period, last_question, last_exclaim)
-            if last_sentence > max_chars // 2:
-                text = truncated[:last_sentence + 1]
-            else:
-                text = truncated
+            text = truncate_at_sentence(text, max_chars)
 
         return RewriteResult(
             text=text,
