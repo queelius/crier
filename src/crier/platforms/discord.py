@@ -82,9 +82,6 @@ class Discord(Platform):
         if resp.status_code == 200:
             result = resp.json()
             message_id = result.get("id")
-            channel_id = result.get("channel_id")
-            # Discord message URLs require guild ID which we don't have easily
-            # Just return the message ID
             return PublishResult(
                 success=True,
                 platform=self.name,

@@ -7,7 +7,7 @@ This module provides scheduling functionality for delayed publishing:
 - Cron-friendly run command for processing due schedules
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

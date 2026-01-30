@@ -15,16 +15,13 @@ from .config import (
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
     is_manual_mode_key, is_import_mode_key, is_platform_configured,
     get_platform_mode, is_short_form_platform, get_llm_config, set_llm_config, is_llm_configured,
-    get_llm_temperature, get_llm_retry_count, get_llm_truncate_fallback, get_rewrite_author,
+    get_llm_retry_count, get_llm_truncate_fallback, get_rewrite_author,
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
 from .platforms.base import Article
 from .utils import (
-    truncate_at_sentence as _truncate_at_sentence,
-    has_valid_front_matter as _has_valid_front_matter,
     is_in_content_paths as _is_in_content_paths,
-    matches_exclude_pattern as _matches_exclude_pattern,
     parse_date_filter as _parse_date_filter_impl,
     get_content_date as _get_content_date,
     get_content_tags as _get_content_tags,
@@ -40,16 +37,8 @@ from .registry import (
     get_publication_info,
     get_platform_publications,
     get_article_by_file,
-    get_article,
     get_all_articles,
     remove_publication,
-    record_deletion,
-    is_deleted,
-    set_archived,
-    is_archived,
-    save_stats,
-    get_cached_stats,
-    get_stats_age_seconds,
 )
 
 console = Console()
@@ -715,8 +704,8 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     # Dry run: show what would be published
     if dry_run:
-        console.print(f"\n[bold]Dry Run Preview[/bold]")
-        console.print(f"[dim]No changes will be made[/dim]\n")
+        console.print("\n[bold]Dry Run Preview[/bold]")
+        console.print("[dim]No changes will be made[/dim]\n")
 
         info_table = Table(show_header=False, box=None)
         info_table.add_column("Field", style="cyan")
@@ -958,7 +947,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 # Handle threading if requested
                 thread_result = None
                 if thread and platform.supports_threads:
-                    from .threading import split_into_thread, estimate_thread_count
+                    from .threading import split_into_thread
 
                     # Use the content to thread (rewrite or original body)
                     thread_content = publish_article.body
@@ -1104,7 +1093,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         "url": None,
                         "id": None,
                     })
-                    console.print(f"[yellow]Not recorded in registry[/yellow]")
+                    console.print("[yellow]Not recorded in registry[/yellow]")
 
                 continue  # Skip normal result handling
 
@@ -1471,9 +1460,6 @@ def doctor():
     console.print("\n[bold]Crier Doctor[/bold]")
     console.print("[dim]Checking your configuration...[/dim]\n")
 
-    cfg = load_config()
-    configured_platforms = cfg.get("platforms", {})
-
     table = Table(title="Platform Health Check")
     table.add_column("Platform", style="cyan")
     table.add_column("Status")
@@ -1526,7 +1512,7 @@ def doctor():
             table.add_row(
                 name,
                 "[green]✓ Healthy[/green]",
-                f"API key valid"
+                "API key valid"
             )
             healthy += 1
 
@@ -1552,7 +1538,7 @@ def doctor():
 
     # Summary
     total_configured = healthy + unhealthy + manual_count
-    console.print(f"\n[bold]Summary:[/bold]")
+    console.print("\n[bold]Summary:[/bold]")
     console.print(f"  Configured: {total_configured}/{len(PLATFORMS)} platforms")
 
     if unhealthy > 0:
@@ -1563,13 +1549,13 @@ def doctor():
         console.print(f"  [blue]Manual mode: {manual_count}[/blue]")
 
     if unhealthy > 0:
-        console.print(f"\n[yellow]Tip: Check your API keys for failing platforms.[/yellow]")
+        console.print("\n[yellow]Tip: Check your API keys for failing platforms.[/yellow]")
     elif healthy > 0 or manual_count > 0:
-        console.print(f"\n[green]All configured platforms are ready![/green]")
+        console.print("\n[green]All configured platforms are ready![/green]")
     else:
-        console.print(f"\n[dim]No platforms configured yet.[/dim]")
-        console.print(f"[dim]Run: crier config set <platform>.api_key YOUR_KEY[/dim]")
-        console.print(f"[dim]Or for manual mode: crier config set <platform>.api_key manual[/dim]")
+        console.print("\n[dim]No platforms configured yet.[/dim]")
+        console.print("[dim]Run: crier config set <platform>.api_key YOUR_KEY[/dim]")
+        console.print("[dim]Or for manual mode: crier config set <platform>.api_key manual[/dim]")
 
 
 @cli.command(name="platforms")
@@ -1756,7 +1742,7 @@ def config_show():
     from .config import get_site_base_url
     site_base_url = get_site_base_url()
     if site_base_url:
-        console.print(f"[bold]Site Base URL[/bold] [dim](for canonical URL inference)[/dim]")
+        console.print("[bold]Site Base URL[/bold] [dim](for canonical URL inference)[/dim]")
         console.print(f"  {site_base_url}")
         console.print()
     else:
@@ -1794,7 +1780,7 @@ def config_show():
     # Show default profile
     default_profile = get_default_profile()
     if default_profile:
-        console.print(f"[bold]Default Profile[/bold]")
+        console.print("[bold]Default Profile[/bold]")
         console.print(f"  {default_profile}")
     else:
         console.print("[bold]Default Profile[/bold] [dim](not set)[/dim]")
@@ -1804,7 +1790,7 @@ def config_show():
     # Show rewrite author
     rewrite_author = get_rewrite_author()
     if rewrite_author:
-        console.print(f"[bold]Rewrite Author[/bold]")
+        console.print("[bold]Rewrite Author[/bold]")
         console.print(f"  {rewrite_author}")
     else:
         console.print("[bold]Rewrite Author[/bold] [dim](not set)[/dim]")
@@ -2409,7 +2395,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 console.print(f"[yellow]No content files found in configured paths: {', '.join(content_paths)}[/yellow]")
         return
 
-    console.print(f"\n[bold]Content Audit[/bold]")
+    console.print("\n[bold]Content Audit[/bold]")
     console.print(f"[dim]Checking {len(files)} file(s) against {len(check_platforms)} platform(s)[/dim]\n")
 
     # Build audit table and track actionable items
@@ -2509,7 +2495,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Summary
     total_pairs = len(files) * len(check_platforms)
-    console.print(f"\n[bold]Summary:[/bold]")
+    console.print("\n[bold]Summary:[/bold]")
     console.print(f"  Files: {len(files)}")
     console.print(f"  Platforms: {len(check_platforms)}")
     console.print(f"  [dim]Total file-platform pairs: {total_pairs}[/dim]")
@@ -2523,9 +2509,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         return
 
     if not publish and not dry_run:
-        console.print(f"\n[dim]Use --publish to publish missing content.[/dim]")
-        console.print(f"[dim]Use --publish --include-changed to also update changed content.[/dim]")
-        console.print(f"[dim]Use --publish --dry-run to preview what would be published.[/dim]")
+        console.print("\n[dim]Use --publish to publish missing content.[/dim]")
+        console.print("[dim]Use --publish --include-changed to also update changed content.[/dim]")
+        console.print("[dim]Use --publish --dry-run to preview what would be published.[/dim]")
         return
 
     # Build combined list with action type: (file_path, platform, canonical_url, title, action)
@@ -2576,7 +2562,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Dry run mode - show what would be published without doing it
     if dry_run:
-        console.print(f"\n[bold]Dry Run Preview[/bold]")
+        console.print("\n[bold]Dry Run Preview[/bold]")
         console.print("[dim]No changes will be made[/dim]\n")
 
         if not actionable_items:
@@ -2696,7 +2682,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         if not article.canonical_url:
             if not silent:
                 console.print(f"[yellow]⚠ {title[:30]}: Missing canonical_url[/yellow]")
-                console.print(f"  [dim]Add canonical_url to front matter or set site_base_url[/dim]")
+                console.print("  [dim]Add canonical_url to front matter or set site_base_url[/dim]")
             publish_results.append({
                 "file": str(file_path),
                 "platform": platform,
@@ -3228,7 +3214,7 @@ def status(file: str | None, show_all: bool, verbose: bool):
             console.print("[dim]Publish a file to start tracking.[/dim]")
             return
 
-        console.print(f"\n[bold]Tracked Posts[/bold]")
+        console.print("\n[bold]Tracked Posts[/bold]")
         console.print(f"[dim]Registry: {get_registry_path()}[/dim]\n")
 
         table = Table(title=f"All Tracked Posts ({len(all_articles)})")
@@ -3466,7 +3452,7 @@ def unregister(file: str, platform_name: str):
     if remove_publication(article.canonical_url, platform_name):
         console.print(f"[green]✓ Unregistered {file} from {platform_name}[/green]")
     else:
-        console.print(f"[red]Failed to unregister.[/red]")
+        console.print("[red]Failed to unregister.[/red]")
 
 
 @cli.group()
@@ -3512,7 +3498,6 @@ def schedule_list(status: str | None, json_output: bool):
 
     for post in posts:
         # Format scheduled time nicely
-        from datetime import timezone as tz
         local_time = post.scheduled_time.astimezone()
         time_str = local_time.strftime("%Y-%m-%d %H:%M")
 
@@ -3812,7 +3797,7 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
         crier delete article.md --all --dry-run
     """
     import json as json_module
-    from .registry import record_deletion, is_archived
+    from .registry import record_deletion
 
     # Batch mode implies --yes and JSON output
     if batch:
@@ -4165,7 +4150,6 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
         crier stats --platform devto --json
     """
     import json as json_module
-    from datetime import timedelta
     from .registry import (
         get_all_articles,
         get_article_by_file,
@@ -4174,7 +4158,6 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
         get_stats_age_seconds,
     )
     from .platforms import get_platform
-    from .platforms.base import ArticleStats
 
     # Parse --since filter
     since_date = None
@@ -4500,7 +4483,7 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
 
             console.print(table)
 
-            console.print(f"\n[bold]Summary[/bold]")
+            console.print("\n[bold]Summary[/bold]")
             console.print(f"  Total views: {format_number(grand_totals['views'] or None)}")
             console.print(f"  Total likes: {format_number(grand_totals['likes'] or None)}")
             console.print(f"  Total comments: {format_number(grand_totals['comments'] or None)}")

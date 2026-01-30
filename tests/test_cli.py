@@ -796,7 +796,7 @@ tags: [Python, Testing, CRIER]
 
 Content.
 """)
-        from crier.cli import _get_content_tags
+        from crier.utils import get_content_tags as _get_content_tags
         tags = _get_content_tags(md_file)
         assert tags == ["python", "testing", "crier"]  # Normalized to lowercase
 
@@ -811,7 +811,7 @@ tags: "Python, Testing, CRIER"
 
 Content.
 """)
-        from crier.cli import _get_content_tags
+        from crier.utils import get_content_tags as _get_content_tags
         tags = _get_content_tags(md_file)
         assert tags == ["python", "testing", "crier"]
 
@@ -825,7 +825,7 @@ title: No Tags
 
 Content.
 """)
-        from crier.cli import _get_content_tags
+        from crier.utils import get_content_tags as _get_content_tags
         tags = _get_content_tags(md_file)
         assert tags == []
 
@@ -834,7 +834,7 @@ Content.
         md_file = tmp_path / "plain.md"
         md_file.write_text("Just content, no front matter.")
 
-        from crier.cli import _get_content_tags
+        from crier.utils import get_content_tags as _get_content_tags
         tags = _get_content_tags(md_file)
         assert tags == []
 
@@ -918,14 +918,14 @@ class TestTruncateAtSentence:
 
     def test_no_truncation_needed(self):
         """Test text that fits within limit."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "Short text."
         result = _truncate_at_sentence(text, 100)
         assert result == text
 
     def test_truncate_at_period(self):
         """Test truncation at sentence boundary (period)."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "First sentence. Second sentence. Third sentence."
         result = _truncate_at_sentence(text, 35)
         assert result == "First sentence. Second sentence."
@@ -933,7 +933,7 @@ class TestTruncateAtSentence:
 
     def test_truncate_at_question_mark(self):
         """Test truncation at question mark."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "Is this a question? Yes it is. More text."
         result = _truncate_at_sentence(text, 25)
         assert result == "Is this a question?"
@@ -941,7 +941,7 @@ class TestTruncateAtSentence:
 
     def test_truncate_at_exclamation(self):
         """Test truncation at exclamation mark."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "Wow this is great! More content here."
         result = _truncate_at_sentence(text, 25)
         assert result == "Wow this is great!"
@@ -949,7 +949,7 @@ class TestTruncateAtSentence:
 
     def test_fallback_to_word_boundary(self):
         """Test fallback to word boundary when no sentence end in reasonable range."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "This is a very long single sentence without any breaks that goes on and on"
         result = _truncate_at_sentence(text, 50)
         assert len(result) <= 50
@@ -957,7 +957,7 @@ class TestTruncateAtSentence:
 
     def test_hard_truncate_fallback(self):
         """Test hard truncation when no good boundary."""
-        from crier.cli import _truncate_at_sentence
+        from crier.utils import truncate_at_sentence as _truncate_at_sentence
         text = "Superlongwordwithnospacesthatjustkeepsgoingandgoing"
         result = _truncate_at_sentence(text, 30)
         assert len(result) <= 30
@@ -968,7 +968,7 @@ class TestHelpers:
     """Tests for CLI helper functions."""
 
     def test_has_valid_front_matter(self, mock_config_and_registry):
-        from crier.cli import _has_valid_front_matter
+        from crier.utils import has_valid_front_matter as _has_valid_front_matter
 
         # Valid front matter
         valid_file = mock_config_and_registry["posts_dir"] / "valid.md"
@@ -987,7 +987,7 @@ class TestHelpers:
         assert _has_valid_front_matter(empty_file) is True  # Title from filename
 
     def test_is_in_content_paths(self, mock_config_and_registry):
-        from crier.cli import _is_in_content_paths
+        from crier.utils import is_in_content_paths as _is_in_content_paths
 
         posts_dir = mock_config_and_registry["posts_dir"]
         test_file = posts_dir / "test.md"
@@ -1001,7 +1001,7 @@ class TestHelpers:
         assert _is_in_content_paths(outside_file) is False
 
     def test_find_content_files(self, mock_config_and_registry):
-        from crier.cli import _find_content_files
+        from crier.utils import find_content_files as _find_content_files
 
         posts_dir = mock_config_and_registry["posts_dir"]
         (posts_dir / "test1.md").write_text("---\ntitle: Test 1\n---\nContent.")
