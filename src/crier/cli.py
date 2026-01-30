@@ -11,7 +11,8 @@ from rich.table import Table
 
 from . import __version__
 from .config import (
-    get_api_key, set_api_key, load_config, load_global_config, get_profile, set_profile, get_all_profiles,
+    get_api_key, set_api_key, load_config, load_global_config,
+    get_profile, set_profile, get_all_profiles,
     get_content_paths, add_content_path, remove_content_path, set_content_paths,
     is_manual_mode_key, is_import_mode_key, is_platform_configured,
     get_platform_mode, is_short_form_platform, get_llm_config, set_llm_config, is_llm_configured,
@@ -159,7 +160,8 @@ def init():
             from .config import (set_exclude_patterns, DEFAULT_EXCLUDE_PATTERNS,
                                 set_file_extensions, DEFAULT_FILE_EXTENSIONS)
             set_exclude_patterns(DEFAULT_EXCLUDE_PATTERNS)
-            console.print(f"[green]✓[/green] Exclude patterns: {', '.join(DEFAULT_EXCLUDE_PATTERNS)}")
+            patterns_str = ', '.join(DEFAULT_EXCLUDE_PATTERNS)
+            console.print(f"[green]✓[/green] Exclude patterns: {patterns_str}")
 
             # Set default file extensions
             set_file_extensions(DEFAULT_FILE_EXTENSIONS)
@@ -169,7 +171,10 @@ def init():
             console.print("[dim]  crier config content add <directory>[/dim]")
     else:
         console.print("[yellow]No content directories found.[/yellow]")
-        console.print("[dim]You can add them later with: crier config content add <directory>[/dim]")
+        console.print(
+            "[dim]You can add them later with:"
+            " crier config content add <directory>[/dim]"
+        )
 
     console.print()
 
@@ -223,7 +228,10 @@ def init():
         # Platform-specific prompts
         if platform == "bluesky":
             console.print(f"\n[bold]{platform}[/bold]")
-            console.print("[dim]Get an app password at: https://bsky.app/settings/app-passwords[/dim]")
+            console.print(
+                "[dim]Get an app password at:"
+                " https://bsky.app/settings/app-passwords[/dim]"
+            )
             handle = questionary.text("Bluesky handle (e.g., user.bsky.social):").ask()
             password = questionary.password("App password:").ask()
             if handle and password:
@@ -279,7 +287,10 @@ def init():
 
     # Step 4: LLM Configuration (for auto-rewrite)
     console.print("[bold]Step 4: LLM Configuration (Optional)[/bold]")
-    console.print("[dim]Auto-rewrite uses an LLM to generate short-form posts from your articles.[/dim]")
+    console.print(
+        "[dim]Auto-rewrite uses an LLM to generate"
+        " short-form posts from your articles.[/dim]"
+    )
     console.print()
 
     # Check if already configured
@@ -303,7 +314,10 @@ def init():
 
     if configure_llm:
         console.print()
-        console.print("[dim]Tip: Set OPENAI_API_KEY env var and it just works (defaults to gpt-4o-mini)[/dim]")
+        console.print(
+            "[dim]Tip: Set OPENAI_API_KEY env var and it"
+            " just works (defaults to gpt-4o-mini)[/dim]"
+        )
         console.print()
 
         provider_choice = questionary.select(
@@ -319,7 +333,10 @@ def init():
             if key:
                 set_llm_config(api_key=key)
                 console.print("[green]✓[/green] OpenAI API key saved")
-                console.print("[dim]Using default: base_url=api.openai.com, model=gpt-4o-mini[/dim]")
+                console.print(
+                    "[dim]Using default: base_url=api.openai.com,"
+                    " model=gpt-4o-mini[/dim]"
+                )
         elif provider_choice == "custom":
             base_url = questionary.text(
                 "Base URL:",
@@ -359,7 +376,8 @@ def init():
 @click.option("--profile", "-p", "profile_name",
               help="Use a predefined profile (group of platforms)")
 @click.option("--draft", is_flag=True, help="Publish as draft")
-@click.option("--dry-run", is_flag=True, help="Preview what would be published without actually publishing")
+@click.option("--dry-run", is_flag=True,
+              help="Preview what would be published without actually publishing")
 @click.option("--manual", is_flag=True,
               help="Use manual mode: generate content for copy-paste instead of API")
 @click.option("--no-browser", is_flag=True,
@@ -385,7 +403,8 @@ def init():
 @click.option("--json", "json_output", is_flag=True,
               help="Output results as JSON for automation")
 @click.option("--batch", is_flag=True,
-              help="Non-interactive batch mode (implies --yes --json, skips manual/import platforms)")
+              help="Non-interactive batch mode"
+                   " (implies --yes --json, skips manual/import platforms)")
 @click.option("--quiet", "-q", is_flag=True,
               help="Suppress non-essential output (for scripting)")
 @click.option("--schedule", "schedule_time", default=None,
@@ -438,14 +457,20 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if auto_rewrite:
         if not is_llm_configured():
             if json_output:
-                print(json_module.dumps({"success": False, "error": "--auto-rewrite requires LLM configuration"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": "--auto-rewrite requires LLM configuration",
+                }))
             else:
                 console.print("[red]Error: LLM not configured for --auto-rewrite[/red]")
                 console.print()
                 console.print("[bold]Fix:[/bold] export OPENAI_API_KEY=sk-...")
                 console.print("[bold]Or:[/bold]  crier config llm set api_key sk-...")
                 console.print()
-                console.print("[dim]For Ollama: crier config llm set base_url http://localhost:11434/v1[/dim]")
+                console.print(
+                    "[dim]For Ollama: crier config llm set"
+                    " base_url http://localhost:11434/v1[/dim]"
+                )
                 console.print("[dim]            crier config llm set model llama3[/dim]")
             raise SystemExit(1)
 
@@ -465,7 +490,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         )
         if not llm_provider:
             if json_output:
-                print(json_module.dumps({"success": False, "error": "Failed to initialize LLM provider"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": "Failed to initialize LLM provider",
+                }))
             else:
                 console.print("[red]Error: Failed to initialize LLM provider.[/red]")
             raise SystemExit(1)
@@ -477,10 +505,16 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         profile_platforms = get_profile(profile_name)
         if profile_platforms is None:
             if json_output:
-                print(json_module.dumps({"success": False, "error": f"Unknown profile: {profile_name}"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": f"Unknown profile: {profile_name}",
+                }))
             else:
                 console.print(f"[red]Unknown profile: {profile_name}[/red]")
-                console.print("[dim]Create a profile with: crier config profile set <name> <platforms>[/dim]")
+                console.print(
+                    "[dim]Create a profile with:"
+                    " crier config profile set <name> <platforms>[/dim]"
+                )
             raise SystemExit(1)
         platforms.extend(profile_platforms)
 
@@ -565,7 +599,8 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 else:
                     console.print("\n[red]Pre-publish check failed:[/red]")
                     for r in report.results:
-                        console.print(f"  {_severity_label(r.severity)} {r.check_name}: {r.message}")
+                        label = _severity_label(r.severity)
+                        console.print(f"  {label} {r.check_name}: {r.message}")
                     console.print("\n[dim]Use --no-check to skip validation.[/dim]")
                 raise SystemExit(1)
 
@@ -587,7 +622,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         scheduled_dt = parse_schedule_time(schedule_time)
         if scheduled_dt is None:
             if json_output:
-                print(json_module.dumps({"success": False, "error": f"Could not parse schedule time: {schedule_time}"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": f"Could not parse schedule time: {schedule_time}",
+                }))
             else:
                 console.print(f"[red]Could not parse schedule time: {schedule_time}[/red]")
                 console.print()
@@ -621,12 +659,16 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             print(json_module.dumps(output, indent=2, default=str))
         else:
             local_time = scheduled_dt.astimezone()
-            console.print(f"[green]✓ Scheduled for {local_time.strftime('%Y-%m-%d %H:%M %Z')}[/green]")
+            time_str = local_time.strftime('%Y-%m-%d %H:%M %Z')
+            console.print(f"[green]✓ Scheduled for {time_str}[/green]")
             for post in scheduled_posts:
                 console.print(f"  • {post.platform}: {post.id}")
             console.print()
             console.print("[dim]Run 'crier schedule list' to view scheduled posts.[/dim]")
-            console.print("[dim]Run 'crier schedule run' to process due posts (add to crontab).[/dim]")
+            console.print(
+                "[dim]Run 'crier schedule run' to process"
+                " due posts (add to crontab).[/dim]"
+            )
         return
 
     # Batch mode: filter out manual/import platforms
@@ -697,9 +739,18 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if not _is_in_content_paths(file_path):
         content_paths = get_content_paths()
         if content_paths:
-            console.print("[yellow]Note: This file is not in your configured content_paths.[/yellow]")
-            console.print("[dim]It will be tracked in the registry, but `crier audit` won't find it.[/dim]")
-            console.print("[dim]To include it in audits, run: crier config content add <directory>[/dim]")
+            console.print(
+                "[yellow]Note: This file is not in your"
+                " configured content_paths.[/yellow]"
+            )
+            console.print(
+                "[dim]It will be tracked in the registry,"
+                " but `crier audit` won't find it.[/dim]"
+            )
+            console.print(
+                "[dim]To include it in audits, run:"
+                " crier config content add <directory>[/dim]"
+            )
             console.print()
 
     # Dry run: show what would be published
@@ -765,7 +816,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     )
                     # Generate actual rewrite preview
                     try:
-                        console.print(f"[dim]Generating rewrite preview for {platform_name}...[/dim]")
+                        console.print(
+                            f"[dim]Generating rewrite preview"
+                            f" for {platform_name}...[/dim]"
+                        )
                         from .llm import LLMProviderError
                         rewrite_result = llm_provider.rewrite(
                             title=article.title,
@@ -805,8 +859,17 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     console.print(f"\n[red]✗ {platform_name}: {preview['error']}[/red]")
                 else:
                     pct = preview['length'] * 100 // preview['max']
-                    status = "[green]✓ Fits[/green]" if preview["fits"] else "[red]✗ Still too long[/red]"
-                    console.print(f"\n[bold]{platform_name}[/bold] ({preview['length']}/{preview['max']} chars, {pct}%) {status}")
+                    if preview["fits"]:
+                        status = "[green]✓ Fits[/green]"
+                    else:
+                        status = "[red]✗ Still too long[/red]"
+                    length = preview['length']
+                    max_len = preview['max']
+                    console.print(
+                        f"\n[bold]{platform_name}[/bold]"
+                        f" ({length}/{max_len} chars, {pct}%)"
+                        f" {status}"
+                    )
                     console.print(Panel(preview["text"], border_style="dim"))
 
         return
@@ -840,7 +903,12 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
             # For manual/import mode with no real API key, we still need a platform instance
             # Pass a dummy key since we won't be making API calls
-            effective_key = api_key if api_key and not is_manual_mode_key(api_key) and not is_import_mode_key(api_key) else "manual"
+            is_real_key = (
+                api_key
+                and not is_manual_mode_key(api_key)
+                and not is_import_mode_key(api_key)
+            )
+            effective_key = api_key if is_real_key else "manual"
             platform = platform_cls(effective_key)
 
             # Handle import mode (api_key: import) - user imports from canonical URL
@@ -880,11 +948,16 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 compose_url = platform.compose_url or f"https://{platform_name}.com"
 
                 # Check content length if applicable
-                if platform.max_content_length and len(manual_content) > platform.max_content_length:
+                max_len = platform.max_content_length
+                if max_len and len(manual_content) > max_len:
                     results.append({
                         "platform": platform_name,
                         "success": False,
-                        "error": f"Content too long: {len(manual_content)} chars (limit: {platform.max_content_length})",
+                        "error": (
+                            f"Content too long:"
+                            f" {len(manual_content)} chars"
+                            f" (limit: {max_len})"
+                        ),
                         "url": None,
                         "id": None,
                     })
@@ -908,7 +981,11 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         results.append({
                             "platform": platform_name,
                             "success": False,
-                            "error": f"Rewrite content too long: {len(article.body)} chars (limit: {max_len})",
+                            "error": (
+                                f"Rewrite content too long:"
+                                f" {len(article.body)} chars"
+                                f" (limit: {max_len})"
+                            ),
                             "url": None,
                             "id": None,
                         })
@@ -963,7 +1040,11 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
                     if len(thread_posts) > 1:
                         if not silent:
-                            console.print(f"[dim]Publishing thread ({len(thread_posts)} posts) to {platform_name}...[/dim]")
+                            console.print(
+                                f"[dim]Publishing thread"
+                                f" ({len(thread_posts)} posts)"
+                                f" to {platform_name}...[/dim]"
+                            )
                         thread_result = platform.publish_thread(thread_posts)
                     else:
                         # Single post, use regular publish
@@ -1031,7 +1112,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         pyperclip.copy(result.manual_content)
                         console.print("[green]✓ Copied to clipboard[/green]")
                     except Exception:
-                        console.print("[yellow]Could not copy to clipboard (install xclip/xsel on Linux)[/yellow]")
+                        console.print(
+                            "[yellow]Could not copy to clipboard"
+                            " (install xclip/xsel on Linux)[/yellow]"
+                        )
 
                     console.print(f"Compose at: {result.compose_url}")
                     target_url = result.compose_url
@@ -1044,10 +1128,16 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 # Ask for confirmation (skip if --yes)
                 console.print()
                 if yes:
-                    console.print(f"[dim]--yes flag set, assuming successful post to {platform_name}[/dim]")
+                    console.print(
+                        f"[dim]--yes flag set, assuming successful"
+                        f" post to {platform_name}[/dim]"
+                    )
                     posted = True
                 else:
-                    posted = click.confirm(f"Did you successfully post to {platform_name}?", default=False)
+                    posted = click.confirm(
+                        f"Did you successfully post to {platform_name}?",
+                        default=False,
+                    )
 
                 if posted:
                     if yes:
@@ -1076,7 +1166,8 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             posted_content=posted_content if is_rewritten else None,
                         )
 
-                    mode_label = "(import)" if getattr(result, 'is_import_mode', False) else "(manual)"
+                    is_import = getattr(result, 'is_import_mode', False)
+                    mode_label = "(import)" if is_import else "(manual)"
                     results.append({
                         "platform": platform_name,
                         "success": True,
@@ -1106,7 +1197,8 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 "id": result.article_id,
             }
 
-            # Add thread info if this was a thread (check for True explicitly to handle Mock objects)
+            # Add thread info if this was a thread
+            # (check for True explicitly to handle Mock objects)
             is_thread_result = getattr(result, 'is_thread', None) is True
             if is_thread_result:
                 result_data["is_thread"] = True
@@ -1178,7 +1270,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 result_obj["error"] = r["error"]
                 # Add suggestion for content length errors
                 if r["error"] and "too long" in r["error"].lower():
-                    result_obj["suggestion"] = {"flag": "--rewrite", "reason": "short-form platform"}
+                    result_obj["suggestion"] = {
+                        "flag": "--rewrite",
+                        "reason": "short-form platform",
+                    }
             json_results.append(result_obj)
 
         output = {
@@ -1247,7 +1342,10 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     default=None,
     help="Group results by platform or article (only when listing all platforms)",
 )
-def list_articles(platform: str | None, limit: int, verbose: bool, remote: bool, output_format: str, group_by: str | None):
+def list_articles(
+    platform: str | None, limit: int, verbose: bool,
+    remote: bool, output_format: str, group_by: str | None,
+):
     """List your crossposted articles.
 
     Without PLATFORM argument, shows all publications across all platforms.
@@ -1321,7 +1419,10 @@ def list_articles(platform: str | None, limit: int, verbose: bool, remote: bool,
 
         if not all_publications:
             console.print("No articles in registry.")
-            console.print("[dim]Publish something first with: crier publish <file> --to <platform>[/dim]")
+            console.print(
+                "[dim]Publish something first with:"
+                " crier publish <file> --to <platform>[/dim]"
+            )
             return
 
         # Sort by published_at descending
@@ -1637,7 +1738,10 @@ def config_set(key: str, value: str):
     if key == "site_base_url":
         set_site_base_url(value)
         console.print(f"[green]Set site_base_url: {value}[/green]")
-        console.print("[dim]Canonical URLs will be auto-inferred for content without explicit canonical_url.[/dim]")
+        console.print(
+            "[dim]Canonical URLs will be auto-inferred for"
+            " content without explicit canonical_url.[/dim]"
+        )
     elif len(parts) == 2 and parts[1] == "api_key":
         platform = parts[0]
         set_api_key(platform, value)
@@ -1758,10 +1862,14 @@ def config_show():
     exclude_patterns = get_exclude_patterns()
     if not exclude_patterns:
         console.print("[bold]Exclude Patterns[/bold] [dim](not configured)[/dim]")
-        console.print("  [dim]None - all .md files included. Run 'crier init' to set defaults.[/dim]")
+        console.print(
+            "  [dim]None - all .md files included."
+            " Run 'crier init' to set defaults.[/dim]"
+        )
     else:
         is_default = exclude_patterns == DEFAULT_EXCLUDE_PATTERNS
-        console.print(f"[bold]Exclude Patterns[/bold] [dim]({'default' if is_default else 'custom'})[/dim]")
+        label = 'default' if is_default else 'custom'
+        console.print(f"[bold]Exclude Patterns[/bold] [dim]({label})[/dim]")
         for pattern in exclude_patterns:
             console.print(f"  • {pattern}")
     console.print()
@@ -1773,7 +1881,8 @@ def config_show():
         console.print("  [dim]Using default: .md. Run 'crier init' to set explicitly.[/dim]")
     else:
         is_default = file_extensions == DEFAULT_FILE_EXTENSIONS
-        console.print(f"[bold]File Extensions[/bold] [dim]({'default' if is_default else 'custom'})[/dim]")
+        label = 'default' if is_default else 'custom'
+        console.print(f"[bold]File Extensions[/bold] [dim]({label})[/dim]")
         console.print(f"  {', '.join(file_extensions)}")
     console.print()
 
@@ -2070,7 +2179,9 @@ def llm_show():
 
     # API Key
     api_key = llm_config.get("api_key")
-    console.print(f"  [bold]api_key:[/bold] {_mask_api_key(api_key)} [dim]({sources['api_key']})[/dim]")
+    masked = _mask_api_key(api_key)
+    source = sources['api_key']
+    console.print(f"  [bold]api_key:[/bold] {masked} [dim]({source})[/dim]")
 
     # Base URL
     base_url = llm_config.get("base_url", "")
@@ -2211,7 +2322,8 @@ def llm_test():
               help="Only check platforms in a profile")
 @click.option("--publish", is_flag=True, help="Publish missing content (interactive selection)")
 @click.option("--yes", "-y", is_flag=True, help="Publish all missing without prompting")
-@click.option("--dry-run", is_flag=True, help="Show what would be published without actually publishing")
+@click.option("--dry-run", is_flag=True,
+              help="Show what would be published without actually publishing")
 @click.option("--only-api", is_flag=True,
               help="Only check platforms with API access (skip manual/import/paste)")
 @click.option("--long-form", is_flag=True,
@@ -2289,10 +2401,19 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         llm_config = get_llm_config()
         if not llm_config:
             if json_output:
-                print(json_module.dumps({"success": False, "error": "--auto-rewrite requires LLM configuration"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": "--auto-rewrite requires LLM configuration",
+                }))
             else:
-                console.print("[red]Error: --auto-rewrite requires LLM configuration.[/red]")
-                console.print("[dim]Run 'crier llm set' to configure, or 'crier init' for guided setup.[/dim]")
+                console.print(
+                    "[red]Error: --auto-rewrite requires"
+                    " LLM configuration.[/red]"
+                )
+                console.print(
+                    "[dim]Run 'crier llm set' to configure,"
+                    " or 'crier init' for guided setup.[/dim]"
+                )
             raise SystemExit(1)
         llm_provider = get_provider(llm_config)
 
@@ -2309,7 +2430,10 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         profile_platforms = get_profile(profile_name)
         if profile_platforms is None:
             if json_output:
-                print(json_module.dumps({"success": False, "error": f"Unknown profile: {profile_name}"}))
+                print(json_module.dumps({
+                    "success": False,
+                    "error": f"Unknown profile: {profile_name}",
+                }))
             else:
                 console.print(f"[red]Unknown profile: {profile_name}[/red]")
             raise SystemExit(1)
@@ -2392,11 +2516,20 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 console.print("[yellow]No content paths configured.[/yellow]")
                 console.print("[dim]Add one with: crier config content add <path>[/dim]")
             else:
-                console.print(f"[yellow]No content files found in configured paths: {', '.join(content_paths)}[/yellow]")
+                paths_str = ', '.join(content_paths)
+                console.print(
+                    f"[yellow]No content files found in"
+                    f" configured paths: {paths_str}[/yellow]"
+                )
         return
 
     console.print("\n[bold]Content Audit[/bold]")
-    console.print(f"[dim]Checking {len(files)} file(s) against {len(check_platforms)} platform(s)[/dim]\n")
+    n_files = len(files)
+    n_plats = len(check_platforms)
+    console.print(
+        f"[dim]Checking {n_files} file(s)"
+        f" against {n_plats} platform(s)[/dim]\n"
+    )
 
     # Build audit table and track actionable items
     table = Table(title="Audit Results")
@@ -2552,12 +2685,19 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 skipped_count += 1
                 if not silent:
                     error_msgs = [r.message for r in report.results if r.severity == "error"]
-                    console.print(f"  [yellow]Skipping {file_path.name} → {platform}: {error_msgs[0]}[/yellow]")
+                    console.print(
+                        f"  [yellow]Skipping {file_path.name}"
+                        f" → {platform}: {error_msgs[0]}[/yellow]"
+                    )
             else:
                 checked_items.append(item)
 
         if skipped_count and not silent:
-            console.print(f"[yellow]Skipped {skipped_count} item{'s' if skipped_count != 1 else ''} due to check failures[/yellow]")
+            suffix = 's' if skipped_count != 1 else ''
+            console.print(
+                f"[yellow]Skipped {skipped_count}"
+                f" item{suffix} due to check failures[/yellow]"
+            )
         actionable_items = checked_items
 
     # Dry run mode - show what would be published without doing it
@@ -2589,7 +2729,10 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 else:
                     notes = ""
 
-                action_label = "[green]NEW[/green]" if action == "publish" else "[yellow]UPDATE[/yellow]"
+                if action == "publish":
+                    action_label = "[green]NEW[/green]"
+                else:
+                    action_label = "[yellow]UPDATE[/yellow]"
                 preview_table.add_row(
                     action_label,
                     title[:40] + ("..." if len(title) > 40 else ""),
@@ -2626,7 +2769,11 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
         choices = [
             questionary.Choice(
-                title=f"{title[:40]}{'...' if len(title) > 40 else ''} → {platform} [{'NEW' if action == 'publish' else 'UPDATE'}]",
+                title=(
+                    f"{title[:40]}{'...' if len(title) > 40 else ''}"
+                    f" → {platform}"
+                    f" [{'NEW' if action == 'publish' else 'UPDATE'}]"
+                ),
                 value=(file_path, platform, canonical_url, title, action),
                 checked=True,  # Default to selected
             )
@@ -2650,7 +2797,11 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     new_count = sum(1 for _, _, _, _, action in selected_items if action == "publish")
     update_count = len(selected_items) - new_count
     if not silent:
-        console.print(f"\n[bold]Processing {len(selected_items)} item(s) ({new_count} new, {update_count} updates)...[/bold]\n")
+        total = len(selected_items)
+        console.print(
+            f"\n[bold]Processing {total} item(s)"
+            f" ({new_count} new, {update_count} updates)...[/bold]\n"
+        )
 
     success_count = 0
     fail_count = 0
@@ -2738,7 +2889,11 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 pub_info = get_publication_info(canonical_url, platform)
                 if not pub_info or not pub_info.get("article_id"):
                     if not silent:
-                        console.print(f"[yellow]⚠ {title[:30]} → {platform}: No article_id in registry, skipping[/yellow]")
+                        console.print(
+                            f"[yellow]⚠ {title[:30]} → {platform}:"
+                            f" No article_id in registry,"
+                            f" skipping[/yellow]"
+                        )
                     publish_results.append({
                         "file": str(file_path),
                         "platform": platform,
@@ -2757,7 +2912,11 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
             if result.success:
                 if not silent:
-                    console.print(f"[green]✓ {title[:30]} → {platform} ({action_verb.lower()})[/green]")
+                    verb = action_verb.lower()
+                    console.print(
+                        f"[green]✓ {title[:30]}"
+                        f" → {platform} ({verb})[/green]"
+                    )
                 content_hash = get_file_content_hash(file_path)
                 record_publication(
                     canonical_url=article.canonical_url,
@@ -2846,8 +3005,12 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
               help="Suppress non-essential output (for scripting)")
 @click.option("--verbose", "-v", is_flag=True,
               help="Show all tags and descriptions")
-def search(path: str | None, tag_filter: tuple[str, ...], since_date: str | None,
-           until_date: str | None, sample: int | None, json_output: bool, quiet: bool, verbose: bool):
+def search(
+    path: str | None, tag_filter: tuple[str, ...],
+    since_date: str | None, until_date: str | None,
+    sample: int | None, json_output: bool,
+    quiet: bool, verbose: bool,
+):
     """Search and list content files with metadata.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -3080,7 +3243,10 @@ def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: boo
             for result in report.results:
                 line_info = f":{result.line}" if result.line else ""
                 platform_info = f" [{result.platform}]" if result.platform else ""
-                console.print(f"  {_severity_label(result.severity, padded=True)} {result.check_name:<24} {result.message}{line_info}{platform_info}")
+                label = _severity_label(result.severity, padded=True)
+                name = f"{result.check_name:<24}"
+                msg = f"{result.message}{line_info}{platform_info}"
+                console.print(f"  {label} {name} {msg}")
 
         # Summary
         total_errors = sum(1 for r in reports for cr in r.results if cr.severity == "error")
@@ -3091,14 +3257,16 @@ def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: boo
         if total_errors:
             parts.append(f"[red]{total_errors} error{'s' if total_errors != 1 else ''}[/red]")
         if total_warnings:
-            parts.append(f"[yellow]{total_warnings} warning{'s' if total_warnings != 1 else ''}[/yellow]")
+            s = 's' if total_warnings != 1 else ''
+            parts.append(f"[yellow]{total_warnings} warning{s}[/yellow]")
         if total_info:
             parts.append(f"[blue]{total_info} info[/blue]")
 
         if parts:
             console.print(f"\n{', '.join(parts)}")
         else:
-            console.print(f"\n[green]All {len(reports)} file{'s' if len(reports) != 1 else ''} passed.[/green]")
+            s = 's' if len(reports) != 1 else ''
+            console.print(f"\n[green]All {len(reports)} file{s} passed.[/green]")
 
     # Exit code
     any_errors = any(not r.passed for r in reports)
@@ -3114,7 +3282,8 @@ def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: boo
 
 @cli.command()
 @click.argument("file", type=click.Path(exists=True), required=False)
-@click.option("--all", "-a", "show_all", is_flag=True, hidden=True, help="(deprecated) Show all tracked posts")
+@click.option("--all", "-a", "show_all", is_flag=True, hidden=True,
+              help="(deprecated) Show all tracked posts")
 @click.option("--verbose", "-v", is_flag=True, help="Show content hashes and all platforms")
 def status(file: str | None, show_all: bool, verbose: bool):
     """Show publication status for a file or all tracked posts.
@@ -3236,7 +3405,8 @@ def status(file: str | None, show_all: bool, verbose: bool):
                 full_path = Path(source_file)
                 if full_path.exists():
                     current_hash = get_file_content_hash(full_path)
-                    changed = "[yellow]⚠ Yes[/yellow]" if stored_hash and current_hash != stored_hash else "No"
+                    is_changed = stored_hash and current_hash != stored_hash
+                    changed = "[yellow]⚠ Yes[/yellow]" if is_changed else "No"
                     display_file = source_file
                 else:
                     changed = "[red]File missing[/red]"
@@ -3266,7 +3436,8 @@ def skill():
 
 
 @skill.command(name="install")
-@click.option("--local", is_flag=True, help="Install to .claude/skills/ (repo-local) instead of ~/.claude/skills/")
+@click.option("--local", is_flag=True,
+              help="Install to .claude/skills/ (repo-local) instead of ~/.claude/skills/")
 def skill_install(local: bool):
     """Install or update the crier skill for Claude Code.
 
@@ -3299,7 +3470,8 @@ def skill_install(local: bool):
 
 
 @skill.command(name="uninstall")
-@click.option("--local", is_flag=True, help="Uninstall from .claude/skills/ instead of ~/.claude/skills/")
+@click.option("--local", is_flag=True,
+              help="Uninstall from .claude/skills/ instead of ~/.claude/skills/")
 def skill_uninstall(local: bool):
     """Uninstall the crier skill from Claude Code."""
     from .skill import uninstall
@@ -3360,7 +3532,10 @@ def skill_status():
         console.print()
         for location in needs_update:
             flag = " --local" if location == "local" else ""
-            console.print(f"[yellow]Update {location} skill with: crier skill install{flag}[/yellow]")
+            console.print(
+                f"[yellow]Update {location} skill with:"
+                f" crier skill install{flag}[/yellow]"
+            )
 
 
 @skill.command(name="show")
@@ -3560,7 +3735,8 @@ def schedule_show(post_id: str, json_output: bool):
     if post.error:
         table.add_row("Error", f"[red]{post.error}[/red]")
     if post.rewrite:
-        table.add_row("Rewrite", post.rewrite[:50] + "..." if len(post.rewrite) > 50 else post.rewrite)
+        rewrite_display = post.rewrite[:50] + "..." if len(post.rewrite) > 50 else post.rewrite
+        table.add_row("Rewrite", rewrite_display)
     table.add_row("Auto-rewrite", "Yes" if post.auto_rewrite else "No")
 
     console.print(table)
@@ -3588,7 +3764,10 @@ def schedule_cancel(post_id: str, json_output: bool):
 
     if post.status != "pending":
         if json_output:
-            print(json_module.dumps({"success": False, "error": f"Post is {post.status}, not pending"}))
+            print(json_module.dumps({
+                "success": False,
+                "error": f"Post is {post.status}, not pending",
+            }))
         else:
             console.print(f"[yellow]Post is {post.status}, cannot cancel.[/yellow]")
         raise SystemExit(1)
@@ -3638,7 +3817,10 @@ def schedule_run(dry_run: bool, json_output: bool):
         if not json_output:
             console.print("[bold]Dry Run - Due Posts[/bold]\n")
             for post in due_posts:
-                console.print(f"  • {post.file_path} → {post.platform} (scheduled: {post.scheduled_time})")
+                console.print(
+                    f"  • {post.file_path} → {post.platform}"
+                    f" (scheduled: {post.scheduled_time})"
+                )
             console.print(f"\n[dim]{len(due_posts)} post(s) would be published.[/dim]")
         else:
             output = {
@@ -3678,8 +3860,9 @@ def schedule_run(dry_run: bool, json_output: bool):
         # Get platform
         platform_name = post.platform
         if platform_name not in PLATFORMS:
-            update_scheduled_post(post.id, status="failed", error=f"Unknown platform: {platform_name}")
-            results.append({"id": post.id, "success": False, "error": f"Unknown platform: {platform_name}"})
+            err = f"Unknown platform: {platform_name}"
+            update_scheduled_post(post.id, status="failed", error=err)
+            results.append({"id": post.id, "success": False, "error": err})
             fail_count += 1
             if not json_output:
                 console.print(f"[red]✗[/red] {post.id}: Unknown platform {platform_name}")
@@ -3687,8 +3870,9 @@ def schedule_run(dry_run: bool, json_output: bool):
 
         api_key = get_api_key(platform_name)
         if not api_key:
-            update_scheduled_post(post.id, status="failed", error=f"No API key for {platform_name}")
-            results.append({"id": post.id, "success": False, "error": f"No API key for {platform_name}"})
+            err = f"No API key for {platform_name}"
+            update_scheduled_post(post.id, status="failed", error=err)
+            results.append({"id": post.id, "success": False, "error": err})
             fail_count += 1
             if not json_output:
                 console.print(f"[red]✗[/red] {post.id}: No API key for {platform_name}")
@@ -3808,7 +3992,10 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
 
     if not article.canonical_url:
         if json_output:
-            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+            print(json_module.dumps({
+                "success": False,
+                "error": "Missing canonical_url in front matter",
+            }))
         else:
             console.print("[red]Error: Missing canonical_url in front matter[/red]")
         raise SystemExit(1)
@@ -3837,7 +4024,10 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
         platforms_to_delete = list(platform_args)
     else:
         if json_output:
-            print(json_module.dumps({"success": False, "error": "Specify platforms with --from or use --all"}))
+            print(json_module.dumps({
+                "success": False,
+                "error": "Specify platforms with --from or use --all",
+            }))
         else:
             console.print("[red]Error: Specify platforms with --from or use --all[/red]")
             console.print()
@@ -3875,7 +4065,11 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
                 else:
                     platform_cls = PLATFORMS.get(platform_name)
                     if platform_cls and not platform_cls.supports_delete:
-                        table.add_row(platform_name, "[yellow]API delete not supported[/yellow]", str(article_id))
+                        table.add_row(
+                            platform_name,
+                            "[yellow]API delete not supported[/yellow]",
+                            str(article_id),
+                        )
                     else:
                         table.add_row(platform_name, "[green]Would delete[/green]", str(article_id))
 
@@ -4047,7 +4241,10 @@ def archive(file: str, json_output: bool):
 
     if not article.canonical_url:
         if json_output:
-            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+            print(json_module.dumps({
+                "success": False,
+                "error": "Missing canonical_url in front matter",
+            }))
         else:
             console.print("[red]Error: Missing canonical_url in front matter[/red]")
         raise SystemExit(1)
@@ -4095,7 +4292,10 @@ def unarchive(file: str, json_output: bool):
 
     if not article.canonical_url:
         if json_output:
-            print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+            print(json_module.dumps({
+                "success": False,
+                "error": "Missing canonical_url in front matter",
+            }))
         else:
             console.print("[red]Error: Missing canonical_url in front matter[/red]")
         raise SystemExit(1)
@@ -4167,7 +4367,9 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
     # Cache TTL: 1 hour
     CACHE_TTL_SECONDS = 3600
 
-    def fetch_stats_for_platform(canonical_url: str, platform_name: str, article_id: str) -> dict | None:
+    def fetch_stats_for_platform(
+        canonical_url: str, platform_name: str, article_id: str,
+    ) -> dict | None:
         """Fetch stats from platform API and cache them."""
         try:
             api_key = get_api_key(platform_name)
@@ -4251,7 +4453,10 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
         article = parse_markdown_file(file)
         if not article.canonical_url:
             if json_output:
-                print(json_module.dumps({"success": False, "error": "Missing canonical_url in front matter"}))
+                print(json_module.dumps({
+                "success": False,
+                "error": "Missing canonical_url in front matter",
+            }))
             else:
                 console.print("[red]Error: Missing canonical_url in front matter[/red]")
             raise SystemExit(1)
@@ -4305,7 +4510,12 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                 # Check if platform supports stats
                 try:
                     api_key = get_api_key(platform_name)
-                    if api_key and not is_manual_mode_key(api_key) and not is_import_mode_key(api_key):
+                    has_real_key = (
+                        api_key
+                        and not is_manual_mode_key(api_key)
+                        and not is_import_mode_key(api_key)
+                    )
+                    if has_real_key:
                         platform_obj = get_platform(platform_name, api_key)
                         if platform_obj and not platform_obj.supports_stats:
                             platforms_without_stats.append(platform_name)
@@ -4361,7 +4571,11 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                 console.print(table)
 
             if platforms_without_stats:
-                console.print(f"\n[dim]Note: {', '.join(platforms_without_stats)} do not provide stats via API[/dim]")
+                no_stats = ', '.join(platforms_without_stats)
+                console.print(
+                    f"\n[dim]Note: {no_stats}"
+                    f" do not provide stats via API[/dim]"
+                )
 
         return
 
