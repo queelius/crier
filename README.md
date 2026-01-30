@@ -203,7 +203,7 @@ export CRIER_BLUESKY_API_KEY="handle.bsky.social:app-password"
 
 ## Markdown Format
 
-Crier reads standard markdown with YAML front matter:
+Crier reads standard markdown with YAML or TOML front matter:
 
 ```markdown
 ---
@@ -213,6 +213,21 @@ tags: [python, programming]
 canonical_url: https://myblog.com/my-post
 published: true
 ---
+
+Your content here...
+```
+
+TOML front matter is also supported (delimited by `+++`):
+
+```markdown
++++
+title = "My Amazing Post"
+description = "A brief description"
+tags = ["python", "programming"]
+
+[extra]
+canonical_url = "https://myblog.com/my-post"
++++
 
 Your content here...
 ```
@@ -475,6 +490,82 @@ Thread splitting priority:
 3. Sentence boundaries (if paragraph too long)
 
 Supported platforms: Bluesky, Mastodon.
+
+## Pre-Publish Validation
+
+Validate content before publishing with `crier check`:
+
+```bash
+# Check a single file
+crier check post.md
+
+# Check with platform context (validates platform-specific limits)
+crier check post.md --to bluesky --to devto
+
+# Check all content
+crier check --all
+
+# Strict mode: warnings become errors
+crier check post.md --strict
+
+# Check external links (opt-in, makes HTTP requests)
+crier check post.md --check-links
+
+# JSON output
+crier check post.md --json
+```
+
+**Checks performed:**
+| Check | Severity | Description |
+|-------|----------|-------------|
+| `missing-title` | error | No title in front matter |
+| `empty-body` | error | No content body |
+| `missing-date` | warning | No date field |
+| `missing-tags` | warning | No tags defined |
+| `title-length` | warning | Title exceeds recommended length |
+| `short-body` | warning | Very short content body |
+| `bluesky-length` | warning | Content exceeds Bluesky character limit |
+| `mastodon-length` | warning | Content exceeds Mastodon character limit |
+| `missing-description` | info | No description field |
+| `devto-canonical` | info | No canonical URL for dev.to |
+
+**Publish integration:** Pre-publish checks run automatically before publishing. Use `--no-check` to skip, `--strict` to block on warnings.
+
+**Severity overrides** in `.crier/config.yaml`:
+```yaml
+checks:
+  missing-tags: disabled    # Don't care about tags
+  missing-date: error       # Promote to error
+  short-body: disabled      # Allow short posts
+```
+
+## Quiet Mode
+
+Suppress non-essential output for scripting:
+
+```bash
+crier publish post.md --to devto --quiet
+crier audit --publish --yes --quiet
+crier search --tag python --quiet
+```
+
+Quiet mode only shows errors and final results. Combine with `--json` for fully parseable output.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success — all operations completed |
+| `1` | Failure — operation failed or validation error |
+| `2` | Partial — some operations succeeded, some failed |
+
+```bash
+# Check exit code in scripts
+crier publish post.md --to devto --batch
+if [ $? -eq 2 ]; then
+  echo "Some platforms failed, retrying..."
+fi
+```
 
 ## Getting API Keys
 

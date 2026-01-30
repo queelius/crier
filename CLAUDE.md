@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Crier is a CLI tool for cross-posting content to multiple platforms. It reads markdown files with YAML front matter and publishes them via platform APIs. Designed to be used with Claude Code for automated content distribution.
+Crier is a CLI tool for cross-posting content to multiple platforms. It reads markdown files with YAML or TOML front matter and publishes them via platform APIs. Designed to be used with Claude Code for automated content distribution.
 
 ## Development Commands
 
@@ -89,7 +89,17 @@ ruff format --check src/
 
 **Registry** (`registry.py`): Tracks publications in `.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
 
-**Converters** (`converters/markdown.py`): Parses markdown files with YAML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
+**Converters** (`converters/markdown.py`): Parses markdown files with YAML or TOML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
+
+**Utils** (`utils.py`): Shared pure utility functions (no CLI dependencies):
+- `truncate_at_sentence()` — Smart text truncation at sentence/word boundaries
+- `find_content_files()` — Discover content files using config paths/patterns
+- `parse_date_filter()` — Parse relative/absolute date strings
+- `get_content_date()` / `get_content_tags()` — Extract front matter metadata
+
+**Rewrite** (`rewrite.py`): Auto-rewrite orchestration for platform content adaptation:
+- `auto_rewrite_for_platform()` — LLM retry loop with configurable retries and truncation fallback
+- `AutoRewriteResult` dataclass for structured success/failure results
 
 **Skill** (`skill.py`): Claude Code skill installation. Loads `SKILL.md` from package resources and installs to `~/.claude/skills/crier/`.
 
@@ -427,7 +437,7 @@ checks:
 
 ## Testing
 
-Tests are in `tests/` with 643 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, and checker.
+Tests are in `tests/` with 721+ tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, and skill.
 
 **Running tests:**
 ```bash
