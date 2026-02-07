@@ -2,7 +2,7 @@
   "title": "Crier: CLI tool for cross-posting content to multiple platforms",
   "upload_type": "software",
   "description": "Crier is a command-line tool for cross-posting markdown content to multiple publishing platforms. It reads markdown files with YAML or TOML front matter and publishes them via platform APIs. Supports 13 platforms across blog (dev.to, Hashnode, Medium, Ghost, WordPress), newsletter (Buttondown), social (Bluesky, Mastodon, LinkedIn, Threads, Twitter), and announcement (Telegram, Discord) categories. Features include dry-run previews, publishing profiles, publication tracking, bulk audit and publish, LLM-powered auto-rewrite for short-form platforms, content threading, scheduling, pre-publish validation, and engagement analytics.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "license": {
     "id": "MIT"
   },

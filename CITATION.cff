@@ -6,7 +6,7 @@ abstract: >-
   platforms including dev.to, Hashnode, Medium, Ghost, WordPress,
   Bluesky, Mastodon, and more.
 type: software
-version: "0.9.0"
+version: "0.9.1"
 date-released: "2026-01-30"
 license: MIT
 repository-code: "https://github.com/queelius/crier"
