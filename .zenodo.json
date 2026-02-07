@@ -1,0 +1,50 @@
+{
+  "title": "Crier: CLI tool for cross-posting content to multiple platforms",
+  "upload_type": "software",
+  "description": "Crier is a command-line tool for cross-posting markdown content to multiple publishing platforms. It reads markdown files with YAML or TOML front matter and publishes them via platform APIs. Supports 13 platforms across blog (dev.to, Hashnode, Medium, Ghost, WordPress), newsletter (Buttondown), social (Bluesky, Mastodon, LinkedIn, Threads, Twitter), and announcement (Telegram, Discord) categories. Features include dry-run previews, publishing profiles, publication tracking, bulk audit and publish, LLM-powered auto-rewrite for short-form platforms, content threading, scheduling, pre-publish validation, and engagement analytics.",
+  "version": "0.9.0",
+  "license": {
+    "id": "MIT"
+  },
+  "keywords": [
+    "cross-posting",
+    "content-distribution",
+    "devto",
+    "hashnode",
+    "medium",
+    "ghost",
+    "wordpress",
+    "bluesky",
+    "mastodon",
+    "blogging",
+    "social-media",
+    "cli",
+    "python",
+    "markdown",
+    "publishing"
+  ],
+  "creators": [
+    {
+      "name": "Towell, Alexander",
+      "orcid": "0000-0001-6443-9897",
+      "affiliation": "Southern Illinois University Edwardsville"
+    }
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/queelius/crier",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://pypi.org/project/crier/",
+      "relation": "isIdenticalTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://queelius.github.io/crier/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ]
+}
