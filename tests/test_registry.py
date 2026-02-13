@@ -1,12 +1,18 @@
 """Tests for crier.registry module."""
 
+import os
+from unittest.mock import patch
+
 import pytest
+import yaml
 from pathlib import Path
 
 from crier.registry import (
     get_content_hash,
     get_file_content_hash,
     record_publication,
+    record_failure,
+    get_failures,
     is_published,
     has_content_changed,
     get_article,
@@ -680,3 +686,516 @@ class TestContentChangedEdgeCases:
         assert has_content_changed(
             "https://example.com/article", "sha256:abc", platform="bluesky"
         ) is True
+
+
+class TestAtomicWrite:
+    """Tests for atomic registry save behavior."""
+
+    def test_save_creates_no_temp_files(self, tmp_registry):
+        """After successful save, no temp files should remain."""
+        registry = load_registry()
+        registry["articles"]["https://example.com/test"] = {
+            "title": "Test",
+            "platforms": {},
+        }
+        save_registry(registry)
+
+        # No temp files should remain in registry dir
+        temp_files = list(tmp_registry.glob(".registry_*.tmp"))
+        assert temp_files == []
+
+    def test_save_preserves_data_on_write_error(self, tmp_registry):
+        """If write fails, original registry should be intact."""
+        # Set up initial data
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+
+        # Verify initial data is there
+        assert is_published("https://example.com/article", "devto")
+
+        # Simulate a write failure by making yaml.dump raise an error
+        with patch("crier.registry.yaml.dump", side_effect=IOError("Disk full")):
+            with pytest.raises(IOError, match="Disk full"):
+                save_registry({"version": 2, "articles": {"bad": "data"}})
+
+        # Original data should still be intact
+        registry = load_registry()
+        assert "https://example.com/article" in registry["articles"]
+
+    def test_save_cleans_up_temp_on_failure(self, tmp_registry):
+        """Temp file should be cleaned up on write failure."""
+        with patch("crier.registry.yaml.dump", side_effect=IOError("Disk full")):
+            with pytest.raises(IOError):
+                save_registry({"version": 2, "articles": {}})
+
+        # No temp files should remain
+        temp_files = list(tmp_registry.glob(".registry_*.tmp"))
+        assert temp_files == []
+
+    def test_atomic_replace_is_used(self, tmp_registry):
+        """Verify os.replace is called (not direct write)."""
+        with patch("crier.registry.os.replace", wraps=os.replace) as mock_replace:
+            save_registry({"version": 2, "articles": {}})
+            assert mock_replace.called
+
+    def test_concurrent_reads_during_write(self, tmp_registry):
+        """Registry should be readable even during a write."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+
+        # Read should work while a save is conceptually in progress
+        # (the atomic nature means the old file is intact until replace)
+        registry = load_registry()
+        assert "https://example.com/article" in registry["articles"]
+
+
+class TestErrorPersistence:
+    """Tests for error recording and retrieval."""
+
+    def test_record_failure_new_article(self, tmp_registry):
+        """record_failure creates article entry and records error."""
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            error_msg="API returned 500",
+        )
+
+        article = get_article("https://example.com/article")
+        assert article is not None
+        platform_data = article["platforms"]["devto"]
+        assert platform_data["last_error"] == "API returned 500"
+        assert "last_error_at" in platform_data
+
+    def test_record_failure_existing_article(self, tmp_registry):
+        """record_failure on existing article preserves other data."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            title="Test",
+        )
+
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            error_msg="Rate limited",
+        )
+
+        article = get_article("https://example.com/article")
+        # devto publication should still be there
+        assert "devto" in article["platforms"]
+        assert article["platforms"]["devto"]["id"] == "123"
+        # bluesky should have the error
+        assert article["platforms"]["bluesky"]["last_error"] == "Rate limited"
+
+    def test_success_clears_error(self, tmp_registry):
+        """Successful publication clears previous error."""
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            error_msg="Timeout",
+        )
+
+        # Now succeed
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+
+        article = get_article("https://example.com/article")
+        platform_data = article["platforms"]["devto"]
+        assert "last_error" not in platform_data
+        assert "last_error_at" not in platform_data
+
+    def test_get_failures_returns_failed(self, tmp_registry):
+        """get_failures returns list of failed publications."""
+        record_failure(
+            canonical_url="https://example.com/a",
+            platform="devto",
+            error_msg="500 error",
+        )
+        record_failure(
+            canonical_url="https://example.com/b",
+            platform="bluesky",
+            error_msg="Rate limited",
+        )
+
+        failures = get_failures()
+        assert len(failures) == 2
+
+        urls = {f["canonical_url"] for f in failures}
+        assert urls == {"https://example.com/a", "https://example.com/b"}
+
+    def test_get_failures_excludes_successful(self, tmp_registry):
+        """get_failures doesn't include successful publications."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+
+        failures = get_failures()
+        assert len(failures) == 0
+
+    def test_get_failures_mixed(self, tmp_registry):
+        """get_failures with mix of success and failure on same article."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+        )
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            error_msg="Auth failed",
+        )
+
+        failures = get_failures()
+        assert len(failures) == 1
+        assert failures[0]["platform"] == "bluesky"
+        assert failures[0]["error"] == "Auth failed"
+
+    def test_record_failure_updates_existing_error(self, tmp_registry):
+        """Recording a new failure overwrites the previous error."""
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            error_msg="First error",
+        )
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            error_msg="Second error",
+        )
+
+        article = get_article("https://example.com/article")
+        assert article["platforms"]["devto"]["last_error"] == "Second error"
+
+    def test_get_failures_empty_registry(self, tmp_registry):
+        """get_failures on empty registry returns empty list."""
+        failures = get_failures()
+        assert failures == []
+
+
+class TestRegistryCrashSafety:
+    """Tests for registry crash safety and atomic write resilience."""
+
+    def test_registry_survives_write_interrupt(self, tmp_registry):
+        """Save a valid registry, then mock os.replace to raise OSError,
+        verify original data is preserved by loading again."""
+        # First, record a valid publication
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            title="Original Article",
+        )
+
+        # Verify it's there
+        article = get_article("https://example.com/article")
+        assert article is not None
+        assert article["title"] == "Original Article"
+
+        # Now try to save new data but os.replace fails (simulating crash)
+        with patch("crier.registry.os.replace", side_effect=OSError("Disk failure")):
+            with pytest.raises(OSError, match="Disk failure"):
+                save_registry({"version": 2, "articles": {"https://example.com/new": {"title": "New", "platforms": {}}}})
+
+        # Original data should still be intact
+        registry = load_registry()
+        assert "https://example.com/article" in registry["articles"]
+        assert registry["articles"]["https://example.com/article"]["title"] == "Original Article"
+        # The failed write should NOT have been applied
+        assert "https://example.com/new" not in registry["articles"]
+
+    def test_temp_file_cleaned_up_on_error(self, tmp_registry):
+        """Mock yaml.dump to raise an exception, verify no .tmp files remain in the directory."""
+        with patch("crier.registry.yaml.dump", side_effect=Exception("Serialization error")):
+            with pytest.raises(Exception, match="Serialization error"):
+                save_registry({"version": 2, "articles": {}})
+
+        # No temp files should remain
+        temp_files = list(tmp_registry.glob(".registry_*.tmp"))
+        assert temp_files == []
+
+    def test_concurrent_loads_during_write(self, tmp_registry):
+        """Use threading to do a load_registry while save_registry is happening,
+        verify no corruption (both operations complete without error)."""
+        import threading
+
+        # Set up initial data
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            title="Concurrent Test",
+        )
+
+        errors = []
+
+        def load_in_thread():
+            """Load registry in a separate thread."""
+            try:
+                registry = load_registry()
+                # Should always get valid data (either old or new)
+                assert "articles" in registry
+                assert "version" in registry
+            except Exception as e:
+                errors.append(e)
+
+        def save_in_thread():
+            """Save registry in a separate thread."""
+            try:
+                registry = load_registry()
+                registry["articles"]["https://example.com/article"]["title"] = "Updated"
+                save_registry(registry)
+            except Exception as e:
+                errors.append(e)
+
+        # Run save and load concurrently
+        save_thread = threading.Thread(target=save_in_thread)
+        load_thread = threading.Thread(target=load_in_thread)
+
+        save_thread.start()
+        load_thread.start()
+
+        save_thread.join(timeout=5)
+        load_thread.join(timeout=5)
+
+        # Neither thread should have errored
+        assert errors == [], f"Threading errors: {errors}"
+
+        # Final state should be valid
+        registry = load_registry()
+        assert "articles" in registry
+        assert "https://example.com/article" in registry["articles"]
+
+
+class TestErrorClearOnSuccess:
+    """Tests for error clearing behavior when publication succeeds."""
+
+    def test_record_failure_then_success_clears_error(self, tmp_registry):
+        """Record failure for a platform, then record_publication for same platform,
+        verify last_error is gone."""
+        record_failure(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            error_msg="Connection timeout",
+        )
+
+        # Verify error is recorded
+        article = get_article("https://example.com/article")
+        assert "last_error" in article["platforms"]["devto"]
+        assert article["platforms"]["devto"]["last_error"] == "Connection timeout"
+
+        # Now succeed on the same platform
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="999",
+            url="https://dev.to/article",
+            title="Success Article",
+        )
+
+        # Error should be cleared
+        article = get_article("https://example.com/article")
+        platform_data = article["platforms"]["devto"]
+        assert "last_error" not in platform_data
+        assert "last_error_at" not in platform_data
+        assert platform_data["id"] == "999"
+
+    def test_get_failures_excludes_successful_platforms(self, tmp_registry):
+        """Record failure for one platform and success for another on same article,
+        verify get_failures only returns the failed one."""
+        canonical_url = "https://example.com/article"
+
+        # Record failure on bluesky
+        record_failure(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            error_msg="Auth failed",
+        )
+
+        # Record success on devto
+        record_publication(
+            canonical_url=canonical_url,
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/article",
+            title="Test Article",
+        )
+
+        failures = get_failures()
+        assert len(failures) == 1
+        assert failures[0]["platform"] == "bluesky"
+        assert failures[0]["error"] == "Auth failed"
+        assert failures[0]["canonical_url"] == canonical_url
+
+    def test_multiple_failures_same_article(self, tmp_registry):
+        """Record failures for 2 different platforms on same article,
+        verify get_failures returns both."""
+        canonical_url = "https://example.com/article"
+
+        record_failure(
+            canonical_url=canonical_url,
+            platform="devto",
+            error_msg="Server error 500",
+        )
+        record_failure(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            error_msg="Rate limited",
+        )
+
+        failures = get_failures()
+        assert len(failures) == 2
+
+        platforms = {f["platform"] for f in failures}
+        assert platforms == {"devto", "bluesky"}
+
+        errors = {f["platform"]: f["error"] for f in failures}
+        assert errors["devto"] == "Server error 500"
+        assert errors["bluesky"] == "Rate limited"
+
+
+class TestRegistryWriteAfterPublish:
+    """Tests for registry persistence after various operations."""
+
+    def test_save_preserves_all_fields(self, tmp_registry):
+        """Create a registry with complex data (threads, stats, archived), save and reload,
+        verify all data intact."""
+        from crier.registry import record_thread_publication, save_stats
+
+        canonical_url = "https://example.com/complex-article"
+
+        # Record a thread publication
+        record_thread_publication(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            root_id="root-001",
+            root_url="https://bsky.app/post/root-001",
+            thread_ids=["root-001", "reply-002", "reply-003"],
+            thread_urls=[
+                "https://bsky.app/post/root-001",
+                "https://bsky.app/post/reply-002",
+                "https://bsky.app/post/reply-003",
+            ],
+            title="Thread Article",
+            source_file="posts/thread.md",
+            content_hash="sha256:threadhash123",
+            rewritten=True,
+            rewrite_author="claude-code",
+        )
+
+        # Save stats
+        save_stats(
+            canonical_url=canonical_url,
+            platform="bluesky",
+            views=100,
+            likes=42,
+            comments=7,
+            reposts=15,
+        )
+
+        # Archive the article
+        set_archived(canonical_url, archived=True)
+
+        # Now reload and verify everything is intact
+        registry = load_registry()
+        article = registry["articles"][canonical_url]
+
+        # Check top-level fields
+        assert article["title"] == "Thread Article"
+        assert article["source_file"] == "posts/thread.md"
+        assert article["content_hash"] == "sha256:threadhash123"
+        assert article["archived"] is True
+        assert "archived_at" in article
+
+        # Check thread platform data
+        platform_data = article["platforms"]["bluesky"]
+        assert platform_data["id"] == "root-001"
+        assert platform_data["url"] == "https://bsky.app/post/root-001"
+        assert platform_data["is_thread"] is True
+        assert platform_data["thread_ids"] == ["root-001", "reply-002", "reply-003"]
+        assert len(platform_data["thread_urls"]) == 3
+        assert platform_data["rewritten"] is True
+        assert platform_data["rewrite_author"] == "claude-code"
+
+        # Check stats
+        assert platform_data["stats"]["views"] == 100
+        assert platform_data["stats"]["likes"] == 42
+        assert platform_data["stats"]["comments"] == 7
+        assert platform_data["stats"]["reposts"] == 15
+        assert "fetched_at" in platform_data["stats"]
+
+    def test_save_with_unicode_content(self, tmp_registry):
+        """Registry with unicode titles and content, save and reload, verify preserved."""
+        record_publication(
+            canonical_url="https://example.com/unicode-article",
+            platform="devto",
+            article_id="uni-123",
+            url="https://dev.to/unicode-article",
+            title="Artigo em Portugues com acentos: caca, maca, cafe",
+            source_file="posts/unicode.md",
+        )
+
+        record_publication(
+            canonical_url="https://example.com/japanese-article",
+            platform="hashnode",
+            article_id="jp-456",
+            url="https://hashnode.com/jp-article",
+            title="日本語のテスト記事",
+            source_file="posts/japanese.md",
+        )
+
+        record_publication(
+            canonical_url="https://example.com/emoji-article",
+            platform="bluesky",
+            article_id="em-789",
+            url="https://bsky.app/post/em-789",
+            title="Article with emojis in metadata",
+            posted_content="Check out this article! It covers Python and Rust topics.",
+            rewritten=True,
+        )
+
+        # Reload and verify
+        registry = load_registry()
+
+        # Portuguese
+        article1 = registry["articles"]["https://example.com/unicode-article"]
+        assert article1["title"] == "Artigo em Portugues com acentos: caca, maca, cafe"
+
+        # Japanese
+        article2 = registry["articles"]["https://example.com/japanese-article"]
+        assert article2["title"] == "日本語のテスト記事"
+
+        # Emoji content
+        article3 = registry["articles"]["https://example.com/emoji-article"]
+        assert article3["platforms"]["bluesky"]["posted_content"] == "Check out this article! It covers Python and Rust topics."
+
+    def test_save_empty_registry(self, tmp_registry):
+        """Save an empty registry (no articles), reload, verify structure intact."""
+        empty_registry = {"version": 2, "articles": {}}
+        save_registry(empty_registry)
+
+        # Reload
+        registry = load_registry()
+
+        assert registry["version"] == 2
+        assert registry["articles"] == {}
+        assert isinstance(registry["articles"], dict)

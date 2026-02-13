@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult
 
 
@@ -61,11 +59,11 @@ class DevTo(Platform):
         if article.canonical_url:
             data["article"]["canonical_url"] = article.canonical_url
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/articles",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 201:
@@ -100,11 +98,11 @@ class DevTo(Platform):
         if article.canonical_url:
             data["article"]["canonical_url"] = article.canonical_url
 
-        resp = requests.put(
+        resp = self.retry_request(
+            "put",
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -124,11 +122,11 @@ class DevTo(Platform):
 
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
         """List your articles on dev.to."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/articles/me",
             headers=self.headers,
             params={"per_page": limit},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -137,10 +135,10 @@ class DevTo(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific article by ID."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -152,11 +150,11 @@ class DevTo(Platform):
 
         Note: dev.to doesn't have true delete, but we can unpublish.
         """
-        resp = requests.put(
+        resp = self.retry_request(
+            "put",
             f"{self.base_url}/articles/{article_id}",
             headers=self.headers,
             json={"article": {"published": False}},
-            timeout=30,
         )
         if resp.status_code == 200:
             return DeleteResult(success=True, platform=self.name)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "crier"
-version = "0.9.1"
+version = "1.0.0"
 description = "Cross-post your content to dev.to, Hashnode, Medium, and more"
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,7 @@ dependencies = [
     "questionary>=2.0",
     "pyperclip>=1.8.0",
     "dateparser>=1.1.0",
+    "feedgen>=1.0.0",
 ]
 
 [project.optional-dependencies]

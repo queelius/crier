@@ -3,8 +3,6 @@
 import base64
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -87,11 +85,11 @@ class WordPress(Platform):
         if article.tags:
             data["tags"] = article.tags  # Will be created if they don't exist
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/posts",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -122,11 +120,11 @@ class WordPress(Platform):
         if article.tags:
             data["tags"] = article.tags
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -151,11 +149,11 @@ class WordPress(Platform):
             "status": "publish,draft",
         }
 
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/posts",
             headers=self.headers,
             params=params,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -173,10 +171,10 @@ class WordPress(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific post by ID."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -185,10 +183,10 @@ class WordPress(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete (trash) a post on WordPress."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.base_url}/posts/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
         if resp.status_code == 200:
             return DeleteResult(success=True, platform=self.name)

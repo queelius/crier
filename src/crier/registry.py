@@ -7,6 +7,8 @@ Registry Format v2:
 """
 
 import hashlib
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -113,7 +115,11 @@ def load_registry(base_path: Path | None = None) -> dict[str, Any]:
 
 
 def save_registry(registry: dict[str, Any], base_path: Path | None = None) -> None:
-    """Save the registry to disk."""
+    """Save the registry to disk using atomic write.
+
+    Writes to a temp file first, then atomically replaces the target.
+    This prevents data loss if the process is killed mid-write.
+    """
     registry_path = get_registry_path(base_path)
 
     # Create directory if needed
@@ -122,8 +128,23 @@ def save_registry(registry: dict[str, Any], base_path: Path | None = None) -> No
     # Ensure version is current
     registry["version"] = CURRENT_VERSION
 
-    with open(registry_path, "w") as f:
-        yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
+    # Atomic write: temp file in same directory, then os.replace()
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=registry_path.parent,
+            prefix=".registry_",
+            suffix=".tmp",
+        )
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(registry, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, registry_path)
+    except BaseException:
+        # Clean up temp file on any failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def record_publication(
@@ -195,6 +216,82 @@ def record_publication(
 
     article["platforms"][platform] = platform_data
     save_registry(registry, base_path)
+
+
+def record_failure(
+    canonical_url: str,
+    platform: str,
+    error_msg: str,
+    title: str | None = None,
+    source_file: str | Path | None = None,
+    base_path: Path | None = None,
+) -> None:
+    """Record a failed publication attempt.
+
+    Creates or updates an article entry with error information
+    for the specified platform. Does not overwrite successful publication data.
+
+    Args:
+        canonical_url: The canonical URL of the source article
+        platform: Platform name that failed
+        error_msg: Error description
+        title: Article title (optional)
+        source_file: Path to the source file (optional)
+        base_path: Base path for registry lookup
+    """
+    registry = load_registry(base_path)
+
+    if canonical_url not in registry["articles"]:
+        registry["articles"][canonical_url] = {
+            "title": title,
+            "source_file": str(source_file) if source_file else None,
+            "content_hash": None,
+            "platforms": {},
+        }
+
+    article = registry["articles"][canonical_url]
+    if title:
+        article["title"] = title
+    if source_file:
+        article["source_file"] = str(source_file)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # If the platform already has a successful publication, just add error fields
+    if platform in article["platforms"]:
+        article["platforms"][platform]["last_error"] = error_msg
+        article["platforms"][platform]["last_error_at"] = now
+    else:
+        article["platforms"][platform] = {
+            "last_error": error_msg,
+            "last_error_at": now,
+        }
+
+    save_registry(registry, base_path)
+
+
+def get_failures(base_path: Path | None = None) -> list[dict[str, Any]]:
+    """Get all publications with recorded failures.
+
+    Returns list of dicts with: canonical_url, platform, error, error_at, title, source_file.
+    Only includes entries that have last_error set (excludes successful-only entries).
+    """
+    registry = load_registry(base_path)
+    failures = []
+
+    for canonical_url, article in registry.get("articles", {}).items():
+        for platform, platform_data in article.get("platforms", {}).items():
+            if "last_error" in platform_data:
+                failures.append({
+                    "canonical_url": canonical_url,
+                    "platform": platform,
+                    "error": platform_data["last_error"],
+                    "error_at": platform_data.get("last_error_at"),
+                    "title": article.get("title"),
+                    "source_file": article.get("source_file"),
+                })
+
+    return failures
 
 
 def get_article(canonical_url: str, base_path: Path | None = None) -> dict[str, Any] | None:

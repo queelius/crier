@@ -8,9 +8,7 @@ For most users, manual mode (--manual flag) is the easier option.
 
 from typing import Any
 
-import requests
-
-from .base import Article, DeleteResult, Platform, PublishResult
+from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult
 
 
 class LinkedIn(Platform):
@@ -27,6 +25,7 @@ class LinkedIn(Platform):
     base_url = "https://api.linkedin.com/v2"
     compose_url = "https://www.linkedin.com/feed/?shareActive=true"
     max_content_length = 3000
+    supports_stats = True
     api_key_url = None  # Requires OAuth app setup
 
     def __init__(self, api_key: str, person_urn: str | None = None):
@@ -68,10 +67,10 @@ class LinkedIn(Platform):
         if self.person_urn:
             return self.person_urn
 
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/userinfo",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -137,11 +136,11 @@ class LinkedIn(Platform):
                 }
             ]
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/ugcPosts",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -174,10 +173,10 @@ class LinkedIn(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific post."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/ugcPosts/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -186,10 +185,10 @@ class LinkedIn(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete a post."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.base_url}/ugcPosts/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
         if resp.status_code == 204:
             return DeleteResult(success=True, platform=self.name)
@@ -197,4 +196,26 @@ class LinkedIn(Platform):
             success=False,
             platform=self.name,
             error=f"{resp.status_code}: {resp.text}",
+        )
+
+    def get_stats(self, article_id: str) -> ArticleStats | None:
+        """Get engagement stats for a LinkedIn post.
+
+        LinkedIn provides reactions and comments via the socialActions API.
+        """
+        resp = self.retry_request(
+            "get",
+            f"https://api.linkedin.com/v2/socialActions/{article_id}",
+            headers=self.headers,
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        likes = data.get("likesSummary", {}).get("totalLikes", 0)
+        comments = data.get("commentsSummary", {}).get("totalFirstLevelComments", 0)
+
+        return ArticleStats(
+            likes=likes,
+            comments=comments,
         )

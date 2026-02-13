@@ -894,3 +894,43 @@ class TestContentPathManipulation:
         add_content_path("only")
         assert remove_content_path("only") is True
         assert get_content_paths() == []
+
+
+class TestNetworkConfig:
+    """Tests for network retry/timeout configuration."""
+
+    def test_defaults(self, tmp_config):
+        from crier.config import (
+            get_network_retry_count,
+            get_network_retry_backoff,
+            get_network_timeout,
+        )
+        assert get_network_retry_count() == 3
+        assert get_network_retry_backoff() == 1.0
+        assert get_network_timeout() == 30
+
+    def test_set_and_get(self, tmp_config):
+        from crier.config import (
+            set_network_config,
+            get_network_retry_count,
+            get_network_retry_backoff,
+            get_network_timeout,
+        )
+        set_network_config(retry_count=5, retry_backoff=2.0, timeout=60)
+        assert get_network_retry_count() == 5
+        assert get_network_retry_backoff() == 2.0
+        assert get_network_timeout() == 60
+
+    def test_partial_update(self, tmp_config):
+        from crier.config import (
+            set_network_config,
+            get_network_retry_count,
+            get_network_timeout,
+        )
+        set_network_config(retry_count=1)
+        assert get_network_retry_count() == 1
+        assert get_network_timeout() == 30  # unchanged default
+
+    def test_get_network_config_empty(self, tmp_config):
+        from crier.config import get_network_config
+        assert get_network_config() == {}

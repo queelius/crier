@@ -104,6 +104,16 @@ class TestDoctorCommand:
             assert result.exit_code == 0
             assert "devto" in result.output
 
+    def test_doctor_json_output(self, runner, mock_config_and_registry):
+        """Doctor --json outputs valid JSON."""
+        result = runner.invoke(cli, ["doctor", "--json"])
+        assert result.exit_code == 0
+        import json
+        output = json.loads(result.output)
+        assert output["command"] == "doctor"
+        assert "platforms" in output
+        assert "summary" in output
+
 
 class TestConfigCommands:
     """Tests for crier config subcommands."""
@@ -2154,3 +2164,577 @@ class TestRegistryDeletionIntegration:
         result = runner.invoke(cli, ["audit"])
         assert result.exit_code == 0
         assert "archived.md" in result.output
+
+
+class TestPublishErrorTracking:
+    """Tests that verify error recording during publish."""
+
+    @patch("crier.cli.get_platform")
+    def test_publish_records_failure_on_exception(self, mock_get_platform, runner, mock_config_and_registry):
+        """Mock platform.publish() to raise Exception, verify record_failure is called and exit code is correct."""
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.side_effect = Exception("Connection timeout")
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        with patch("crier.cli.record_failure") as mock_record_failure:
+            result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto"])
+
+        assert result.exit_code == 1
+        mock_record_failure.assert_called_once()
+        call_kwargs = mock_record_failure.call_args
+        assert call_kwargs[1]["canonical_url"] == "https://example.com/test"
+        assert call_kwargs[1]["platform"] == "devto"
+        assert "Connection timeout" in call_kwargs[1]["error_msg"]
+
+    @patch("crier.cli.get_platform")
+    def test_publish_records_failure_on_api_error(self, mock_get_platform, runner, mock_config_and_registry):
+        """Mock platform.publish() to return PublishResult(success=False), verify record_failure is called."""
+        from crier.platforms.base import PublishResult
+
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.return_value = PublishResult(
+            success=False,
+            platform="devto",
+            error="API error: rate limited",
+        )
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        with patch("crier.cli.record_failure") as mock_record_failure:
+            result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto"])
+
+        mock_record_failure.assert_called_once()
+        call_kwargs = mock_record_failure.call_args
+        assert call_kwargs[1]["canonical_url"] == "https://example.com/test"
+        assert call_kwargs[1]["platform"] == "devto"
+        assert "API error" in call_kwargs[1]["error_msg"]
+
+    @patch("crier.cli.get_platform")
+    def test_publish_partial_success_exit_code_2(self, mock_get_platform, runner, mock_config_and_registry):
+        """Publish to 2 platforms, one succeeds and one fails, verify exit code 2 (partial)."""
+        from crier.platforms.base import PublishResult
+
+        # Make get_platform return different behaviour per platform
+        def platform_factory(name):
+            cls = Mock()
+            inst = Mock()
+            if name == "devto":
+                inst.publish.return_value = PublishResult(
+                    success=True,
+                    platform="devto",
+                    article_id="123",
+                    url="https://dev.to/test",
+                )
+            else:
+                inst.publish.return_value = PublishResult(
+                    success=False,
+                    platform="bluesky",
+                    error="Failed to post",
+                )
+            cls.return_value = inst
+            return cls
+
+        mock_get_platform.side_effect = platform_factory
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto", "--to", "bluesky"])
+        assert result.exit_code == 2
+
+    @patch("crier.cli.get_platform")
+    def test_publish_all_fail_exit_code_1(self, mock_get_platform, runner, mock_config_and_registry):
+        """Publish to 2 platforms, both fail, verify exit code 1."""
+        from crier.platforms.base import PublishResult
+
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.return_value = PublishResult(
+            success=False,
+            platform="devto",
+            error="Server error",
+        )
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto", "--to", "bluesky"])
+        assert result.exit_code == 1
+
+
+class TestAuditFailedFlag:
+    """Tests for crier audit --failed."""
+
+    def test_audit_failed_no_failures(self, runner, mock_config_and_registry):
+        """No failures recorded, shows 'No recorded failures'."""
+        result = runner.invoke(cli, ["audit", "--failed"])
+        assert result.exit_code == 0
+        assert "No recorded failures" in result.output
+
+    def test_audit_failed_shows_table(self, runner, mock_config_and_registry):
+        """Record some failures in registry, verify table output."""
+        from crier.registry import record_failure
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        test_file = posts_dir / "fail-test.md"
+        test_file.write_text("---\ntitle: Fail Test\ncanonical_url: https://example.com/fail\n---\nContent.")
+
+        record_failure(
+            canonical_url="https://example.com/fail",
+            platform="devto",
+            error_msg="API rate limit exceeded",
+            title="Fail Test",
+            source_file=str(test_file),
+        )
+
+        result = runner.invoke(cli, ["audit", "--failed"])
+        assert result.exit_code == 0
+        assert "Failed Publications" in result.output
+        assert "devto" in result.output
+        assert "API rate limit" in result.output
+
+    def test_audit_failed_json_output(self, runner, mock_config_and_registry):
+        """Same with --json flag, verify JSON structure."""
+        import json
+
+        from crier.registry import record_failure
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        test_file = posts_dir / "fail-test.md"
+        test_file.write_text("---\ntitle: Fail Test\ncanonical_url: https://example.com/fail\n---\nContent.")
+
+        record_failure(
+            canonical_url="https://example.com/fail",
+            platform="devto",
+            error_msg="API error 500",
+            title="Fail Test",
+            source_file=str(test_file),
+        )
+
+        result = runner.invoke(cli, ["audit", "--failed", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "audit"
+        assert data["mode"] == "failed"
+        assert len(data["failures"]) == 1
+        assert data["failures"][0]["platform"] == "devto"
+        assert data["failures"][0]["error"] == "API error 500"
+        assert data["summary"]["total_failures"] == 1
+
+    def test_audit_failed_retry_no_failures(self, runner, mock_config_and_registry):
+        """--retry with no failures shows message."""
+        result = runner.invoke(cli, ["audit", "--retry"])
+        assert result.exit_code == 0
+        assert "No recorded failures" in result.output
+
+
+class TestAuditRetryFlag:
+    """Tests for crier audit --retry."""
+
+    @patch("crier.cli.get_platform")
+    def test_audit_retry_success(self, mock_get_platform, runner, mock_config_and_registry):
+        """Record a failure, mock successful re-publish, verify success message and exit code 0."""
+        from crier.platforms.base import PublishResult
+        from crier.registry import record_failure
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        test_file = posts_dir / "retry-test.md"
+        test_file.write_text("""\
+---
+title: Retry Test
+canonical_url: https://example.com/retry
+---
+
+Content for retry.
+""")
+
+        record_failure(
+            canonical_url="https://example.com/retry",
+            platform="devto",
+            error_msg="Temporary server error",
+            title="Retry Test",
+            source_file=str(test_file),
+        )
+
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.return_value = PublishResult(
+            success=True,
+            platform="devto",
+            article_id="456",
+            url="https://dev.to/retry-test",
+        )
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        result = runner.invoke(cli, ["audit", "--retry"])
+        assert result.exit_code == 0
+        assert "Retry complete" in result.output
+        assert "1 succeeded" in result.output
+
+    def test_audit_retry_dry_run(self, runner, mock_config_and_registry):
+        """Record a failure, use --retry --dry-run, verify 'would_retry' without publish."""
+        import json
+
+        from crier.registry import record_failure
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        test_file = posts_dir / "retry-dry.md"
+        test_file.write_text("""\
+---
+title: Retry Dry
+canonical_url: https://example.com/retry-dry
+---
+
+Content for dry retry.
+""")
+
+        record_failure(
+            canonical_url="https://example.com/retry-dry",
+            platform="devto",
+            error_msg="Server unavailable",
+            title="Retry Dry",
+            source_file=str(test_file),
+        )
+
+        result = runner.invoke(cli, ["audit", "--retry", "--dry-run", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["mode"] == "retry"
+        assert len(data["results"]) == 1
+        assert data["results"][0]["action"] == "would_retry"
+        assert data["results"][0]["success"] is True
+
+    def test_audit_retry_source_not_found(self, runner, mock_config_and_registry):
+        """Record a failure with nonexistent source file, verify error handling."""
+        import json
+
+        from crier.registry import record_failure
+
+        record_failure(
+            canonical_url="https://example.com/gone",
+            platform="devto",
+            error_msg="Previous error",
+            title="Gone Article",
+            source_file="/nonexistent/path/gone.md",
+        )
+
+        result = runner.invoke(cli, ["audit", "--retry", "--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["mode"] == "retry"
+        assert len(data["results"]) == 1
+        assert data["results"][0]["success"] is False
+        assert "Source file not found" in data["results"][0]["error"]
+
+    @patch("crier.cli.get_platform")
+    def test_audit_retry_partial_exit_code(self, mock_get_platform, runner, mock_config_and_registry):
+        """Two failures, one retry succeeds one fails, verify exit code 2."""
+        from crier.platforms.base import PublishResult
+        from crier.registry import record_failure
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+
+        # First failure - with existing source file
+        test_file1 = posts_dir / "retry1.md"
+        test_file1.write_text("""\
+---
+title: Retry One
+canonical_url: https://example.com/retry1
+---
+
+Content one.
+""")
+        record_failure(
+            canonical_url="https://example.com/retry1",
+            platform="devto",
+            error_msg="Error one",
+            title="Retry One",
+            source_file=str(test_file1),
+        )
+
+        # Second failure - with existing source file
+        test_file2 = posts_dir / "retry2.md"
+        test_file2.write_text("""\
+---
+title: Retry Two
+canonical_url: https://example.com/retry2
+---
+
+Content two.
+""")
+        record_failure(
+            canonical_url="https://example.com/retry2",
+            platform="devto",
+            error_msg="Error two",
+            title="Retry Two",
+            source_file=str(test_file2),
+        )
+
+        # Mock platform: first call succeeds, second fails
+        call_count = {"n": 0}
+
+        def mock_publish(article):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return PublishResult(
+                    success=True,
+                    platform="devto",
+                    article_id="789",
+                    url="https://dev.to/retry1",
+                )
+            else:
+                return PublishResult(
+                    success=False,
+                    platform="devto",
+                    error="Still failing",
+                )
+
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.side_effect = mock_publish
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        result = runner.invoke(cli, ["audit", "--retry"])
+        assert result.exit_code == 2
+
+
+class TestFeedCommand:
+    """Tests for crier feed."""
+
+    @patch("crier.feed.get_site_base_url", return_value="https://example.com")
+    def test_feed_rss_output(self, mock_base_url, runner, mock_config_and_registry):
+        """Create content file, run feed command, verify RSS XML output."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "post1.md").write_text("""\
+---
+title: Feed Post One
+date: 2025-06-01
+canonical_url: https://example.com/post1
+tags: [python]
+---
+
+This is the body of feed post one.
+""")
+
+        result = runner.invoke(cli, ["feed", str(posts_dir)])
+        assert result.exit_code == 0
+        assert "<?xml" in result.output
+        assert "<rss" in result.output
+        assert "Feed Post One" in result.output
+
+    @patch("crier.feed.get_site_base_url", return_value="https://example.com")
+    def test_feed_atom_format(self, mock_base_url, runner, mock_config_and_registry):
+        """Same with --format atom."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "post1.md").write_text("""\
+---
+title: Atom Post
+date: 2025-06-01
+canonical_url: https://example.com/atom
+---
+
+Atom feed content.
+""")
+
+        result = runner.invoke(cli, ["feed", str(posts_dir), "--format", "atom"])
+        assert result.exit_code == 0
+        assert "<?xml" in result.output
+        assert "<feed" in result.output
+        assert "Atom Post" in result.output
+
+    @patch("crier.feed.get_site_base_url", return_value="https://example.com")
+    @patch("crier.cli.console")
+    def test_feed_output_file(self, mock_console, mock_base_url, runner, mock_config_and_registry):
+        """Use --output flag, verify file written."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "post1.md").write_text("""\
+---
+title: Output Post
+date: 2025-06-01
+canonical_url: https://example.com/output
+---
+
+Output file content.
+""")
+
+        output_path = mock_config_and_registry["tmp_path"] / "feed.xml"
+        result = runner.invoke(cli, ["feed", str(posts_dir), "--output", str(output_path)])
+        assert result.exit_code == 0
+        assert output_path.exists()
+        feed_content = output_path.read_text()
+        assert "<?xml" in feed_content
+        assert "Output Post" in feed_content
+
+    def test_feed_no_content(self, runner, mock_config_and_registry):
+        """No content files, verify exit code 1."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        # No files created
+        result = runner.invoke(cli, ["feed", str(posts_dir)])
+        assert result.exit_code == 1
+
+    @patch("crier.feed.get_site_base_url", return_value="https://example.com")
+    def test_feed_with_tag_filter(self, mock_base_url, runner, mock_config_and_registry):
+        """Use --tag flag."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "python-post.md").write_text("""\
+---
+title: Python Post
+date: 2025-06-01
+tags: [python]
+canonical_url: https://example.com/python
+---
+
+Python content.
+""")
+        (posts_dir / "js-post.md").write_text("""\
+---
+title: JS Post
+date: 2025-06-01
+tags: [javascript]
+canonical_url: https://example.com/js
+---
+
+JS content.
+""")
+
+        result = runner.invoke(cli, ["feed", str(posts_dir), "--tag", "python"])
+        assert result.exit_code == 0
+        assert "Python Post" in result.output
+        assert "JS Post" not in result.output
+
+    @patch("crier.feed.get_site_base_url", return_value="https://example.com")
+    def test_feed_with_limit(self, mock_base_url, runner, mock_config_and_registry):
+        """Use --limit flag."""
+        posts_dir = mock_config_and_registry["posts_dir"]
+        for i in range(5):
+            (posts_dir / f"post{i}.md").write_text(f"""\
+---
+title: Post {i}
+date: 2025-0{i+1}-01
+canonical_url: https://example.com/post{i}
+---
+
+Content {i}.
+""")
+
+        result = runner.invoke(cli, ["feed", str(posts_dir), "--limit", "2"])
+        assert result.exit_code == 0
+        assert "<?xml" in result.output
+        # Should only have 2 items (the most recent ones)
+        # Count <item> tags for RSS
+        assert result.output.count("<item>") == 2
+
+
+class TestExitCodes:
+    """Tests for consistent exit codes."""
+
+    @patch("crier.cli.get_platform")
+    def test_publish_success_exit_0(self, mock_get_platform, runner, mock_config_and_registry):
+        """Successful publish returns 0."""
+        from crier.platforms.base import PublishResult
+
+        mock_platform_cls = Mock()
+        mock_platform = Mock()
+        mock_platform.publish.return_value = PublishResult(
+            success=True,
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+        )
+        mock_platform_cls.return_value = mock_platform
+        mock_get_platform.return_value = mock_platform_cls
+
+        test_file = mock_config_and_registry["posts_dir"] / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto"])
+        assert result.exit_code == 0
+
+    def test_audit_no_missing_exit_0(self, runner, mock_config_and_registry):
+        """Audit with nothing missing returns 0."""
+        from crier.registry import record_publication
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        test_file = posts_dir / "test.md"
+        test_file.write_text("""\
+---
+title: Test Article
+canonical_url: https://example.com/test
+---
+
+Content here.
+""")
+
+        # Record it as already published to all configured platforms
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/test",
+            source_file=str(test_file),
+        )
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="bluesky",
+            article_id="456",
+            url="https://bsky.app/test",
+            source_file=str(test_file),
+        )
+        record_publication(
+            canonical_url="https://example.com/test",
+            platform="twitter",
+            article_id="789",
+            url="https://twitter.com/test",
+            source_file=str(test_file),
+        )
+
+        result = runner.invoke(cli, ["audit"])
+        assert result.exit_code == 0

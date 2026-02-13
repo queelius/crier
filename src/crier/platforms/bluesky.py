@@ -3,8 +3,6 @@
 from datetime import datetime, timezone
 from typing import Any
 
-import requests
-
 from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult, ThreadPublishResult
 
 
@@ -42,13 +40,13 @@ class Bluesky(Platform):
 
     def _create_session(self) -> bool:
         """Create an authenticated session."""
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/com.atproto.server.createSession",
             json={
                 "identifier": self.handle,
                 "password": self.app_password,
             },
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -114,7 +112,8 @@ class Bluesky(Platform):
                 },
             }
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/com.atproto.repo.createRecord",
             headers=self._get_headers(),
             json={
@@ -122,7 +121,6 @@ class Bluesky(Platform):
                 "collection": "app.bsky.feed.post",
                 "record": record,
             },
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -159,11 +157,11 @@ class Bluesky(Platform):
         if not self._create_session():
             return []
 
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/app.bsky.feed.getAuthorFeed",
             headers=self._get_headers(),
             params={"actor": self.did, "limit": limit},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -191,11 +189,11 @@ class Bluesky(Platform):
         if not self._create_session():
             return None
 
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/app.bsky.feed.getPostThread",
             headers=self._get_headers(),
             params={"uri": article_id, "depth": 0},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -239,7 +237,8 @@ class Bluesky(Platform):
 
         rkey = parts[-1]
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/com.atproto.repo.deleteRecord",
             headers=self._get_headers(),
             json={
@@ -247,7 +246,6 @@ class Bluesky(Platform):
                 "collection": "app.bsky.feed.post",
                 "rkey": rkey,
             },
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -308,7 +306,8 @@ class Bluesky(Platform):
                     "parent": {"uri": parent_uri, "cid": parent_cid},
                 }
 
-            resp = requests.post(
+            resp = self.retry_request(
+                "post",
                 f"{self.base_url}/com.atproto.repo.createRecord",
                 headers=self._get_headers(),
                 json={
@@ -316,7 +315,6 @@ class Bluesky(Platform):
                     "collection": "app.bsky.feed.post",
                     "record": record,
                 },
-                timeout=30,
             )
 
             if resp.status_code == 200:

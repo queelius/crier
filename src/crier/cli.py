@@ -31,6 +31,8 @@ from .utils import (
 from .registry import (
     record_publication,
     record_thread_publication,
+    record_failure,
+    get_failures,
     get_registry_path,
     is_published,
     has_content_changed,
@@ -1240,6 +1242,15 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         rewrite_author=rewrite_author if is_rewritten else None,
                         posted_content=posted_content if is_rewritten else None,
                     )
+            elif not result.success and article.canonical_url and result.error:
+                # Record API-level failure for retry tracking
+                record_failure(
+                    canonical_url=article.canonical_url,
+                    platform=platform_name,
+                    error_msg=result.error,
+                    title=article.title,
+                    source_file=file,
+                )
 
         except Exception as e:
             results.append({
@@ -1249,6 +1260,15 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 "url": None,
                 "id": None,
             })
+            # Record failure in registry for retry tracking
+            if article.canonical_url:
+                record_failure(
+                    canonical_url=article.canonical_url,
+                    platform=platform_name,
+                    error_msg=str(e),
+                    title=article.title,
+                    source_file=file,
+                )
 
     # Calculate summary
     success_count = sum(1 for r in results if r["success"])
@@ -1556,10 +1576,10 @@ def list_articles(
 
 
 @cli.command()
-def doctor():
+@click.option("--json", "json_output", is_flag=True, help="Output result as JSON")
+def doctor(json_output: bool):
     """Check configuration and validate API keys."""
-    console.print("\n[bold]Crier Doctor[/bold]")
-    console.print("[dim]Checking your configuration...[/dim]\n")
+    import json as json_module
 
     table = Table(title="Platform Health Check")
     table.add_column("Platform", style="cyan")
@@ -1569,6 +1589,11 @@ def doctor():
     healthy = 0
     unhealthy = 0
     manual_count = 0
+    json_platforms = []
+
+    if not json_output:
+        console.print("\n[bold]Crier Doctor[/bold]")
+        console.print("[dim]Checking your configuration...[/dim]\n")
 
     for name in PLATFORMS:
         api_key = get_api_key(name)
@@ -1580,6 +1605,7 @@ def doctor():
                 "[cyan]📥 Import mode[/cyan]",
                 "User imports from canonical URL"
             )
+            json_platforms.append({"name": name, "status": "import", "details": "User imports from canonical URL"})
             manual_count += 1  # Count with manual for stats
             continue
 
@@ -1590,6 +1616,7 @@ def doctor():
                 "[blue]📋 Manual mode[/blue]",
                 "Copy-paste (no API)"
             )
+            json_platforms.append({"name": name, "status": "manual", "details": "Copy-paste (no API)"})
             manual_count += 1
             continue
 
@@ -1599,6 +1626,7 @@ def doctor():
                 "[dim]○ Not configured[/dim]",
                 "[dim]No API key set[/dim]"
             )
+            json_platforms.append({"name": name, "status": "not_configured", "details": "No API key set"})
             continue
 
         # Try to validate the API key by making a simple request
@@ -1615,6 +1643,7 @@ def doctor():
                 "[green]✓ Healthy[/green]",
                 "API key valid"
             )
+            json_platforms.append({"name": name, "status": "healthy", "details": "API key valid"})
             healthy += 1
 
         except NotImplementedError:
@@ -1624,6 +1653,7 @@ def doctor():
                 "[yellow]? Configured[/yellow]",
                 "Cannot verify (no list support)"
             )
+            json_platforms.append({"name": name, "status": "healthy", "details": "Cannot verify (no list support)"})
             healthy += 1  # Count as healthy since it's configured
 
         except Exception as e:
@@ -1633,7 +1663,24 @@ def doctor():
                 "[red]✗ Error[/red]",
                 f"[red]{error_msg}[/red]"
             )
+            json_platforms.append({"name": name, "status": "unhealthy", "details": error_msg})
             unhealthy += 1
+
+    if json_output:
+        total_configured = healthy + unhealthy + manual_count
+        output = {
+            "command": "doctor",
+            "platforms": json_platforms,
+            "summary": {
+                "configured": total_configured,
+                "total": len(PLATFORMS),
+                "healthy": healthy,
+                "unhealthy": unhealthy,
+                "manual": manual_count,
+            },
+        }
+        print(json_module.dumps(output, indent=2))
+        return
 
     console.print(table)
 
@@ -2356,13 +2403,17 @@ def llm_test():
               help="Show detailed output per file")
 @click.option("--check", "run_checks", is_flag=True,
               help="Validate content before publishing (skip files that fail)")
+@click.option("--failed", is_flag=True,
+              help="Show content with recorded publication failures")
+@click.option("--retry", is_flag=True,
+              help="Re-attempt only previously failed publications")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
           sample: int | None, include_changed: bool, include_archived: bool,
           since_date: str | None, until_date: str | None,
           tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
           auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
-          verbose: bool, run_checks: bool):
+          verbose: bool, run_checks: bool, failed: bool, retry: bool):
     """Audit content to see what's missing from platforms.
 
     PATH can be a file or directory. If not provided, uses configured content_paths.
@@ -2392,6 +2443,204 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Silent mode: suppress non-essential output
     silent = quiet or json_output
+
+    # Handle --failed and --retry modes (alternate code paths)
+    if failed or retry:
+        failures = get_failures()
+
+        if not failures:
+            if json_output:
+                print(json_module.dumps({
+                    "command": "audit",
+                    "mode": "retry" if retry else "failed",
+                    "failures": [],
+                    "summary": {"total_failures": 0},
+                }))
+            else:
+                console.print("[green]No recorded failures.[/green]")
+            return
+
+        if failed and not retry:
+            # Just display failures
+            if json_output:
+                print(json_module.dumps({
+                    "command": "audit",
+                    "mode": "failed",
+                    "failures": failures,
+                    "summary": {"total_failures": len(failures)},
+                }))
+            else:
+                table = Table(title="Failed Publications")
+                table.add_column("Title", style="cyan")
+                table.add_column("Platform", style="yellow")
+                table.add_column("Error", style="red")
+                table.add_column("When", style="dim")
+
+                for f in failures:
+                    title = f.get("title") or f.get("source_file") or f["canonical_url"]
+                    error_at = f.get("error_at", "")
+                    if error_at:
+                        error_at = error_at[:19].replace("T", " ")
+                    table.add_row(
+                        str(title)[:40],
+                        f["platform"],
+                        str(f["error"])[:60],
+                        error_at,
+                    )
+
+                console.print(table)
+                console.print(
+                    f"\n[bold]{len(failures)} failed publication(s)[/bold]"
+                )
+                console.print(
+                    "[dim]Use --retry to re-attempt failed publications.[/dim]"
+                )
+            return
+
+        if retry:
+            # Re-attempt failed publications
+            if not silent:
+                console.print(
+                    f"\n[bold]Retrying {len(failures)} failed publication(s)[/bold]\n"
+                )
+
+            retry_results = []
+            for failure in failures:
+                platform_name = failure["platform"]
+                canonical_url = failure["canonical_url"]
+                source_file = failure.get("source_file")
+
+                if not source_file or not Path(source_file).exists():
+                    retry_results.append({
+                        "platform": platform_name,
+                        "canonical_url": canonical_url,
+                        "success": False,
+                        "error": "Source file not found",
+                    })
+                    continue
+
+                try:
+                    article = parse_markdown_file(source_file)
+                except Exception as e:
+                    retry_results.append({
+                        "platform": platform_name,
+                        "canonical_url": canonical_url,
+                        "success": False,
+                        "error": f"Parse error: {e}",
+                    })
+                    continue
+
+                api_key = get_api_key(platform_name)
+                if not api_key or is_manual_mode_key(api_key):
+                    retry_results.append({
+                        "platform": platform_name,
+                        "canonical_url": canonical_url,
+                        "success": False,
+                        "error": "No API key configured",
+                    })
+                    continue
+
+                try:
+                    platform_cls = get_platform(platform_name)
+                    platform_inst = platform_cls(api_key)
+
+                    if not silent:
+                        console.print(
+                            f"[dim]Retrying {platform_name}"
+                            f" for {Path(source_file).name}...[/dim]"
+                        )
+
+                    if dry_run:
+                        retry_results.append({
+                            "platform": platform_name,
+                            "canonical_url": canonical_url,
+                            "success": True,
+                            "action": "would_retry",
+                        })
+                        continue
+
+                    result = platform_inst.publish(article)
+
+                    if result.success:
+                        content_hash = get_file_content_hash(Path(source_file))
+                        record_publication(
+                            canonical_url=canonical_url,
+                            platform=platform_name,
+                            article_id=result.article_id,
+                            url=result.url,
+                            title=article.title,
+                            source_file=source_file,
+                            content_hash=content_hash,
+                        )
+                        retry_results.append({
+                            "platform": platform_name,
+                            "canonical_url": canonical_url,
+                            "success": True,
+                            "url": result.url,
+                        })
+                        if not silent:
+                            console.print(
+                                f"  [green]✓ {platform_name}:"
+                                f" {result.url or 'published'}[/green]"
+                            )
+                    else:
+                        record_failure(
+                            canonical_url=canonical_url,
+                            platform=platform_name,
+                            error_msg=result.error or "Unknown error",
+                            title=article.title,
+                            source_file=source_file,
+                        )
+                        retry_results.append({
+                            "platform": platform_name,
+                            "canonical_url": canonical_url,
+                            "success": False,
+                            "error": result.error,
+                        })
+                        if not silent:
+                            console.print(
+                                f"  [red]✗ {platform_name}:"
+                                f" {result.error}[/red]"
+                            )
+
+                except Exception as e:
+                    record_failure(
+                        canonical_url=canonical_url,
+                        platform=platform_name,
+                        error_msg=str(e),
+                        source_file=source_file,
+                    )
+                    retry_results.append({
+                        "platform": platform_name,
+                        "canonical_url": canonical_url,
+                        "success": False,
+                        "error": str(e),
+                    })
+
+            successes = sum(1 for r in retry_results if r["success"])
+            fails = len(retry_results) - successes
+
+            if json_output:
+                print(json_module.dumps({
+                    "command": "audit",
+                    "mode": "retry",
+                    "results": retry_results,
+                    "summary": {
+                        "succeeded": successes,
+                        "failed": fails,
+                    },
+                }))
+            else:
+                console.print(
+                    f"\n[bold]Retry complete:"
+                    f" {successes} succeeded, {fails} failed[/bold]"
+                )
+
+            if fails > 0 and successes > 0:
+                raise SystemExit(2)
+            elif fails > 0:
+                raise SystemExit(1)
+            return
 
     # Initialize LLM provider if auto-rewrite is enabled
     llm_provider = None
@@ -4335,8 +4584,13 @@ def unarchive(file: str, json_output: bool):
               help="Show top N articles by engagement")
 @click.option("--since", "since_str",
               help="Filter to articles published since (1d, 1w, 1m, or YYYY-MM-DD)")
+@click.option("--compare", is_flag=True,
+              help="Compare engagement across platforms for same content")
+@click.option("--export", "export_format", type=click.Choice(["csv"]), default=None,
+              help="Export stats in specified format")
 def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
-          json_output: bool, top: int, since_str: str | None):
+          json_output: bool, top: int, since_str: str | None,
+          compare: bool, export_format: str | None):
     """Show engagement stats for published content.
 
     Without a file argument, shows aggregate stats across all content.
@@ -4522,6 +4776,74 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                 except Exception:
                     pass
 
+        # --compare: show comparison table across platforms
+        if compare and stats_data:
+            if json_output:
+                output = {
+                    "success": True,
+                    "title": article.title,
+                    "canonical_url": canonical_url,
+                    "compare": stats_data,
+                }
+                print(json_module.dumps(output, indent=2))
+            elif export_format == "csv":
+                import csv
+                import io
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(["canonical_url", "title", "platform", "views", "likes", "comments", "reposts"])
+                for s in stats_data:
+                    writer.writerow([
+                        canonical_url,
+                        article.title,
+                        s["platform"],
+                        s.get("views") if s.get("views") is not None else "",
+                        s.get("likes") if s.get("likes") is not None else "",
+                        s.get("comments") if s.get("comments") is not None else "",
+                        s.get("reposts") if s.get("reposts") is not None else "",
+                    ])
+                print(buf.getvalue(), end="")
+            else:
+                console.print(f"\n[bold]Comparison: {article.title}[/bold]\n")
+                table = Table(show_header=True, header_style="bold")
+                table.add_column("Platform")
+                table.add_column("Views", justify="right")
+                table.add_column("Likes", justify="right")
+                table.add_column("Comments", justify="right")
+                table.add_column("Reposts", justify="right")
+
+                for s in stats_data:
+                    table.add_row(
+                        s["platform"],
+                        format_number(s.get("views")),
+                        format_number(s.get("likes")),
+                        format_number(s.get("comments")),
+                        format_number(s.get("reposts")),
+                    )
+
+                console.print(table)
+            return
+
+        # --export csv for single-file mode
+        if export_format == "csv":
+            import csv
+            import io
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(["canonical_url", "title", "platform", "views", "likes", "comments", "reposts"])
+            for s in stats_data:
+                writer.writerow([
+                    canonical_url,
+                    article.title,
+                    s["platform"],
+                    s.get("views") if s.get("views") is not None else "",
+                    s.get("likes") if s.get("likes") is not None else "",
+                    s.get("comments") if s.get("comments") is not None else "",
+                    s.get("reposts") if s.get("reposts") is not None else "",
+                ])
+            print(buf.getvalue(), end="")
+            return
+
         if json_output:
             output = {
                 "success": True,
@@ -4656,6 +4978,27 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
     if top > 0:
         article_stats = article_stats[:top]
 
+    # --export csv for aggregate mode
+    if export_format == "csv":
+        import csv
+        import io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["canonical_url", "title", "platform", "views", "likes", "comments", "reposts"])
+        for a in article_stats:
+            for p in a["platforms"]:
+                writer.writerow([
+                    a["canonical_url"],
+                    a["title"],
+                    p,
+                    a.get("views") if a.get("views") is not None else "",
+                    a.get("likes") if a.get("likes") is not None else "",
+                    a.get("comments") if a.get("comments") is not None else "",
+                    a.get("reposts") if a.get("reposts") is not None else "",
+                ])
+        print(buf.getvalue(), end="")
+        return
+
     if json_output:
         output = {
             "success": True,
@@ -4705,6 +5048,82 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
             console.print(f"  Platforms: {', '.join(sorted(platforms_seen))}")
         else:
             console.print("[yellow]No stats available for the specified criteria.[/yellow]")
+
+
+@cli.command()
+@click.argument("path", required=False, default=None)
+@click.option("--output", "-o", "output_file", default=None,
+              help="Write feed to file (default: stdout)")
+@click.option("--format", "-f", "feed_format", type=click.Choice(["rss", "atom"]),
+              default="rss", help="Feed format (default: rss)")
+@click.option("--limit", "-n", type=int, default=20,
+              help="Maximum number of items (default: 20)")
+@click.option("--tag", "-T", "tag_filter", multiple=True,
+              help="Only include content with these tags")
+@click.option("--since", "since_date", default=None,
+              help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--until", "until_date", default=None,
+              help="Only include content until this date")
+@click.option("--title", default=None,
+              help="Feed title (default: 'Content Feed')")
+@click.option("--description", default=None,
+              help="Feed description")
+def feed(path: str | None, output_file: str | None, feed_format: str,
+         limit: int, tag_filter: tuple[str, ...], since_date: str | None,
+         until_date: str | None, title: str | None, description: str | None):
+    """Generate RSS or Atom feed from content files.
+
+    PATH can be a directory to scan. If not provided, uses configured content_paths.
+
+    \b
+    Examples:
+      crier feed                           # RSS to stdout
+      crier feed --output feed.xml         # Write to file
+      crier feed --format atom             # Atom format
+      crier feed --limit 10 --tag python   # Filter by tag, limit 10
+    """
+    from .feed import generate_feed
+
+    # Find content files
+    files = _find_content_files(path)
+
+    if not files:
+        console.print("[yellow]No content files found.[/yellow]", err=True)
+        raise SystemExit(1)
+
+    # Parse date filters
+    since = _parse_date_filter(since_date) if since_date else None
+    until = _parse_date_filter(until_date) if until_date else None
+    if since:
+        from datetime import timezone as tz
+        since = since.replace(tzinfo=tz.utc)
+    if until:
+        from datetime import timezone as tz
+        until = until.replace(tzinfo=tz.utc)
+
+    # Parse tag filter
+    tags = {t.lower().strip() for t in tag_filter} if tag_filter else None
+
+    try:
+        xml = generate_feed(
+            files=files,
+            format=feed_format,
+            title=title,
+            description=description,
+            limit=limit,
+            tag_filter=tags,
+            since=since,
+            until=until,
+        )
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]", err=True)
+        raise SystemExit(1)
+
+    if output_file:
+        Path(output_file).write_text(xml)
+        console.print(f"[green]Feed written to {output_file}[/green]", err=True)
+    else:
+        click.echo(xml)
 
 
 if __name__ == "__main__":

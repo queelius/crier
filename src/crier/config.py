@@ -590,3 +590,54 @@ def get_check_overrides() -> dict[str, str]:
     """
     config = load_local_config()
     return config.get("checks", {})
+
+
+def get_network_config() -> dict[str, Any]:
+    """Get network configuration for retry/timeout behavior.
+
+    Configure in ~/.config/crier/config.yaml:
+        network:
+          retry_count: 3       # Max retries for transient failures (default: 3)
+          retry_backoff: 1.0   # Initial backoff in seconds (default: 1.0)
+          timeout: 30          # Request timeout in seconds (default: 30)
+
+    Returns:
+        Dict with network config values.
+    """
+    config = load_global_config()
+    return config.get("network", {})
+
+
+def get_network_retry_count() -> int:
+    """Get max retry count for transient HTTP failures (default: 3)."""
+    return int(get_network_config().get("retry_count", 3))
+
+
+def get_network_retry_backoff() -> float:
+    """Get initial retry backoff in seconds (default: 1.0)."""
+    return float(get_network_config().get("retry_backoff", 1.0))
+
+
+def get_network_timeout() -> int:
+    """Get request timeout in seconds (default: 30)."""
+    return int(get_network_config().get("timeout", 30))
+
+
+def set_network_config(
+    retry_count: int | None = None,
+    retry_backoff: float | None = None,
+    timeout: int | None = None,
+) -> None:
+    """Set network configuration in global config."""
+    config = load_global_config()
+    if "network" not in config:
+        config["network"] = {}
+
+    if retry_count is not None:
+        config["network"]["retry_count"] = retry_count
+    if retry_backoff is not None:
+        config["network"]["retry_backoff"] = retry_backoff
+    if timeout is not None:
+        config["network"]["timeout"] = timeout
+
+    save_config(config)

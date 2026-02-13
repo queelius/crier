@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -73,10 +71,10 @@ class Discord(Platform):
         }
 
         # Add ?wait=true to get the message object back
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.webhook_url}?wait=true",
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -108,10 +106,10 @@ class Discord(Platform):
             "embeds": [self._create_embed(article)],
         }
 
-        resp = requests.patch(
+        resp = self.retry_request(
+            "patch",
             f"{self.webhook_url}/messages/{article_id}",
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -135,9 +133,9 @@ class Discord(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific webhook message."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.webhook_url}/messages/{article_id}",
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -146,9 +144,9 @@ class Discord(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete a webhook message on Discord."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.webhook_url}/messages/{article_id}",
-            timeout=30,
         )
         if resp.status_code == 204:
             return DeleteResult(success=True, platform=self.name)

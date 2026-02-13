@@ -35,13 +35,14 @@ ruff format --check src/
 - `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`, `--schedule`, `--thread`, `--no-check`, `--strict`)
 - `check` — Pre-publish content validation (supports `--to`, `--all`, `--json`, `--strict`, `--check-links`)
 - `status` — Show publication status for files
-- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`, `--check`)
+- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`, `--check`, `--failed`, `--retry`)
 - `search` — Search and list content with metadata (supports `--tag`, `--since`, `--until`, `--sample`, `--json`)
 - `delete` — Delete content from platforms (`--from`, `--all`, `--dry-run`)
 - `archive` / `unarchive` — Exclude/include content from audit --publish
 - `schedule` — Manage scheduled posts (`list`, `show`, `cancel`, `run`)
-- `stats` — View engagement statistics (`--refresh`, `--top`, `--since`, `--json`)
-- `doctor` — Validate API keys
+- `stats` — View engagement statistics (`--refresh`, `--top`, `--since`, `--json`, `--compare`, `--export`)
+- `feed` — Generate RSS/Atom feeds from content files (`--format`, `--output`, `--limit`, `--tag`)
+- `doctor` — Validate API keys (`--json`)
 - `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
 - `skill` — Manage Claude Code skill installation (`install`, `uninstall`, `status`, `show`)
 - `register` / `unregister` — Manual registry management
@@ -53,9 +54,13 @@ ruff format --check src/
 
 **Platform Abstraction** (`platforms/`):
 - `base.py`: Abstract `Platform` class defining the interface (`publish`, `update`, `list_articles`, `get_article`, `delete`, `get_stats`, `publish_thread`) and core data classes (`Article`, `PublishResult`, `DeleteResult`, `ArticleStats`, `ThreadPublishResult`)
+- `base.py` also provides `retry_request()` — centralized HTTP retry with exponential backoff, Retry-After header parsing, and retryable/non-retryable status code classification
 - Platform capabilities: `supports_delete`, `supports_stats`, `supports_threads`, `thread_max_posts`
-- Each platform implements the `Platform` interface
-- `PLATFORMS` registry in `__init__.py` maps platform names to classes
+- Each platform implements the `Platform` interface; all use `self.retry_request()` instead of direct `requests.*()` calls
+- `_discover_package_platforms()` in `__init__.py` auto-discovers built-in platforms by scanning `.py` files in the package (no hardcoded imports)
+- `_discover_user_platforms()` loads user plugins from `~/.config/crier/platforms/`; user plugins override built-ins
+- `PLATFORMS` registry in `__init__.py` maps platform names to classes (built-in + user plugins)
+- Backward compat: `globals()` injection ensures `from crier.platforms import DevTo` etc. still work
 
 **Scheduler** (`scheduler.py`): Content scheduling for future publication:
 - `ScheduledPost` dataclass for scheduled post data
@@ -87,7 +92,14 @@ ruff format --check src/
 - Environment variables (`CRIER_{PLATFORM}_API_KEY`) take precedence over config files
 - Supports composable profiles (profiles can reference other profiles)
 
+**Feed** (`feed.py`): RSS/Atom feed generation from content files:
+- `generate_feed()` — Builds RSS 2.0 or Atom XML from markdown files using `feedgen`
+- `_collect_items()` — Parses files and applies tag/date filters
+- Reuses `parse_markdown_file()`, `get_content_date()`, `get_content_tags()`
+
 **Registry** (`registry.py`): Tracks publications in `.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
+- Atomic writes via `tempfile.mkstemp()` + `os.replace()` — crash-safe even under `kill -9`
+- `record_failure()` / `get_failures()` — Tracks publication errors for `audit --retry`
 
 **Converters** (`converters/markdown.py`): Parses markdown files with YAML or TOML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
 
@@ -123,7 +135,12 @@ ruff format --check src/
 - **Auto-rewrite**: LLM-generated rewrites with `--auto-rewrite` (requires LLM config)
 - **Batch mode**: Non-interactive automation with `--batch` (implies `--yes --json`, skips manual platforms)
 - **JSON output**: Machine-readable output with `--json` for CI/CD integration
-- **Doctor**: Validate all API keys work
+- **Doctor**: Validate all API keys work (`--json` for scripting)
+- **RSS/Atom feeds**: Generate feeds from content with `crier feed` (`--format atom`, `--output`, `--limit`, `--tag`)
+- **Retry & rate limiting**: All platform API calls use centralized retry with exponential backoff (429, 502-504, timeouts)
+- **Error tracking**: Failed publications are recorded and can be retried with `audit --retry`
+- **Crash-safe registry**: Atomic writes prevent data loss on interrupted operations
+- **Stats comparison**: `crier stats --compare` shows cross-platform engagement side-by-side
 - **Relative link resolution**: Converts relative links (`/posts/other/`, `../images/`) to absolute URLs using `site_base_url`
 - **Delete/Archive**: Remove content from platforms (`crier delete`) or exclude from audit (`crier archive`)
 - **Scheduling**: Schedule posts for future publication with `--schedule` or `crier schedule` commands
@@ -370,7 +387,52 @@ crier stats --since 1m --json
 crier stats --platform devto
 ```
 
-Stats cached in registry for 1 hour. Platforms with stats: devto (views, likes, comments), bluesky (likes, comments, reposts), mastodon (likes, comments, reposts).
+Stats cached in registry for 1 hour. Platforms with stats: devto (views, likes, comments), bluesky (likes, comments, reposts), mastodon (likes, comments, reposts), linkedin (likes, comments), threads (views, likes, replies, reposts).
+
+```bash
+# Compare engagement across platforms for same content
+crier stats --compare
+
+# Export stats to CSV
+crier stats --export csv
+```
+
+## RSS/Atom Feeds
+
+```bash
+# Generate RSS feed to stdout
+crier feed
+
+# Write to file
+crier feed --output feed.xml
+
+# Atom format
+crier feed --format atom
+
+# Filter and limit
+crier feed --limit 10 --tag python
+crier feed --since 1m --until 1w
+```
+
+Requires `site_base_url` to be configured. Uses `feedgen` library for valid RSS 2.0 and Atom XML.
+
+## Error Recovery
+
+```bash
+# View failed publications
+crier audit --failed
+
+# Re-attempt failed publications
+crier audit --retry
+
+# Preview what would be retried
+crier audit --retry --dry-run
+
+# JSON output for scripting
+crier audit --failed --json
+```
+
+Failed publications are automatically recorded in the registry with error details and timestamp. Successful re-publish clears the error.
 
 ## Threading
 
@@ -431,13 +493,28 @@ checks:
 1. Create `platforms/newplatform.py` implementing the `Platform` abstract class
 2. Set class attributes: `name`, `description`, `max_content_length`, `supports_delete`, `supports_stats`, `supports_threads`
 3. Implement required methods: `publish`, `update`, `list_articles`, `get_article`
-4. Optionally implement: `delete` → `DeleteResult`, `get_stats` → `ArticleStats`, `publish_thread` → `ThreadPublishResult`
-5. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
-6. Update README.md with API key format
+4. Use `self.retry_request(method, url, **kwargs)` instead of direct `requests.*()` calls
+5. Optionally implement: `delete` → `DeleteResult`, `get_stats` → `ArticleStats`, `publish_thread` → `ThreadPublishResult`
+6. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
+7. Update README.md with API key format
+
+### User Plugins
+
+Users can add custom platforms without modifying the crier source:
+
+1. Create `~/.config/crier/platforms/` directory
+2. Drop a `.py` file implementing `Platform` from `crier.platforms.base`
+3. Set `name` class attribute (used as platform identifier)
+4. Implement required methods: `publish`, `update`, `list_articles`, `get_article`
+5. Configure API key: `crier config set platforms.<name>.api_key <key>`
+
+User plugins are auto-discovered at import time. If a user plugin has the same `name` as a built-in, the user plugin wins. Files starting with `_` are skipped. Broken plugins warn but don't crash.
+
+Discovery is handled by `_discover_user_platforms()` in `platforms/__init__.py`, which scans `USER_PLATFORMS_DIR = Path.home() / ".config" / "crier" / "platforms"`. Multiple `Platform` subclasses per file are supported. If the `name` attribute is not overridden (still `"base"`), the lowercase class name is used instead.
 
 ## Testing
 
-Tests are in `tests/` with 978 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, and skill.
+Tests are in `tests/` with 1088 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, and plugin discovery.
 
 **Running tests:**
 ```bash

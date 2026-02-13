@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -37,11 +35,11 @@ class Buttondown(Platform):
         if article.description:
             data["description"] = article.description
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/emails",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -73,11 +71,11 @@ class Buttondown(Platform):
         if article.description:
             data["description"] = article.description
 
-        resp = requests.patch(
+        resp = self.retry_request(
+            "patch",
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -99,11 +97,11 @@ class Buttondown(Platform):
 
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
         """List emails on Buttondown."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/emails",
             headers=self.headers,
             params={"page_size": limit},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -123,10 +121,10 @@ class Buttondown(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific email by ID."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -135,10 +133,10 @@ class Buttondown(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete an email on Buttondown."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.base_url}/emails/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
         if resp.status_code in (200, 204):
             return DeleteResult(success=True, platform=self.name)

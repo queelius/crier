@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -38,11 +36,11 @@ class Hashnode(Platform):
 
     def _graphql(self, query: str, variables: dict | None = None) -> dict[str, Any]:
         """Execute a GraphQL query."""
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             self.base_url,
             headers=self.headers,
             json={"query": query, "variables": variables or {}},
-            timeout=30,
         )
 
         if resp.status_code == 200:

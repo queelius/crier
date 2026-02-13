@@ -5,8 +5,6 @@ Supports both API mode (with integration token) and manual mode.
 
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -63,10 +61,10 @@ class Medium(Platform):
         if self._user_id:
             return self._user_id
 
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/me",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -96,11 +94,11 @@ class Medium(Platform):
         if article.canonical_url:
             data["canonicalUrl"] = article.canonical_url
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/users/{user_id}/posts",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 201:

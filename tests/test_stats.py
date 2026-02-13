@@ -580,10 +580,10 @@ class TestPlatformStatsEdgeCases:
         assert stats is None
 
     def test_linkedin_supports_stats_flag(self):
-        """LinkedIn does not support stats."""
+        """LinkedIn supports stats via socialActions API."""
         from crier.platforms.linkedin import LinkedIn
 
-        assert LinkedIn.supports_stats is False
+        assert LinkedIn.supports_stats is True
 
     def test_telegram_supports_stats_flag(self):
         """Telegram does not support stats."""

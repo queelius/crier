@@ -637,6 +637,41 @@ crier config set twitter.api_key manual
 3. Copy the webhook URL
 4. Use the full URL as the API key
 
+## Custom Platforms
+
+Extend crier with your own platforms by dropping a `.py` file in `~/.config/crier/platforms/`:
+
+```python
+# ~/.config/crier/platforms/nostr.py
+from crier.platforms.base import Platform, Article, PublishResult
+
+class Nostr(Platform):
+    name = "nostr"
+    description = "Publish to Nostr relays"
+
+    def publish(self, article):
+        # Your publish logic here
+        return PublishResult(url="...", platform_id="...")
+
+    def update(self, article_id, article):
+        pass
+
+    def list_articles(self, limit=10):
+        return []
+
+    def get_article(self, article_id):
+        return None
+```
+
+Then configure your API key:
+
+```bash
+crier config set platforms.nostr.api_key <your-key>
+crier publish article.md --to nostr
+```
+
+User plugins override built-in platforms with the same name. Files starting with `_` are skipped. Broken plugins emit a warning but don't crash crier.
+
 ## License
 
 MIT

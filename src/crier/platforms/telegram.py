@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -72,10 +70,10 @@ class Telegram(Platform):
             "disable_web_page_preview": False,  # Enable link previews
         }
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/sendMessage",
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -117,10 +115,10 @@ class Telegram(Platform):
             "parse_mode": "Markdown",
         }
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/editMessageText",
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -168,10 +166,10 @@ class Telegram(Platform):
             "message_id": int(article_id),
         }
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/deleteMessage",
             json=data,
-            timeout=30,
         )
 
         if resp.status_code == 200:

@@ -5,8 +5,6 @@ import hmac
 import time
 from typing import Any
 
-import requests
-
 from .base import Article, DeleteResult, Platform, PublishResult
 
 
@@ -90,12 +88,12 @@ class Ghost(Platform):
         if article.canonical_url:
             post["canonical_url"] = article.canonical_url
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.base_url}/ghost/api/admin/posts/",
             headers=self._get_headers(),
             json=data,
             params={"source": "html"},  # Tell Ghost we're sending HTML/markdown
-            timeout=30,
         )
 
         if resp.status_code == 201:
@@ -142,12 +140,12 @@ class Ghost(Platform):
         if article.canonical_url:
             post["canonical_url"] = article.canonical_url
 
-        resp = requests.put(
+        resp = self.retry_request(
+            "put",
             f"{self.base_url}/ghost/api/admin/posts/{article_id}/",
             headers=self._get_headers(),
             json=data,
             params={"source": "html"},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -168,11 +166,11 @@ class Ghost(Platform):
 
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
         """List posts on Ghost."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/ghost/api/admin/posts/",
             headers=self._get_headers(),
             params={"limit": limit},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -191,10 +189,10 @@ class Ghost(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific post by ID."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.base_url}/ghost/api/admin/posts/{article_id}/",
             headers=self._get_headers(),
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -204,10 +202,10 @@ class Ghost(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete a post on Ghost."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.base_url}/ghost/api/admin/posts/{article_id}/",
             headers=self._get_headers(),
-            timeout=30,
         )
         if resp.status_code == 204:
             return DeleteResult(success=True, platform=self.name)

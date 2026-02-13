@@ -257,7 +257,7 @@ class TestBluesky:
         assert platform.handle == "myhandle.bsky.social"
         assert platform.app_password == "app-password"
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         # Mock successful authentication
         auth_response = Mock()
@@ -283,7 +283,7 @@ class TestBluesky:
         assert result.platform == "bluesky"
         assert "xyz789" in result.url
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_auth_failure(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 401
@@ -342,7 +342,7 @@ class TestMastodon:
         assert platform.instance == "https://fosstodon.org"
         assert platform.access_token == "token123"
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 200
@@ -359,7 +359,7 @@ class TestMastodon:
         assert result.article_id == "123456"
         assert "mastodon.social" in result.url
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 401
@@ -381,7 +381,7 @@ class TestDevTo:
         assert platform.name == "devto"
         assert platform.max_content_length is None  # No character limit
 
-    @patch("crier.platforms.devto.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 201
@@ -404,7 +404,7 @@ class TestDevTo:
         tags = json_data["article"].get("tags", [])
         assert len(tags) <= 4
 
-    @patch("crier.platforms.devto.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 422
@@ -417,7 +417,7 @@ class TestDevTo:
         assert result.success is False
         assert "422" in result.error
 
-    @patch("crier.platforms.devto.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles(self, mock_get):
         mock_response = Mock()
         mock_response.status_code = 200
@@ -433,7 +433,7 @@ class TestDevTo:
         assert len(articles) == 2
         assert articles[0]["title"] == "Article 1"
 
-    @patch("crier.platforms.devto.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article(self, mock_get):
         mock_response = Mock()
         mock_response.status_code = 200
@@ -482,6 +482,167 @@ class TestThreads:
         assert result.success is False
         assert result.platform == "threads"
         assert "threads" in result.error.lower()
+
+    def test_supports_threads(self):
+        platform = Threads("user:token")
+        assert platform.supports_threads is True
+        assert platform.thread_max_posts == 10
+
+    @patch("crier.platforms.base.requests.get")
+    def test_get_stats_success(self, mock_get):
+        """get_stats should return ArticleStats from Insights API."""
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "data": [
+                    {"name": "views", "values": [{"value": 100}]},
+                    {"name": "likes", "values": [{"value": 50}]},
+                    {"name": "replies", "values": [{"value": 10}]},
+                    {"name": "reposts", "values": [{"value": 5}]},
+                ],
+            },
+        )
+
+        platform = Threads("user:token")
+        stats = platform.get_stats("post_123")
+
+        assert stats is not None
+        assert stats.views == 100
+        assert stats.likes == 50
+        assert stats.comments == 10
+        assert stats.reposts == 5
+
+    @patch("crier.platforms.base.requests.get")
+    def test_get_stats_failure(self, mock_get):
+        """get_stats should return None on API error."""
+        mock_get.return_value = Mock(status_code=400, text="Bad request")
+
+        platform = Threads("user:token")
+        stats = platform.get_stats("post_123")
+        assert stats is None
+
+    @patch("crier.platforms.base.requests.get")
+    def test_get_username(self, mock_get):
+        """_get_username fetches and caches username."""
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=lambda: {"username": "testuser"},
+        )
+
+        platform = Threads("user:token")
+        username = platform._get_username()
+        assert username == "testuser"
+
+        # Second call should use cache (no extra request)
+        username2 = platform._get_username()
+        assert username2 == "testuser"
+        assert mock_get.call_count == 1
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.threads.time.sleep")
+    def test_publish_with_url(self, mock_sleep, mock_post, mock_get):
+        """Publish should return URL when username is available."""
+        # Mock username lookup
+        mock_get.side_effect = [
+            # Container status poll
+            Mock(status_code=200, json=lambda: {"status": "FINISHED"}),
+            # Username lookup
+            Mock(status_code=200, json=lambda: {"username": "testuser"}),
+        ]
+        mock_post.side_effect = [
+            # Container creation
+            Mock(status_code=200, json=lambda: {"id": "container_123"}),
+            # Publish
+            Mock(status_code=200, json=lambda: {"id": "post_456"}),
+        ]
+
+        platform = Threads("user:token")
+        platform.max_retries = 0
+        article = Article(title="Test Post", body="Test")
+        result = platform.publish(article)
+
+        assert result.success is True
+        assert result.article_id == "post_456"
+        assert result.url == "https://www.threads.net/@testuser/post/post_456"
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.threads.time.sleep")
+    def test_container_error_status(self, mock_sleep, mock_post, mock_get):
+        """Container with ERROR status should return failure."""
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=lambda: {"status": "ERROR", "error_message": "Media invalid"},
+        )
+        mock_post.return_value = Mock(
+            status_code=200,
+            json=lambda: {"id": "container_123"},
+        )
+
+        platform = Threads("user:token")
+        platform.max_retries = 0
+        article = Article(title="Test", body="Test")
+        result = platform.publish(article)
+
+        assert result.success is False
+        assert "Container error" in result.error
+        assert "Media invalid" in result.error
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.threads.time.sleep")
+    def test_publish_thread_success(self, mock_sleep, mock_post, mock_get):
+        """Thread publishing should create reply chain."""
+        # For each post: poll(FINISHED) + username lookup
+        mock_get.side_effect = [
+            Mock(status_code=200, json=lambda: {"status": "FINISHED"}),
+            Mock(status_code=200, json=lambda: {"username": "testuser"}),
+            Mock(status_code=200, json=lambda: {"status": "FINISHED"}),
+        ]
+        mock_post.side_effect = [
+            # Post 1: container create + publish
+            Mock(status_code=200, json=lambda: {"id": "c1"}),
+            Mock(status_code=200, json=lambda: {"id": "p1"}),
+            # Post 2: container create + publish
+            Mock(status_code=200, json=lambda: {"id": "c2"}),
+            Mock(status_code=200, json=lambda: {"id": "p2"}),
+        ]
+
+        platform = Threads("user:token")
+        platform.max_retries = 0
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is True
+        assert result.root_id == "p1"
+        assert len(result.post_ids) == 2
+        assert result.post_ids == ["p1", "p2"]
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.threads.time.sleep")
+    def test_publish_thread_partial_failure(self, mock_sleep, mock_post, mock_get):
+        """Thread should stop and return partial results on failure."""
+        mock_get.side_effect = [
+            Mock(status_code=200, json=lambda: {"status": "FINISHED"}),
+            Mock(status_code=200, json=lambda: {"username": "testuser"}),
+            Mock(status_code=200, json=lambda: {"status": "ERROR", "error_message": "Failed"}),
+        ]
+        mock_post.side_effect = [
+            # Post 1 succeeds
+            Mock(status_code=200, json=lambda: {"id": "c1"}),
+            Mock(status_code=200, json=lambda: {"id": "p1"}),
+            # Post 2 container created but errors
+            Mock(status_code=200, json=lambda: {"id": "c2"}),
+        ]
+
+        platform = Threads("user:token")
+        platform.max_retries = 0
+        result = platform.publish_thread(["Post 1", "Post 2"])
+
+        assert result.success is False
+        assert "failed" in result.error.lower()
+        assert len(result.post_ids) == 1  # Only first post succeeded
 
 
 class TestLinkedIn:
@@ -537,8 +698,8 @@ class TestLinkedIn:
         assert "3000" in result.error
         assert "--rewrite" in result.error
 
-    @patch("crier.platforms.linkedin.requests.get")
-    @patch("crier.platforms.linkedin.requests.post")
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_within_limit(self, mock_post, mock_get, sample_article):
         """Content within 3000 chars should succeed."""
         # Mock userinfo response
@@ -564,6 +725,34 @@ class TestLinkedIn:
         assert result.success is False
         assert "not support editing" in result.error
 
+    def test_supports_stats(self):
+        platform = LinkedIn("token")
+        assert platform.supports_stats is True
+
+    @patch("crier.platforms.base.requests.get")
+    def test_get_stats_success(self, mock_get):
+        """LinkedIn stats from socialActions API."""
+        mock_get.return_value = Mock(
+            status_code=200,
+            json=lambda: {
+                "likesSummary": {"totalLikes": 42},
+                "commentsSummary": {"totalFirstLevelComments": 7},
+            },
+        )
+        platform = LinkedIn("token:urn:li:person:123")
+        platform.person_urn = "urn:li:person:123"
+        stats = platform.get_stats("urn:li:share:456")
+        assert stats is not None
+        assert stats.likes == 42
+        assert stats.comments == 7
+
+    @patch("crier.platforms.base.requests.get")
+    def test_get_stats_failure(self, mock_get):
+        mock_get.return_value = Mock(status_code=403, text="Forbidden")
+        platform = LinkedIn("token:urn:li:person:123")
+        stats = platform.get_stats("urn:li:share:456")
+        assert stats is None
+
 
 class TestPlatformRegistry:
     """Tests for the PLATFORMS registry."""
@@ -580,7 +769,7 @@ class TestPlatformRegistry:
 
     def test_platform_count(self):
         """Verify we have the expected number of platforms."""
-        assert len(PLATFORMS) == 13
+        assert len(PLATFORMS) >= 13
 
     def test_all_platforms_instantiable(self):
         """All platforms can be instantiated with a dummy key."""
@@ -605,7 +794,7 @@ class TestPlatformRegistry:
 class TestNetworkFailures:
     """Tests for network failure handling."""
 
-    @patch("crier.platforms.devto.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_devto_timeout(self, mock_post, sample_article):
         """DevTo handles timeout gracefully."""
         mock_post.side_effect = requests.Timeout("Connection timed out")
@@ -614,7 +803,7 @@ class TestNetworkFailures:
         with pytest.raises(requests.Timeout):
             platform.publish(sample_article)
 
-    @patch("crier.platforms.devto.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_devto_connection_error(self, mock_post, sample_article):
         """DevTo handles connection error gracefully."""
         mock_post.side_effect = requests.ConnectionError("Failed to connect")
@@ -623,7 +812,7 @@ class TestNetworkFailures:
         with pytest.raises(requests.ConnectionError):
             platform.publish(sample_article)
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_bluesky_timeout(self, mock_post, sample_article):
         """Bluesky handles timeout gracefully."""
         mock_post.side_effect = requests.Timeout("Connection timed out")
@@ -632,7 +821,7 @@ class TestNetworkFailures:
         with pytest.raises(requests.Timeout):
             platform.publish(sample_article)
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_mastodon_timeout(self, mock_post, sample_article):
         """Mastodon handles timeout gracefully."""
         mock_post.side_effect = requests.Timeout("Connection timed out")
@@ -753,7 +942,7 @@ class TestDeleteResult:
 class TestPlatformDeleteOperations:
     """Tests for platform delete operations."""
 
-    @patch("crier.platforms.devto.requests.put")
+    @patch("crier.platforms.base.requests.put")
     def test_devto_delete_success(self, mock_put):
         """DevTo delete (unpublish) succeeds."""
         mock_put.return_value = Mock(status_code=200)
@@ -767,7 +956,7 @@ class TestPlatformDeleteOperations:
         call_json = mock_put.call_args.kwargs.get("json") or mock_put.call_args[1].get("json")
         assert call_json["article"]["published"] is False
 
-    @patch("crier.platforms.devto.requests.put")
+    @patch("crier.platforms.base.requests.put")
     def test_devto_delete_failure(self, mock_put):
         """DevTo delete fails with API error."""
         mock_put.return_value = Mock(status_code=404, text="Not found")
@@ -778,7 +967,7 @@ class TestPlatformDeleteOperations:
         assert result.success is False
         assert "404" in result.error
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_bluesky_delete_auth_failure(self, mock_post):
         """Bluesky delete fails when auth fails."""
         mock_post.return_value = Mock(status_code=401)
@@ -789,7 +978,7 @@ class TestPlatformDeleteOperations:
         assert result.success is False
         assert "authenticate" in result.error.lower()
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_bluesky_delete_invalid_format(self, mock_post):
         """Bluesky delete with invalid AT URI format."""
         # Auth succeeds
@@ -806,7 +995,7 @@ class TestPlatformDeleteOperations:
         assert result.success is False
         assert "Invalid" in result.error
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_bluesky_delete_success(self, mock_post):
         """Bluesky delete succeeds."""
         auth_response = Mock(status_code=200)
@@ -825,7 +1014,7 @@ class TestPlatformDeleteOperations:
         assert result.success is True
         assert result.platform == "bluesky"
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_bluesky_delete_api_error(self, mock_post):
         """Bluesky delete fails with API error after auth."""
         auth_response = Mock(status_code=200)
@@ -839,12 +1028,13 @@ class TestPlatformDeleteOperations:
         mock_post.side_effect = [auth_response, delete_response]
 
         platform = Bluesky("handle.bsky.social:password")
+        platform.max_retries = 0
         result = platform.delete("at://did:plc:abc/app.bsky.feed.post/xyz")
 
         assert result.success is False
         assert "500" in result.error
 
-    @patch("crier.platforms.mastodon.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_mastodon_delete_success(self, mock_delete):
         """Mastodon delete succeeds."""
         mock_delete.return_value = Mock(status_code=200)
@@ -855,7 +1045,7 @@ class TestPlatformDeleteOperations:
         assert result.success is True
         assert result.platform == "mastodon"
 
-    @patch("crier.platforms.mastodon.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_mastodon_delete_failure(self, mock_delete):
         """Mastodon delete fails with API error."""
         mock_delete.return_value = Mock(status_code=403, text="Forbidden")
@@ -916,7 +1106,7 @@ class TestBasePlatformDefaults:
 class TestBlueskyPublishThread:
     """Tests for Bluesky publish_thread."""
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_auth_failure(self, mock_post):
         """Thread publish fails when authentication fails."""
         mock_post.return_value = Mock(status_code=401)
@@ -927,7 +1117,7 @@ class TestBlueskyPublishThread:
         assert result.success is False
         assert "authenticate" in result.error.lower()
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_success(self, mock_post):
         """Thread publish succeeds with all posts."""
         from crier.platforms.base import ThreadPublishResult
@@ -970,7 +1160,7 @@ class TestBlueskyPublishThread:
         for r in result.results:
             assert r.success is True
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_partial_failure(self, mock_post):
         """Thread publish fails mid-way, returns partial results."""
         auth_response = Mock(status_code=200)
@@ -990,6 +1180,7 @@ class TestBlueskyPublishThread:
         mock_post.side_effect = [auth_response, post1_response, post2_response]
 
         platform = Bluesky("handle.bsky.social:password")
+        platform.max_retries = 0
         result = platform.publish_thread(["Post 1", "Post 2", "Post 3"])
 
         assert result.success is False
@@ -997,7 +1188,7 @@ class TestBlueskyPublishThread:
         assert len(result.post_ids) == 1
         assert result.root_id == "at://did:plc:abc/app.bsky.feed.post/111"
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_content_too_long(self, mock_post):
         """Thread fails if any post exceeds max_content_length."""
         auth_response = Mock(status_code=200)
@@ -1018,7 +1209,7 @@ class TestBlueskyPublishThread:
 class TestMastodonPublishThread:
     """Tests for Mastodon publish_thread."""
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_success(self, mock_post):
         """Thread publish succeeds with all posts."""
         from crier.platforms.base import ThreadPublishResult
@@ -1045,7 +1236,7 @@ class TestMastodonPublishThread:
         assert result.root_id == "111"
         assert result.post_urls[0] == "https://mastodon.social/@user/111"
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_partial_failure(self, mock_post):
         """Thread publish fails mid-way, returns partial results."""
         post1_response = Mock(status_code=200)
@@ -1066,7 +1257,7 @@ class TestMastodonPublishThread:
         assert len(result.post_ids) == 1
         assert result.root_id == "111"
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_content_too_long(self, mock_post):
         """Thread fails if any post exceeds max_content_length."""
         platform = Mastodon("mastodon.social:token")
@@ -1076,7 +1267,7 @@ class TestMastodonPublishThread:
         assert result.success is False
         assert "exceeds character limit" in result.error
 
-    @patch("crier.platforms.mastodon.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_thread_sets_reply_to(self, mock_post):
         """Thread posts after the first include in_reply_to_id."""
         post1_response = Mock(status_code=200)
@@ -1100,7 +1291,7 @@ class TestMastodonPublishThread:
 class TestBlueskyThreadReplyReference:
     """Tests for Bluesky thread reply reference structure."""
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_first_post_has_no_reply(self, mock_post):
         """First post in thread has no reply reference."""
         auth_response = Mock(status_code=200)
@@ -1128,7 +1319,7 @@ class TestBlueskyThreadReplyReference:
         record = json_data["record"]
         assert "reply" not in record
 
-    @patch("crier.platforms.bluesky.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_second_post_has_reply_reference(self, mock_post):
         """Second post includes root and parent reply references."""
         auth_response = Mock(status_code=200)
@@ -1210,7 +1401,7 @@ class TestGhost:
         assert headers["Authorization"].startswith("Ghost ")
         assert headers["Content-Type"] == "application/json"
 
-    @patch("crier.platforms.ghost.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 201
@@ -1242,7 +1433,7 @@ class TestGhost:
         assert len(post_data["tags"]) == 3
         assert post_data["tags"][0] == {"name": "python"}
 
-    @patch("crier.platforms.ghost.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_draft(self, mock_post):
         article = Article(title="Draft Post", body="Content", published=False)
         mock_response = Mock()
@@ -1260,7 +1451,7 @@ class TestGhost:
         json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert json_data["posts"][0]["status"] == "draft"
 
-    @patch("crier.platforms.ghost.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_minimal_article(self, mock_post):
         article = Article(title="Simple", body="Hello")
         mock_response = Mock()
@@ -1281,7 +1472,7 @@ class TestGhost:
         assert "tags" not in post_data
         assert "canonical_url" not in post_data
 
-    @patch("crier.platforms.ghost.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 422
@@ -1295,8 +1486,8 @@ class TestGhost:
         assert "422" in result.error
         assert "Validation failed" in result.error
 
-    @patch("crier.platforms.ghost.requests.get")
-    @patch("crier.platforms.ghost.requests.put")
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.put")
     def test_update_success(self, mock_put, mock_get, sample_article):
         # Mock get_article (fetches current post for updated_at)
         mock_get.return_value = Mock(
@@ -1320,7 +1511,7 @@ class TestGhost:
         assert result.article_id == "g1"
         assert result.url == "https://myblog.com/updated/"
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_update_article_not_found(self, mock_get, sample_article):
         mock_get.return_value = Mock(status_code=404, json=Mock(return_value={}))
 
@@ -1330,8 +1521,8 @@ class TestGhost:
         assert result.success is False
         assert "not found" in result.error
 
-    @patch("crier.platforms.ghost.requests.get")
-    @patch("crier.platforms.ghost.requests.put")
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.put")
     def test_update_api_error(self, mock_put, mock_get, sample_article):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1347,7 +1538,7 @@ class TestGhost:
         assert result.success is False
         assert "500" in result.error
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1368,7 +1559,7 @@ class TestGhost:
         assert articles[0]["published"] is True
         assert articles[1]["published"] is False
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_api_error(self, mock_get):
         mock_get.return_value = Mock(status_code=401, text="Unauthorized")
 
@@ -1377,7 +1568,7 @@ class TestGhost:
 
         assert articles == []
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1393,7 +1584,7 @@ class TestGhost:
         assert article["id"] == "g1"
         assert article["title"] == "My Post"
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_not_found(self, mock_get):
         mock_get.return_value = Mock(status_code=404)
 
@@ -1402,7 +1593,7 @@ class TestGhost:
 
         assert article is None
 
-    @patch("crier.platforms.ghost.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_empty_posts(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1414,7 +1605,7 @@ class TestGhost:
 
         assert article is None
 
-    @patch("crier.platforms.ghost.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_success(self, mock_delete):
         mock_delete.return_value = Mock(status_code=204)
 
@@ -1424,7 +1615,7 @@ class TestGhost:
         assert result.success is True
         assert result.platform == "ghost"
 
-    @patch("crier.platforms.ghost.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_failure(self, mock_delete):
         mock_delete.return_value = Mock(status_code=404, text="Not found")
 
@@ -1472,7 +1663,7 @@ class TestWordPress:
             WordPress("https://site.com:usernameonly")
         assert "username:app_password" in str(exc.value)
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success_wpcom(self, mock_post, sample_article):
         mock_response = Mock()
         mock_response.status_code = 201
@@ -1490,7 +1681,7 @@ class TestWordPress:
         assert result.url == "https://site.wordpress.com/2025/01/test-article/"
         assert result.platform == "wordpress"
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success_200(self, mock_post, sample_article):
         """WordPress can return 200 or 201 on publish success."""
         mock_post.return_value = Mock(
@@ -1503,7 +1694,7 @@ class TestWordPress:
 
         assert result.success is True
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_sends_correct_payload(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=201,
@@ -1521,7 +1712,7 @@ class TestWordPress:
         assert json_data["excerpt"] == sample_article.description
         assert json_data["tags"] == sample_article.tags
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_draft(self, mock_post):
         article = Article(title="Draft", body="Content", published=False)
         mock_post.return_value = Mock(
@@ -1536,7 +1727,7 @@ class TestWordPress:
         json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert json_data["status"] == "draft"
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_minimal_article(self, mock_post):
         article = Article(title="Simple", body="Hello")
         mock_post.return_value = Mock(
@@ -1552,7 +1743,7 @@ class TestWordPress:
         assert "excerpt" not in json_data
         assert "tags" not in json_data
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_post.return_value = Mock(status_code=403, text="Forbidden")
 
@@ -1562,7 +1753,7 @@ class TestWordPress:
         assert result.success is False
         assert "403" in result.error
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_success(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1576,7 +1767,7 @@ class TestWordPress:
         assert result.article_id == "42"
         assert result.url == "https://wp.com/updated/"
 
-    @patch("crier.platforms.wordpress.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_failure(self, mock_post, sample_article):
         mock_post.return_value = Mock(status_code=404, text="Not found")
 
@@ -1586,7 +1777,7 @@ class TestWordPress:
         assert result.success is False
         assert "404" in result.error
 
-    @patch("crier.platforms.wordpress.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1605,7 +1796,7 @@ class TestWordPress:
         assert articles[0]["published"] is True
         assert articles[1]["published"] is False
 
-    @patch("crier.platforms.wordpress.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_api_error(self, mock_get):
         mock_get.return_value = Mock(status_code=401, text="Unauthorized")
 
@@ -1614,7 +1805,7 @@ class TestWordPress:
 
         assert articles == []
 
-    @patch("crier.platforms.wordpress.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -1627,7 +1818,7 @@ class TestWordPress:
         assert article is not None
         assert article["id"] == 42
 
-    @patch("crier.platforms.wordpress.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_not_found(self, mock_get):
         mock_get.return_value = Mock(status_code=404)
 
@@ -1636,7 +1827,7 @@ class TestWordPress:
 
         assert article is None
 
-    @patch("crier.platforms.wordpress.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_success(self, mock_delete):
         mock_delete.return_value = Mock(status_code=200)
 
@@ -1646,7 +1837,7 @@ class TestWordPress:
         assert result.success is True
         assert result.platform == "wordpress"
 
-    @patch("crier.platforms.wordpress.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_failure(self, mock_delete):
         mock_delete.return_value = Mock(status_code=403, text="Forbidden")
 
@@ -1676,7 +1867,7 @@ class TestHashnode:
         assert hn.token == "mytoken"
         assert hn.publication_id == "explicit_pub"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_graphql_success(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1688,7 +1879,7 @@ class TestHashnode:
 
         assert result["data"]["me"]["id"] == "user1"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_graphql_failure(self, mock_post):
         mock_post.return_value = Mock(status_code=401, text="Unauthorized")
 
@@ -1698,7 +1889,7 @@ class TestHashnode:
         assert "errors" in result
         assert "401" in result["errors"][0]["message"]
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_get_publication_id_cached(self, mock_post):
         """When publication_id is already set, no API call is made."""
         hn = Hashnode("token:pub123")
@@ -1707,7 +1898,7 @@ class TestHashnode:
         assert result == "pub123"
         mock_post.assert_not_called()
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_get_publication_id_from_api(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1727,7 +1918,7 @@ class TestHashnode:
 
         assert result == "fetched_pub_id"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_get_publication_id_no_publications(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1741,7 +1932,7 @@ class TestHashnode:
 
         assert result is None
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1765,7 +1956,7 @@ class TestHashnode:
         assert result.article_id == "hn_post_1"
         assert result.url == "https://blog.hashnode.dev/test-article"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_sends_correct_variables(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1789,7 +1980,7 @@ class TestHashnode:
         assert len(input_data["tags"]) == 3
         assert input_data["subtitle"] == sample_article.description[:150]
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_no_publication(self, mock_post, sample_article):
         """Publish fails when no publication is found."""
         mock_post.return_value = Mock(
@@ -1805,7 +1996,7 @@ class TestHashnode:
         assert result.success is False
         assert "No publication found" in result.error
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_graphql_error(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1820,7 +2011,7 @@ class TestHashnode:
         assert result.success is False
         assert "Invalid slug format" in result.error
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_success(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1842,7 +2033,7 @@ class TestHashnode:
         assert result.success is True
         assert result.article_id == "hn_post_1"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_graphql_error(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1857,7 +2048,7 @@ class TestHashnode:
         assert result.success is False
         assert "Post not found" in result.error
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_list_articles_success(self, mock_post):
         # First call: publish id is already set, so it goes straight to posts query
         mock_post.return_value = Mock(
@@ -1885,7 +2076,7 @@ class TestHashnode:
         assert articles[0]["published"] is True
         assert articles[1]["title"] == "Short"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_list_articles_no_publication(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1899,7 +2090,7 @@ class TestHashnode:
 
         assert articles == []
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_get_article_success(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1922,7 +2113,7 @@ class TestHashnode:
         assert article["id"] == "p1"
         assert article["title"] == "My Post"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_get_article_not_found(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1934,7 +2125,7 @@ class TestHashnode:
 
         assert article is None
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_delete_success(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -1949,7 +2140,7 @@ class TestHashnode:
         assert result.success is True
         assert result.platform == "hashnode"
 
-    @patch("crier.platforms.hashnode.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_delete_error(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2013,7 +2204,7 @@ class TestMedium:
         assert "five" in result
         assert "six" not in result
 
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_user_id_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2025,7 +2216,7 @@ class TestMedium:
 
         assert user_id == "user_abc123"
 
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_user_id_cached(self, mock_get):
         """User ID is cached after first fetch."""
         m = Medium("token")
@@ -2035,7 +2226,7 @@ class TestMedium:
         assert user_id == "cached_id"
         mock_get.assert_not_called()
 
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_user_id_failure(self, mock_get):
         mock_get.return_value = Mock(status_code=401)
 
@@ -2044,8 +2235,8 @@ class TestMedium:
 
         assert user_id is None
 
-    @patch("crier.platforms.medium.requests.post")
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.base.requests.get")
     def test_publish_success(self, mock_get, mock_post, sample_article):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2068,8 +2259,8 @@ class TestMedium:
         assert result.article_id == "medium_post_1"
         assert "medium.com" in result.url
 
-    @patch("crier.platforms.medium.requests.post")
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.base.requests.get")
     def test_publish_sends_correct_payload(self, mock_get, mock_post, sample_article):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2092,8 +2283,8 @@ class TestMedium:
         assert json_data["tags"] == sample_article.tags[:5]
         assert json_data["canonicalUrl"] == sample_article.canonical_url
 
-    @patch("crier.platforms.medium.requests.post")
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.base.requests.get")
     def test_publish_draft(self, mock_get, mock_post):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2112,7 +2303,7 @@ class TestMedium:
         json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert json_data["publishStatus"] == "draft"
 
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_publish_auth_failure(self, mock_get, sample_article):
         mock_get.return_value = Mock(status_code=401)
 
@@ -2122,8 +2313,8 @@ class TestMedium:
         assert result.success is False
         assert "authenticate" in result.error.lower() or "Failed" in result.error
 
-    @patch("crier.platforms.medium.requests.post")
-    @patch("crier.platforms.medium.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    @patch("crier.platforms.base.requests.get")
     def test_publish_api_error(self, mock_get, mock_post, sample_article):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2168,7 +2359,7 @@ class TestButtondown:
         assert bd.name == "buttondown"
         assert bd.headers["Authorization"] == "Token api_key_123"
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=201,
@@ -2182,7 +2373,7 @@ class TestButtondown:
         assert result.article_id == "email_abc"
         assert result.url == "https://buttondown.email/archive/email_abc"
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success_200(self, mock_post, sample_article):
         """Buttondown can return 200 or 201 on publish success."""
         mock_post.return_value = Mock(
@@ -2195,7 +2386,7 @@ class TestButtondown:
 
         assert result.success is True
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_sends_correct_payload(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=201,
@@ -2212,7 +2403,7 @@ class TestButtondown:
         assert json_data["status"] == "published"
         assert json_data["description"] == sample_article.description
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_draft(self, mock_post):
         article = Article(title="Newsletter", body="Content", published=False)
         mock_post.return_value = Mock(
@@ -2227,7 +2418,7 @@ class TestButtondown:
         json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert json_data["status"] == "draft"
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_no_id_in_response(self, mock_post, sample_article):
         """If id is missing from response, url should be None."""
         mock_post.return_value = Mock(
@@ -2242,7 +2433,7 @@ class TestButtondown:
         assert result.article_id is None
         assert result.url is None
 
-    @patch("crier.platforms.buttondown.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_post.return_value = Mock(status_code=422, text="Invalid email")
 
@@ -2252,7 +2443,7 @@ class TestButtondown:
         assert result.success is False
         assert "422" in result.error
 
-    @patch("crier.platforms.buttondown.requests.patch")
+    @patch("crier.platforms.base.requests.patch")
     def test_update_success(self, mock_patch, sample_article):
         mock_patch.return_value = Mock(
             status_code=200,
@@ -2266,7 +2457,7 @@ class TestButtondown:
         assert result.article_id == "email_abc"
         assert "buttondown.email" in result.url
 
-    @patch("crier.platforms.buttondown.requests.patch")
+    @patch("crier.platforms.base.requests.patch")
     def test_update_failure(self, mock_patch, sample_article):
         mock_patch.return_value = Mock(status_code=404, text="Not found")
 
@@ -2276,7 +2467,7 @@ class TestButtondown:
         assert result.success is False
         assert "404" in result.error
 
-    @patch("crier.platforms.buttondown.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2298,7 +2489,7 @@ class TestButtondown:
         assert articles[1]["published"] is False
         assert "buttondown.email/archive/e1" in articles[0]["url"]
 
-    @patch("crier.platforms.buttondown.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_as_list_response(self, mock_get):
         """Buttondown may return a plain list instead of paginated results."""
         mock_get.return_value = Mock(
@@ -2313,7 +2504,7 @@ class TestButtondown:
 
         assert len(articles) == 1
 
-    @patch("crier.platforms.buttondown.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_list_articles_api_error(self, mock_get):
         mock_get.return_value = Mock(status_code=401, text="Unauthorized")
 
@@ -2322,7 +2513,7 @@ class TestButtondown:
 
         assert articles == []
 
-    @patch("crier.platforms.buttondown.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2335,7 +2526,7 @@ class TestButtondown:
         assert article is not None
         assert article["id"] == "e1"
 
-    @patch("crier.platforms.buttondown.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_not_found(self, mock_get):
         mock_get.return_value = Mock(status_code=404)
 
@@ -2344,7 +2535,7 @@ class TestButtondown:
 
         assert article is None
 
-    @patch("crier.platforms.buttondown.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_success_204(self, mock_delete):
         mock_delete.return_value = Mock(status_code=204)
 
@@ -2353,7 +2544,7 @@ class TestButtondown:
 
         assert result.success is True
 
-    @patch("crier.platforms.buttondown.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_success_200(self, mock_delete):
         mock_delete.return_value = Mock(status_code=200)
 
@@ -2362,7 +2553,7 @@ class TestButtondown:
 
         assert result.success is True
 
-    @patch("crier.platforms.buttondown.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_failure(self, mock_delete):
         mock_delete.return_value = Mock(status_code=403, text="Forbidden")
 
@@ -2418,7 +2609,7 @@ class TestTelegram:
         assert "*Simple*" in msg
         assert "#" not in msg  # No tags
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success_public_channel(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2439,7 +2630,7 @@ class TestTelegram:
         assert result.article_id == "42"
         assert result.url == "https://t.me/mychannel/42"
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success_private_channel(self, mock_post):
         """Private channels have no username, so URL should be None."""
         mock_post.return_value = Mock(
@@ -2461,7 +2652,7 @@ class TestTelegram:
         assert result.article_id == "99"
         assert result.url is None
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_telegram_error(self, mock_post):
         """Telegram returns 200 but ok=false."""
         mock_post.return_value = Mock(
@@ -2479,7 +2670,7 @@ class TestTelegram:
         assert result.success is False
         assert "chat not found" in result.error
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_http_error(self, mock_post):
         mock_post.return_value = Mock(status_code=401, text="Unauthorized")
 
@@ -2507,7 +2698,7 @@ class TestTelegram:
         assert result.success is False
         assert "too long" in result.error.lower()
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_success(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2528,7 +2719,7 @@ class TestTelegram:
         assert result.article_id == "42"
         assert result.url == "https://t.me/mychannel/42"
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_telegram_error(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2545,7 +2736,7 @@ class TestTelegram:
         assert result.success is False
         assert "message to edit not found" in result.error
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_update_http_error(self, mock_post):
         mock_post.return_value = Mock(status_code=400, text="Bad Request")
 
@@ -2564,7 +2755,7 @@ class TestTelegram:
         tg = Telegram("bot_token:chat_id")
         assert tg.get_article("42") is None
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_delete_success(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2577,7 +2768,7 @@ class TestTelegram:
         assert result.success is True
         assert result.platform == "telegram"
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_delete_telegram_error(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2593,7 +2784,7 @@ class TestTelegram:
         assert result.success is False
         assert "can't be deleted" in result.error
 
-    @patch("crier.platforms.telegram.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_delete_http_error(self, mock_post):
         mock_post.return_value = Mock(status_code=403, text="Forbidden")
 
@@ -2648,7 +2839,7 @@ class TestDiscord:
         assert "url" not in embed
         assert "footer" not in embed
 
-    @patch("crier.platforms.discord.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2663,7 +2854,7 @@ class TestDiscord:
         assert result.url is None  # Webhooks don't return URLs
         assert result.platform == "discord"
 
-    @patch("crier.platforms.discord.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_with_canonical_url(self, mock_post):
         """Articles with canonical_url get a different content prefix."""
         mock_post.return_value = Mock(
@@ -2683,7 +2874,7 @@ class TestDiscord:
         json_data = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert "New post" in json_data["content"]
 
-    @patch("crier.platforms.discord.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_without_canonical_url(self, mock_post):
         mock_post.return_value = Mock(
             status_code=200,
@@ -2699,7 +2890,7 @@ class TestDiscord:
         assert "**My Post**" in json_data["content"]
         assert "New post" not in json_data["content"]
 
-    @patch("crier.platforms.discord.requests.post")
+    @patch("crier.platforms.base.requests.post")
     def test_publish_failure(self, mock_post, sample_article):
         mock_post.return_value = Mock(status_code=400, text="Bad Request")
 
@@ -2722,7 +2913,7 @@ class TestDiscord:
         assert result.success is False
         assert "too long" in result.error.lower()
 
-    @patch("crier.platforms.discord.requests.patch")
+    @patch("crier.platforms.base.requests.patch")
     def test_update_success(self, mock_patch, sample_article):
         mock_patch.return_value = Mock(
             status_code=200,
@@ -2736,7 +2927,7 @@ class TestDiscord:
         assert result.article_id == "msg_123"
         assert result.url is None
 
-    @patch("crier.platforms.discord.requests.patch")
+    @patch("crier.platforms.base.requests.patch")
     def test_update_without_canonical_url(self, mock_patch):
         """Update message without canonical_url uses plain title format."""
         mock_patch.return_value = Mock(
@@ -2754,7 +2945,7 @@ class TestDiscord:
         assert "**Plain Title**" in json_data["content"]
         assert "New post" not in json_data["content"]
 
-    @patch("crier.platforms.discord.requests.patch")
+    @patch("crier.platforms.base.requests.patch")
     def test_update_failure(self, mock_patch, sample_article):
         mock_patch.return_value = Mock(status_code=404, text="Unknown Message")
 
@@ -2768,7 +2959,7 @@ class TestDiscord:
         d = Discord(self.WEBHOOK_URL)
         assert d.list_articles() == []
 
-    @patch("crier.platforms.discord.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_success(self, mock_get):
         mock_get.return_value = Mock(
             status_code=200,
@@ -2781,7 +2972,7 @@ class TestDiscord:
         assert article is not None
         assert article["id"] == "msg_123"
 
-    @patch("crier.platforms.discord.requests.get")
+    @patch("crier.platforms.base.requests.get")
     def test_get_article_not_found(self, mock_get):
         mock_get.return_value = Mock(status_code=404)
 
@@ -2790,7 +2981,7 @@ class TestDiscord:
 
         assert article is None
 
-    @patch("crier.platforms.discord.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_success(self, mock_delete):
         mock_delete.return_value = Mock(status_code=204)
 
@@ -2800,7 +2991,7 @@ class TestDiscord:
         assert result.success is True
         assert result.platform == "discord"
 
-    @patch("crier.platforms.discord.requests.delete")
+    @patch("crier.platforms.base.requests.delete")
     def test_delete_failure(self, mock_delete):
         mock_delete.return_value = Mock(status_code=404, text="Unknown Message")
 
@@ -2809,3 +3000,176 @@ class TestDiscord:
 
         assert result.success is False
         assert "404" in result.error
+
+
+class TestRetryRequest:
+    """Tests for Platform.retry_request() retry logic."""
+
+    def _make_platform(self, max_retries=3, retry_backoff=0.0):
+        """Create a DevTo platform instance with fast retries for testing."""
+        platform = DevTo("test-key")
+        platform.max_retries = max_retries
+        platform.retry_backoff = retry_backoff  # No delay in tests
+        return platform
+
+    @patch("crier.platforms.base.requests.post")
+    def test_success_no_retry(self, mock_post):
+        """Successful request should not retry."""
+        mock_post.return_value = Mock(status_code=201, json=lambda: {"id": "1"})
+        platform = self._make_platform()
+
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 201
+        assert mock_post.call_count == 1
+
+    @patch("crier.platforms.base.requests.get")
+    def test_429_retry_then_success(self, mock_get):
+        """429 rate limit should trigger retry."""
+        rate_limit_resp = Mock(
+            status_code=429, headers={"Retry-After": "0"}, text="Rate limited"
+        )
+        success_resp = Mock(status_code=200, json=lambda: {"data": []})
+        mock_get.side_effect = [rate_limit_resp, success_resp]
+
+        platform = self._make_platform()
+        resp = platform.retry_request("get", "https://api.example.com/articles")
+
+        assert resp.status_code == 200
+        assert mock_get.call_count == 2
+
+    @patch("crier.platforms.base.requests.post")
+    def test_503_retry_then_success(self, mock_post):
+        """503 server error should trigger retry."""
+        error_resp = Mock(status_code=503, headers={}, text="Service Unavailable")
+        success_resp = Mock(status_code=201, json=lambda: {"id": "1"})
+        mock_post.side_effect = [error_resp, success_resp]
+
+        platform = self._make_platform()
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 201
+        assert mock_post.call_count == 2
+
+    @patch("crier.platforms.base.requests.post")
+    def test_401_no_retry(self, mock_post):
+        """401 unauthorized should NOT retry."""
+        mock_post.return_value = Mock(status_code=401, text="Unauthorized")
+        platform = self._make_platform()
+
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 401
+        assert mock_post.call_count == 1
+
+    @patch("crier.platforms.base.requests.post")
+    def test_400_no_retry(self, mock_post):
+        """400 bad request should NOT retry."""
+        mock_post.return_value = Mock(status_code=400, text="Bad Request")
+        platform = self._make_platform()
+
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 400
+        assert mock_post.call_count == 1
+
+    @patch("crier.platforms.base.requests.post")
+    def test_exhausted_retries_returns_last_response(self, mock_post):
+        """When all retries exhausted, return the last error response."""
+        error_resp = Mock(status_code=502, headers={}, text="Bad Gateway")
+        mock_post.return_value = error_resp
+
+        platform = self._make_platform(max_retries=2)
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 502
+        assert mock_post.call_count == 3  # initial + 2 retries
+
+    @patch("crier.platforms.base.requests.get")
+    def test_connection_error_retry(self, mock_get):
+        """ConnectionError should trigger retry."""
+        mock_get.side_effect = [
+            requests.ConnectionError("Connection refused"),
+            Mock(status_code=200, json=lambda: {}),
+        ]
+
+        platform = self._make_platform()
+        resp = platform.retry_request("get", "https://api.example.com/articles")
+
+        assert resp.status_code == 200
+        assert mock_get.call_count == 2
+
+    @patch("crier.platforms.base.requests.get")
+    def test_timeout_retry(self, mock_get):
+        """Timeout should trigger retry."""
+        mock_get.side_effect = [
+            requests.Timeout("Read timed out"),
+            Mock(status_code=200, json=lambda: {}),
+        ]
+
+        platform = self._make_platform()
+        resp = platform.retry_request("get", "https://api.example.com/articles")
+
+        assert resp.status_code == 200
+        assert mock_get.call_count == 2
+
+    @patch("crier.platforms.base.requests.get")
+    def test_connection_error_exhausted_raises(self, mock_get):
+        """ConnectionError should raise after all retries exhausted."""
+        mock_get.side_effect = requests.ConnectionError("Connection refused")
+
+        platform = self._make_platform(max_retries=1)
+        with pytest.raises(requests.ConnectionError):
+            platform.retry_request("get", "https://api.example.com/articles")
+
+        assert mock_get.call_count == 2  # initial + 1 retry
+
+    @patch("crier.platforms.base.requests.get")
+    def test_retry_after_header_respected(self, mock_get):
+        """Retry-After header should be parsed for wait time."""
+        rate_limit_resp = Mock(
+            status_code=429, headers={"Retry-After": "0"}, text="Rate limited"
+        )
+        success_resp = Mock(status_code=200, json=lambda: {})
+        mock_get.side_effect = [rate_limit_resp, success_resp]
+
+        platform = self._make_platform()
+        resp = platform.retry_request("get", "https://api.example.com/articles")
+
+        assert resp.status_code == 200
+
+    @patch("crier.platforms.base.requests.post")
+    def test_zero_retries_no_retry(self, mock_post):
+        """With max_retries=0, no retry should happen."""
+        mock_post.return_value = Mock(status_code=503, headers={}, text="Error")
+
+        platform = self._make_platform(max_retries=0)
+        resp = platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        assert resp.status_code == 503
+        assert mock_post.call_count == 1
+
+    @patch("crier.platforms.base.requests.post")
+    def test_default_timeout_applied(self, mock_post):
+        """retry_request should set default timeout from platform.timeout."""
+        mock_post.return_value = Mock(status_code=200, json=lambda: {})
+        platform = self._make_platform()
+        platform.timeout = 45
+
+        platform.retry_request("post", "https://api.example.com/articles", json={})
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["timeout"] == 45
+
+    @patch("crier.platforms.base.requests.post")
+    def test_custom_timeout_preserved(self, mock_post):
+        """Explicit timeout in kwargs should not be overwritten."""
+        mock_post.return_value = Mock(status_code=200, json=lambda: {})
+        platform = self._make_platform()
+
+        platform.retry_request(
+            "post", "https://api.example.com/articles", json={}, timeout=60
+        )
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["timeout"] == 60

@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import requests
-
 from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult, ThreadPublishResult
 
 
@@ -76,11 +74,11 @@ class Mastodon(Platform):
             "visibility": "public" if article.published else "private",
         }
 
-        resp = requests.post(
+        resp = self.retry_request(
+            "post",
             f"{self.instance}/api/v1/statuses",
             headers=self.headers,
             json=data,
-            timeout=30,
         )
 
         if resp.status_code in (200, 201):
@@ -116,11 +114,11 @@ class Mastodon(Platform):
                 error=error,
             )
 
-        resp = requests.put(
+        resp = self.retry_request(
+            "put",
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
             json={"status": text},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -141,10 +139,10 @@ class Mastodon(Platform):
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
         """List your recent toots."""
         # First get the account ID
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.instance}/api/v1/accounts/verify_credentials",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code != 200:
@@ -153,11 +151,11 @@ class Mastodon(Platform):
         account_id = resp.json().get("id")
 
         # Then get statuses
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.instance}/api/v1/accounts/{account_id}/statuses",
             headers=self.headers,
             params={"limit": limit},
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -174,10 +172,10 @@ class Mastodon(Platform):
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific toot by ID."""
-        resp = requests.get(
+        resp = self.retry_request(
+            "get",
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
 
         if resp.status_code == 200:
@@ -186,10 +184,10 @@ class Mastodon(Platform):
 
     def delete(self, article_id: str) -> DeleteResult:
         """Delete a toot."""
-        resp = requests.delete(
+        resp = self.retry_request(
+            "delete",
             f"{self.instance}/api/v1/statuses/{article_id}",
             headers=self.headers,
-            timeout=30,
         )
         if resp.status_code == 200:
             return DeleteResult(success=True, platform=self.name)
@@ -251,11 +249,11 @@ class Mastodon(Platform):
             if reply_to_id:
                 data["in_reply_to_id"] = reply_to_id
 
-            resp = requests.post(
+            resp = self.retry_request(
+                "post",
                 f"{self.instance}/api/v1/statuses",
                 headers=self.headers,
                 json=data,
-                timeout=30,
             )
 
             if resp.status_code in (200, 201):
