@@ -83,11 +83,27 @@ def _parse_date_filter(value: str) -> datetime:
         )
 
 
+def get_project_path() -> Path | None:
+    """Get the --project path from Click context, if set."""
+    ctx = click.get_current_context(silent=True)
+    if ctx and ctx.obj:
+        return ctx.obj.get("project_path")
+    return None
+
+
 @click.group()
 @click.version_option(version=__version__)
-def cli():
+@click.option(
+    "--project",
+    type=click.Path(exists=True, file_okay=False, resolve_path=True),
+    default=None,
+    help="Project directory containing .crier/. Overrides directory discovery.",
+)
+@click.pass_context
+def cli(ctx, project):
     """Crier - Cross-post your content everywhere."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["project_path"] = Path(project) if project else None
 
 
 @cli.command()

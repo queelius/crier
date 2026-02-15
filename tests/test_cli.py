@@ -2666,6 +2666,55 @@ Content {i}.
         assert result.output.count("<item>") == 2
 
 
+class TestProjectOption:
+    """Tests for --project global option."""
+
+    def test_project_option_accepted(self, runner, tmp_path):
+        """CLI accepts --project before subcommand."""
+        result = runner.invoke(cli, ["--project", str(tmp_path), "--version"])
+        assert result.exit_code == 0
+
+    def test_project_option_stores_in_context(self, runner, tmp_path):
+        """--project value is stored in Click context."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+
+        # --help should work with --project
+        result = runner.invoke(cli, ["--project", str(tmp_path), "--help"])
+        assert result.exit_code == 0
+        assert "--project" in result.output
+
+    def test_project_option_rejects_nonexistent_dir(self, runner, tmp_path):
+        """--project rejects a directory that doesn't exist."""
+        nonexistent = tmp_path / "does_not_exist"
+        # Must use a real subcommand; eager options (--version/--help) skip validation
+        result = runner.invoke(cli, ["--project", str(nonexistent), "doctor"])
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    def test_project_option_rejects_file(self, runner, tmp_path):
+        """--project rejects a file path (must be directory)."""
+        some_file = tmp_path / "somefile.txt"
+        some_file.write_text("hello")
+        result = runner.invoke(cli, ["--project", str(some_file), "doctor"])
+        assert result.exit_code != 0
+
+    def test_project_option_in_help(self, runner):
+        """--project appears in top-level help."""
+        result = runner.invoke(cli, ["--help"])
+        assert result.exit_code == 0
+        assert "--project" in result.output
+
+    def test_no_project_option_default_none(self, runner):
+        """Without --project, context stores None."""
+        from crier.cli import get_project_path
+
+        # Invoke --version without --project; context should have None
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+
+
 class TestExitCodes:
     """Tests for consistent exit codes."""
 
