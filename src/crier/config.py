@@ -39,18 +39,22 @@ def get_local_config_path(base_path: Path | None = None) -> Path:
     return base_path / LOCAL_CONFIG_DIR / LOCAL_CONFIG_FILE
 
 
-def find_local_config() -> Path | None:
+def find_local_config(base_path: Path | None = None) -> Path | None:
     """Find existing local config by traversing upward. Returns None if not found."""
-    path = get_local_config_path()
+    path = get_local_config_path(base_path)
     return path if path.exists() else None
 
 
-def load_config() -> dict[str, Any]:
+def load_config(base_path: Path | None = None) -> dict[str, Any]:
     """Load configuration, merging local and global configs.
 
     Local config (.crier/config.yaml) takes precedence for content_paths and profiles.
     Global config (~/.config/crier/config.yaml) is used for API keys.
     Environment variables override everything for API keys.
+
+    Args:
+        base_path: Override directory for local config discovery.
+                   If None, uses cwd (existing behavior).
     """
     config: dict[str, Any] = {}
 
@@ -61,7 +65,7 @@ def load_config() -> dict[str, Any]:
             config = yaml.safe_load(f) or {}
 
     # Merge local config (for content_paths, profiles)
-    local_path = get_local_config_path()
+    local_path = get_local_config_path(base_path)
     if local_path.exists():
         with open(local_path) as f:
             local_config = yaml.safe_load(f) or {}
@@ -85,7 +89,7 @@ def save_config(config: dict[str, Any]) -> None:
         yaml.dump(config, f, default_flow_style=False)
 
 
-def get_api_key(platform: str) -> str | None:
+def get_api_key(platform: str, base_path: Path | None = None) -> str | None:
     """Get API key for a platform.
 
     Checks in order:
@@ -98,7 +102,7 @@ def get_api_key(platform: str) -> str | None:
         return env_val
 
     # Fall back to config file
-    config = load_config()
+    config = load_config(base_path)
     return config.get("platforms", {}).get(platform, {}).get("api_key")
 
 
@@ -126,7 +130,7 @@ def is_import_mode_key(api_key: str | None) -> bool:
     return api_key.lower() == "import"
 
 
-def is_platform_configured(platform: str) -> bool:
+def is_platform_configured(platform: str, base_path: Path | None = None) -> bool:
     """Check if a platform is configured (has any api_key entry, even if empty).
 
     This distinguishes between:
@@ -140,12 +144,12 @@ def is_platform_configured(platform: str) -> bool:
         return True
 
     # Check config file - platform section must exist with api_key
-    config = load_config()
+    config = load_config(base_path)
     platform_config = config.get("platforms", {}).get(platform, {})
     return "api_key" in platform_config
 
 
-def get_platform_mode(platform: str) -> str:
+def get_platform_mode(platform: str, base_path: Path | None = None) -> str:
     """Get the mode for a platform.
 
     Returns:
@@ -154,7 +158,7 @@ def get_platform_mode(platform: str) -> str:
         'import' - Platform uses URL import (like Medium)
         'unconfigured' - Platform has no configuration
     """
-    api_key = get_api_key(platform)
+    api_key = get_api_key(platform, base_path)
     if api_key is None:
         return 'unconfigured'
     elif is_import_mode_key(api_key):
@@ -205,18 +209,23 @@ def load_global_config() -> dict[str, Any]:
     return {}
 
 
-def load_local_config() -> dict[str, Any]:
-    """Load only the local config (without merging global)."""
-    local_path = get_local_config_path()
+def load_local_config(base_path: Path | None = None) -> dict[str, Any]:
+    """Load only the local config (without merging global).
+
+    Args:
+        base_path: Override directory for local config discovery.
+                   If None, uses cwd (existing behavior).
+    """
+    local_path = get_local_config_path(base_path)
     if local_path.exists():
         with open(local_path) as f:
             return yaml.safe_load(f) or {}
     return {}
 
 
-def set_api_key(platform: str, api_key: str) -> None:
+def set_api_key(platform: str, api_key: str, base_path: Path | None = None) -> None:
     """Set API key for a platform in config file."""
-    config = load_config()
+    config = load_config(base_path)
     if "platforms" not in config:
         config["platforms"] = {}
     if platform not in config["platforms"]:
@@ -226,12 +235,12 @@ def set_api_key(platform: str, api_key: str) -> None:
     save_config(config)
 
 
-def get_profile(name: str) -> list[str] | None:
+def get_profile(name: str, base_path: Path | None = None) -> list[str] | None:
     """Get a profile (list of platforms) by name.
 
     Profiles can reference other profiles for composition.
     """
-    config = load_config()
+    config = load_config(base_path)
     profiles = config.get("profiles", {})
 
     if name not in profiles:
@@ -244,7 +253,7 @@ def get_profile(name: str) -> list[str] | None:
     for item in platforms:
         if item in profiles:
             # This is a reference to another profile
-            nested = get_profile(item)
+            nested = get_profile(item, base_path)
             if nested:
                 expanded.extend(nested)
         else:
@@ -261,9 +270,9 @@ def get_profile(name: str) -> list[str] | None:
     return result
 
 
-def set_profile(name: str, platforms: list[str]) -> None:
+def set_profile(name: str, platforms: list[str], base_path: Path | None = None) -> None:
     """Set a profile in config file."""
-    config = load_config()
+    config = load_config(base_path)
     if "profiles" not in config:
         config["profiles"] = {}
 
@@ -271,25 +280,31 @@ def set_profile(name: str, platforms: list[str]) -> None:
     save_config(config)
 
 
-def get_all_profiles() -> dict[str, list[str]]:
+def get_all_profiles(base_path: Path | None = None) -> dict[str, list[str]]:
     """Get all defined profiles."""
-    config = load_config()
+    config = load_config(base_path)
     return config.get("profiles", {})
 
 
-def get_content_paths() -> list[str]:
+def get_content_paths(base_path: Path | None = None) -> list[str]:
     """Get configured content paths.
 
     Returns list of directories to scan for content.
     Can be relative or absolute paths.
     """
-    config = load_config()
+    config = load_config(base_path)
     return config.get("content_paths", [])
 
 
-def _save_local_config(config_data: dict[str, Any]) -> None:
-    """Save configuration to local .crier/config.yaml."""
-    local_path = get_local_config_path()
+def _save_local_config(config_data: dict[str, Any], base_path: Path | None = None) -> None:
+    """Save configuration to local .crier/config.yaml.
+
+    Args:
+        config_data: Data to merge into the local config file.
+        base_path: Override directory for local config discovery.
+                   If None, uses cwd (existing behavior).
+    """
+    local_path = get_local_config_path(base_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing local config
@@ -305,25 +320,25 @@ def _save_local_config(config_data: dict[str, Any]) -> None:
         yaml.dump(existing, f, default_flow_style=False)
 
 
-def set_content_paths(paths: list[str]) -> None:
+def set_content_paths(paths: list[str], base_path: Path | None = None) -> None:
     """Set content paths in repo-local config (.crier/config.yaml)."""
-    _save_local_config({"content_paths": paths})
+    _save_local_config({"content_paths": paths}, base_path)
 
 
-def add_content_path(path: str) -> None:
+def add_content_path(path: str, base_path: Path | None = None) -> None:
     """Add a content path to repo-local config."""
-    paths = get_content_paths()
+    paths = get_content_paths(base_path)
     if path not in paths:
         paths.append(path)
-    set_content_paths(paths)
+    set_content_paths(paths, base_path)
 
 
-def remove_content_path(path: str) -> bool:
+def remove_content_path(path: str, base_path: Path | None = None) -> bool:
     """Remove a content path from repo-local config. Returns True if removed."""
-    paths = get_content_paths()
+    paths = get_content_paths(base_path)
     if path in paths:
         paths.remove(path)
-        set_content_paths(paths)
+        set_content_paths(paths, base_path)
         return True
     return False
 
@@ -333,7 +348,7 @@ def remove_content_path(path: str) -> bool:
 DEFAULT_EXCLUDE_PATTERNS = ["_index.md"]
 
 
-def get_exclude_patterns() -> list[str]:
+def get_exclude_patterns(base_path: Path | None = None) -> list[str]:
     """Get patterns to exclude from content discovery.
 
     Returns list of filename patterns to exclude.
@@ -345,30 +360,30 @@ def get_exclude_patterns() -> list[str]:
           - _index.md
           - draft-*
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("exclude_patterns", [])
 
 
-def set_exclude_patterns(patterns: list[str]) -> None:
+def set_exclude_patterns(patterns: list[str], base_path: Path | None = None) -> None:
     """Set exclude patterns in repo-local config."""
-    _save_local_config({"exclude_patterns": patterns})
+    _save_local_config({"exclude_patterns": patterns}, base_path)
 
 
-def get_site_base_url() -> str | None:
+def get_site_base_url(base_path: Path | None = None) -> str | None:
     """Get the site base URL for canonical URL inference.
 
     This is used to auto-generate canonical_url when not specified in front matter.
     Configured in local .crier/config.yaml.
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("site_base_url")
 
 
-def set_site_base_url(url: str) -> None:
+def set_site_base_url(url: str, base_path: Path | None = None) -> None:
     """Set the site base URL in repo-local config."""
     # Normalize: remove trailing slash
     url = url.rstrip("/")
-    _save_local_config({"site_base_url": url})
+    _save_local_config({"site_base_url": url}, base_path)
 
 
 def infer_canonical_url(file_path: Path, content_root: Path, base_url: str) -> str:
@@ -416,7 +431,7 @@ def infer_canonical_url(file_path: Path, content_root: Path, base_url: str) -> s
 DEFAULT_FILE_EXTENSIONS = [".md"]
 
 
-def get_file_extensions() -> list[str]:
+def get_file_extensions(base_path: Path | None = None) -> list[str]:
     """Get file extensions to scan for content.
 
     Returns list of extensions (with leading dot).
@@ -427,33 +442,33 @@ def get_file_extensions() -> list[str]:
           - .md
           - .mdx
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("file_extensions", [])
 
 
-def set_file_extensions(extensions: list[str]) -> None:
+def set_file_extensions(extensions: list[str], base_path: Path | None = None) -> None:
     """Set file extensions in repo-local config."""
     # Normalize: ensure leading dot
     normalized = [ext if ext.startswith(".") else f".{ext}" for ext in extensions]
-    _save_local_config({"file_extensions": normalized})
+    _save_local_config({"file_extensions": normalized}, base_path)
 
 
-def get_default_profile() -> str | None:
+def get_default_profile(base_path: Path | None = None) -> str | None:
     """Get the default profile to use when no platform is specified.
 
     Configure in .crier/config.yaml:
         default_profile: blogs
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("default_profile")
 
 
-def set_default_profile(profile: str) -> None:
+def set_default_profile(profile: str, base_path: Path | None = None) -> None:
     """Set the default profile in repo-local config."""
-    _save_local_config({"default_profile": profile})
+    _save_local_config({"default_profile": profile}, base_path)
 
 
-def get_rewrite_author() -> str | None:
+def get_rewrite_author(base_path: Path | None = None) -> str | None:
     """Get the default author for rewrites.
 
     When Claude or other tools generate short-form content,
@@ -462,13 +477,13 @@ def get_rewrite_author() -> str | None:
     Configure in .crier/config.yaml:
         rewrite_author: claude-code
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("rewrite_author")
 
 
-def set_rewrite_author(author: str) -> None:
+def set_rewrite_author(author: str, base_path: Path | None = None) -> None:
     """Set the default rewrite author in repo-local config."""
-    _save_local_config({"rewrite_author": author})
+    _save_local_config({"rewrite_author": author}, base_path)
 
 
 def get_llm_config() -> dict[str, Any]:
@@ -576,7 +591,7 @@ def get_llm_truncate_fallback() -> bool:
     return bool(llm_config.get("truncate_fallback", False))
 
 
-def get_check_overrides() -> dict[str, str]:
+def get_check_overrides(base_path: Path | None = None) -> dict[str, str]:
     """Get check severity overrides from local config.
 
     Configure in .crier/config.yaml:
@@ -588,7 +603,7 @@ def get_check_overrides() -> dict[str, str]:
     Returns:
         Dict mapping check_name to severity string (or "disabled").
     """
-    config = load_local_config()
+    config = load_local_config(base_path)
     return config.get("checks", {})
 
 

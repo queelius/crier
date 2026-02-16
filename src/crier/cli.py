@@ -541,7 +541,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     # Use default_profile if no platforms specified
     if not platforms:
-        default_profile = get_default_profile()
+        default_profile = get_default_profile(base_path=get_project_path())
         if default_profile:
             profile_platforms = get_profile(default_profile)
             if profile_platforms:
@@ -577,7 +577,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
     # Use config default for rewrite_author if not specified
     if rewrite_author is None:
-        rewrite_author = get_rewrite_author()
+        rewrite_author = get_rewrite_author(base_path=get_project_path())
 
     # Remove duplicates while preserving order
     seen = set()
@@ -596,8 +596,8 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         report = check_file(
             file,
             platforms=platforms,
-            severity_overrides=get_check_overrides(),
-            site_base_url=get_site_base_url(),
+            severity_overrides=get_check_overrides(base_path=get_project_path()),
+            site_base_url=get_site_base_url(base_path=get_project_path()),
         )
 
         if strict:
@@ -755,7 +755,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     # Warn if file is outside content_paths
     file_path = Path(file)
     if not _is_in_content_paths(file_path):
-        content_paths = get_content_paths()
+        content_paths = get_content_paths(base_path=get_project_path())
         if content_paths:
             console.print(
                 "[yellow]Note: This file is not in your"
@@ -1182,6 +1182,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             rewritten=is_rewritten,
                             rewrite_author=rewrite_author if is_rewritten else None,
                             posted_content=posted_content if is_rewritten else None,
+                            base_path=get_project_path(),
                         )
 
                     is_import = getattr(result, 'is_import_mode', False)
@@ -1244,6 +1245,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         content_hash=content_hash,
                         rewritten=is_rewritten,
                         rewrite_author=rewrite_author if is_rewritten else None,
+                        base_path=get_project_path(),
                     )
                 else:
                     record_publication(
@@ -1257,6 +1259,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         rewritten=is_rewritten,
                         rewrite_author=rewrite_author if is_rewritten else None,
                         posted_content=posted_content if is_rewritten else None,
+                        base_path=get_project_path(),
                     )
             elif not result.success and article.canonical_url and result.error:
                 # Record API-level failure for retry tracking
@@ -1266,6 +1269,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     error_msg=result.error,
                     title=article.title,
                     source_file=file,
+                    base_path=get_project_path(),
                 )
 
         except Exception as e:
@@ -1284,6 +1288,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     error_msg=str(e),
                     title=article.title,
                     source_file=file,
+                    base_path=get_project_path(),
                 )
 
     # Calculate summary
@@ -1448,7 +1453,7 @@ def list_articles(
     if platform is None:
         all_publications = []
         for plat_name in PLATFORMS:
-            pubs = get_platform_publications(plat_name)
+            pubs = get_platform_publications(plat_name, base_path=get_project_path())
             for pub in pubs:
                 pub["platform"] = plat_name
             all_publications.extend(pubs)
@@ -1535,7 +1540,7 @@ def list_articles(
         return
 
     # Default: read from registry for specific platform (what YOU have published)
-    publications = get_platform_publications(platform)
+    publications = get_platform_publications(platform, base_path=get_project_path())
 
     if not publications:
         console.print(f"No articles published to {platform} in registry.")
@@ -1830,7 +1835,7 @@ def config_get(key: str, json_output: bool):
     from .config import load_global_config, load_local_config
 
     global_cfg = load_global_config()
-    local_cfg = load_local_config()
+    local_cfg = load_local_config(base_path=get_project_path())
     # Local config takes precedence
     merged = {**global_cfg, **local_cfg}
 
@@ -1874,25 +1879,25 @@ def config_show():
     global_status = "[green]found[/green]" if global_path.exists() else "[dim]not found[/dim]"
     console.print(f"  Global config: {global_path} ({global_status})")
 
-    local_path = get_local_config_path()
+    local_path = get_local_config_path(base_path=get_project_path())
     local_status = "[green]found[/green]" if local_path.exists() else "[dim]not found[/dim]"
     console.print(f"  Local config:  {local_path} ({local_status})")
 
-    registry_path = get_registry_path()
+    registry_path = get_registry_path(base_path=get_project_path())
     registry_status = "[green]found[/green]" if registry_path.exists() else "[dim]not found[/dim]"
     console.print(f"  Registry:      {registry_path} ({registry_status})")
     console.print()
 
-    cfg = load_config()
+    cfg = load_config(base_path=get_project_path())
     global_cfg = load_global_config()
-    local_cfg = load_local_config()
+    local_cfg = load_local_config(base_path=get_project_path())
 
     if not cfg and not global_cfg and not local_cfg:
         console.print("No configuration found.")
         return
 
     # Show content paths with source
-    content_paths = get_content_paths()
+    content_paths = get_content_paths(base_path=get_project_path())
     if content_paths:
         # Determine source
         source = "local" if local_cfg.get("content_paths") else "global"
@@ -1907,7 +1912,7 @@ def config_show():
 
     # Show site_base_url (for canonical URL inference)
     from .config import get_site_base_url
-    site_base_url = get_site_base_url()
+    site_base_url = get_site_base_url(base_path=get_project_path())
     if site_base_url:
         console.print("[bold]Site Base URL[/bold] [dim](for canonical URL inference)[/dim]")
         console.print(f"  {site_base_url}")
@@ -1922,7 +1927,7 @@ def config_show():
     from .config import (get_exclude_patterns, DEFAULT_EXCLUDE_PATTERNS,
                         get_file_extensions, DEFAULT_FILE_EXTENSIONS,
                         get_default_profile, get_rewrite_author)
-    exclude_patterns = get_exclude_patterns()
+    exclude_patterns = get_exclude_patterns(base_path=get_project_path())
     if not exclude_patterns:
         console.print("[bold]Exclude Patterns[/bold] [dim](not configured)[/dim]")
         console.print(
@@ -1938,7 +1943,7 @@ def config_show():
     console.print()
 
     # Show file extensions
-    file_extensions = get_file_extensions()
+    file_extensions = get_file_extensions(base_path=get_project_path())
     if not file_extensions:
         console.print("[bold]File Extensions[/bold] [dim](not configured)[/dim]")
         console.print("  [dim]Using default: .md. Run 'crier init' to set explicitly.[/dim]")
@@ -1950,7 +1955,7 @@ def config_show():
     console.print()
 
     # Show default profile
-    default_profile = get_default_profile()
+    default_profile = get_default_profile(base_path=get_project_path())
     if default_profile:
         console.print("[bold]Default Profile[/bold]")
         console.print(f"  {default_profile}")
@@ -1960,7 +1965,7 @@ def config_show():
     console.print()
 
     # Show rewrite author
-    rewrite_author = get_rewrite_author()
+    rewrite_author = get_rewrite_author(base_path=get_project_path())
     if rewrite_author:
         console.print("[bold]Rewrite Author[/bold]")
         console.print(f"  {rewrite_author}")
@@ -2093,7 +2098,7 @@ def profile_show(name: str | None):
 @click.argument("name")
 def profile_delete(name: str):
     """Delete a profile."""
-    cfg = load_config()
+    cfg = load_config(base_path=get_project_path())
     profiles = cfg.get("profiles", {})
 
     if name not in profiles:
@@ -2139,7 +2144,7 @@ def content_remove(path: str):
 @content.command(name="show")
 def content_show():
     """Show configured content paths."""
-    paths = get_content_paths()
+    paths = get_content_paths(base_path=get_project_path())
 
     if not paths:
         console.print("[yellow]No content paths configured.[/yellow]")
@@ -2462,7 +2467,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
 
     # Handle --failed and --retry modes (alternate code paths)
     if failed or retry:
-        failures = get_failures()
+        failures = get_failures(base_path=get_project_path())
 
         if not failures:
             if json_output:
@@ -2587,6 +2592,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                             title=article.title,
                             source_file=source_file,
                             content_hash=content_hash,
+                            base_path=get_project_path(),
                         )
                         retry_results.append({
                             "platform": platform_name,
@@ -2606,6 +2612,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                             error_msg=result.error or "Unknown error",
                             title=article.title,
                             source_file=source_file,
+                            base_path=get_project_path(),
                         )
                         retry_results.append({
                             "platform": platform_name,
@@ -2625,6 +2632,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                         platform=platform_name,
                         error_msg=str(e),
                         source_file=source_file,
+                        base_path=get_project_path(),
                     )
                     retry_results.append({
                         "platform": platform_name,
@@ -2765,7 +2773,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         for f in files:
             try:
                 article = parse_markdown_file(str(f))
-                if article.canonical_url and _is_archived(article.canonical_url):
+                if article.canonical_url and _is_archived(article.canonical_url, base_path=get_project_path()):
                     continue  # Skip archived
             except Exception:
                 pass  # Include if we can't check
@@ -2776,7 +2784,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         if path:
             console.print(f"[yellow]No content files found in {path}[/yellow]")
         else:
-            content_paths = get_content_paths()
+            content_paths = get_content_paths(base_path=get_project_path())
             if not content_paths:
                 console.print("[yellow]No content paths configured.[/yellow]")
                 console.print("[dim]Add one with: crier config content add <path>[/dim]")
@@ -2833,9 +2841,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         current_hash = get_file_content_hash(file_path) if canonical_url else None
 
         for platform in check_platforms:
-            if canonical_url and is_published(canonical_url, platform):
+            if canonical_url and is_published(canonical_url, platform, base_path=get_project_path()):
                 # Check if content has changed (dirty)
-                if current_hash and has_content_changed(canonical_url, current_hash, platform):
+                if current_hash and has_content_changed(canonical_url, current_hash, platform, base_path=get_project_path()):
                     row.append("[yellow]⚠[/yellow]")
                     dirty_count += 1
                     dirty_items.append((file_path, platform, canonical_url, title))
@@ -2932,8 +2940,8 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         from .checker import check_file
         from .config import get_check_overrides, get_site_base_url
 
-        severity_overrides = get_check_overrides()
-        site_base_url = get_site_base_url()
+        severity_overrides = get_check_overrides(base_path=get_project_path())
+        site_base_url = get_site_base_url(base_path=get_project_path())
 
         checked_items = []
         skipped_count = 0
@@ -3151,7 +3159,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 action_verb = "Published"
             else:
                 # Update existing publication
-                pub_info = get_publication_info(canonical_url, platform)
+                pub_info = get_publication_info(canonical_url, platform, base_path=get_project_path())
                 if not pub_info or not pub_info.get("article_id"):
                     if not silent:
                         console.print(
@@ -3192,8 +3200,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     source_file=str(file_path),
                     content_hash=content_hash,
                     rewritten=rewritten,
-                    rewrite_author=get_rewrite_author() if rewritten else None,
+                    rewrite_author=get_rewrite_author(base_path=get_project_path()) if rewritten else None,
                     posted_content=rewrite_content if rewritten else None,
+                    base_path=get_project_path(),
                 )
                 publish_results.append({
                     "file": str(file_path),
@@ -3452,8 +3461,8 @@ def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: boo
         sys.exit(1)
 
     # Load config
-    severity_overrides = get_check_overrides()
-    site_base_url = get_site_base_url()
+    severity_overrides = get_check_overrides(base_path=get_project_path())
+    site_base_url = get_site_base_url(base_path=get_project_path())
 
     platforms = list(platform_args) if platform_args else None
 
@@ -3558,7 +3567,7 @@ def status(file: str | None, show_all: bool, verbose: bool):
     """
     if file:
         # Show status for a specific file
-        result = get_article_by_file(file)
+        result = get_article_by_file(file, base_path=get_project_path())
 
         if not result:
             console.print(f"[yellow]No publication record found for {file}[/yellow]")
@@ -3641,7 +3650,7 @@ def status(file: str | None, show_all: bool, verbose: bool):
 
     else:
         # Show all tracked posts (registry v2: keyed by canonical_url)
-        all_articles = get_all_articles()
+        all_articles = get_all_articles(base_path=get_project_path())
 
         if not all_articles:
             console.print("[yellow]No posts tracked yet.[/yellow]")
@@ -3649,7 +3658,7 @@ def status(file: str | None, show_all: bool, verbose: bool):
             return
 
         console.print("\n[bold]Tracked Posts[/bold]")
-        console.print(f"[dim]Registry: {get_registry_path()}[/dim]\n")
+        console.print(f"[dim]Registry: {get_registry_path(base_path=get_project_path())}[/dim]\n")
 
         table = Table(title=f"All Tracked Posts ({len(all_articles)})")
         table.add_column("Source File", style="cyan")
@@ -3843,7 +3852,7 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
         return
 
     # Check if already registered
-    if is_published(article.canonical_url, platform_name):
+    if is_published(article.canonical_url, platform_name, base_path=get_project_path()):
         console.print(f"[yellow]Already registered to {platform_name}.[/yellow]")
         if not yes and not click.confirm("Overwrite existing entry?", default=False):
             return
@@ -3858,6 +3867,7 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
         title=article.title,
         source_file=file,
         content_hash=content_hash,
+        base_path=get_project_path(),
     )
 
     console.print(f"[green]✓ Registered {file} as published to {platform_name}[/green]")
@@ -3885,11 +3895,11 @@ def unregister(file: str, platform_name: str):
         console.print("[dim]This file is not tracked in the registry.[/dim]")
         return
 
-    if not is_published(article.canonical_url, platform_name):
+    if not is_published(article.canonical_url, platform_name, base_path=get_project_path()):
         console.print(f"[yellow]Not registered to {platform_name}.[/yellow]")
         return
 
-    if remove_publication(article.canonical_url, platform_name):
+    if remove_publication(article.canonical_url, platform_name, base_path=get_project_path()):
         console.print(f"[green]✓ Unregistered {file} from {platform_name}[/green]")
     else:
         console.print("[red]Failed to unregister.[/red]")
@@ -4173,6 +4183,7 @@ def schedule_run(dry_run: bool, json_output: bool):
                         url=result.url,
                         title=article.title,
                         source_file=str(file_path),
+                        base_path=get_project_path(),
                     )
 
                 results.append({
@@ -4266,7 +4277,7 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
         raise SystemExit(1)
 
     # Get article data from registry
-    article_data = get_article_by_file(file)
+    article_data = get_article_by_file(file, base_path=get_project_path())
     if not article_data:
         if json_output:
             print(json_module.dumps({"success": False, "error": "Not found in registry"}))
@@ -4433,7 +4444,7 @@ def delete(file: str, platform_args: tuple[str, ...], delete_all: bool,
 
             if delete_result.success:
                 # Record deletion in registry
-                record_deletion(canonical_url, platform_name)
+                record_deletion(canonical_url, platform_name, base_path=get_project_path())
                 results.append({
                     "platform": platform_name,
                     "success": True,
@@ -4515,7 +4526,7 @@ def archive(file: str, json_output: bool):
         raise SystemExit(1)
 
     # Check if already archived
-    if is_archived(article.canonical_url):
+    if is_archived(article.canonical_url, base_path=get_project_path()):
         if json_output:
             print(json_module.dumps({"success": True, "already_archived": True}))
         else:
@@ -4523,7 +4534,7 @@ def archive(file: str, json_output: bool):
         return
 
     # Set archived
-    if set_archived(article.canonical_url, archived=True):
+    if set_archived(article.canonical_url, archived=True, base_path=get_project_path()):
         if json_output:
             print(json_module.dumps({"success": True, "archived": True}))
         else:
@@ -4566,7 +4577,7 @@ def unarchive(file: str, json_output: bool):
         raise SystemExit(1)
 
     # Check if archived
-    if not is_archived(article.canonical_url):
+    if not is_archived(article.canonical_url, base_path=get_project_path()):
         if json_output:
             print(json_module.dumps({"success": True, "already_unarchived": True}))
         else:
@@ -4574,7 +4585,7 @@ def unarchive(file: str, json_output: bool):
         return
 
     # Unarchive
-    if set_archived(article.canonical_url, archived=False):
+    if set_archived(article.canonical_url, archived=False, base_path=get_project_path()):
         if json_output:
             print(json_module.dumps({"success": True, "archived": False}))
         else:
@@ -4660,6 +4671,7 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                     likes=stats_result.likes,
                     comments=stats_result.comments,
                     reposts=stats_result.reposts,
+                    base_path=get_project_path(),
                 )
                 return {
                     "views": stats_result.views,
@@ -4675,9 +4687,9 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
         """Get cached stats or fetch fresh ones."""
         if not refresh:
             # Check cache age
-            age = get_stats_age_seconds(canonical_url, platform_name)
+            age = get_stats_age_seconds(canonical_url, platform_name, base_path=get_project_path())
             if age is not None and age < CACHE_TTL_SECONDS:
-                cached = get_cached_stats(canonical_url, platform_name)
+                cached = get_cached_stats(canonical_url, platform_name, base_path=get_project_path())
                 if cached:
                     return {
                         "views": cached.get("views"),
@@ -4731,7 +4743,7 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                 console.print("[red]Error: Missing canonical_url in front matter[/red]")
             raise SystemExit(1)
 
-        result = get_article_by_file(file)
+        result = get_article_by_file(file, base_path=get_project_path())
         if not result:
             if json_output:
                 print(json_module.dumps({"success": False, "error": "Not found in registry"}))
@@ -4918,7 +4930,7 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
         return
 
     # Aggregate mode (no file specified)
-    all_articles = get_all_articles()
+    all_articles = get_all_articles(base_path=get_project_path())
     if not all_articles:
         if json_output:
             print(json_module.dumps({"success": False, "error": "No articles in registry"}))

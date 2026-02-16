@@ -896,6 +896,126 @@ class TestContentPathManipulation:
         assert get_content_paths() == []
 
 
+class TestLoadConfigWithBasePath:
+    """Tests for load_config() / load_local_config() with base_path parameter."""
+
+    def test_load_config_uses_base_path(self, tmp_path, monkeypatch):
+        """load_config(base_path=X) finds X/.crier/config.yaml."""
+        # Set up global config (empty)
+        config_dir = tmp_path / "global_config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        # cwd has NO .crier directory
+        empty_cwd = tmp_path / "empty_cwd"
+        empty_cwd.mkdir()
+        monkeypatch.chdir(empty_cwd)
+
+        # base_path project has a .crier/config.yaml with content_paths
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        local_crier = project_dir / ".crier"
+        local_crier.mkdir()
+        local_config = {"content_paths": ["src/posts", "src/articles"]}
+        (local_crier / "config.yaml").write_text(yaml.dump(local_config))
+
+        config = load_config(base_path=project_dir)
+        assert config.get("content_paths") == ["src/posts", "src/articles"]
+
+    def test_load_config_without_base_path_uses_cwd(self, tmp_path, monkeypatch):
+        """load_config() without base_path still uses cwd."""
+        config_dir = tmp_path / "global_config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        # cwd has .crier with content_paths
+        monkeypatch.chdir(tmp_path)
+        local_crier = tmp_path / ".crier"
+        local_crier.mkdir()
+        local_config = {"content_paths": ["cwd_posts"]}
+        (local_crier / "config.yaml").write_text(yaml.dump(local_config))
+
+        config = load_config()
+        assert config.get("content_paths") == ["cwd_posts"]
+
+    def test_base_path_overrides_cwd(self, tmp_path, monkeypatch):
+        """base_path config takes priority over cwd config."""
+        config_dir = tmp_path / "global_config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        # cwd has one set of content_paths
+        cwd_dir = tmp_path / "cwd_project"
+        cwd_dir.mkdir()
+        (cwd_dir / ".crier").mkdir()
+        (cwd_dir / ".crier" / "config.yaml").write_text(
+            yaml.dump({"content_paths": ["cwd_posts"]})
+        )
+        monkeypatch.chdir(cwd_dir)
+
+        # base_path has different content_paths
+        project_dir = tmp_path / "other_project"
+        project_dir.mkdir()
+        (project_dir / ".crier").mkdir()
+        (project_dir / ".crier" / "config.yaml").write_text(
+            yaml.dump({"content_paths": ["other_posts"]})
+        )
+
+        config = load_config(base_path=project_dir)
+        assert config.get("content_paths") == ["other_posts"]
+
+    def test_get_content_paths_with_base_path(self, tmp_path, monkeypatch):
+        """get_content_paths(base_path=X) reads from X's local config."""
+        config_dir = tmp_path / "global_config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        empty_cwd = tmp_path / "empty_cwd"
+        empty_cwd.mkdir()
+        monkeypatch.chdir(empty_cwd)
+
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        (project_dir / ".crier").mkdir()
+        (project_dir / ".crier" / "config.yaml").write_text(
+            yaml.dump({"content_paths": ["content/blog"]})
+        )
+
+        paths = get_content_paths(base_path=project_dir)
+        assert paths == ["content/blog"]
+
+    def test_find_local_config_with_base_path(self, tmp_path, monkeypatch):
+        """find_local_config(base_path=X) finds X/.crier/config.yaml."""
+        # cwd has no .crier
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        monkeypatch.chdir(empty_dir)
+
+        # base_path has .crier/config.yaml
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".crier").mkdir()
+        (project_dir / ".crier" / "config.yaml").write_text(
+            yaml.dump({"test": True})
+        )
+
+        result = find_local_config(base_path=project_dir)
+        assert result is not None
+        assert result == project_dir / ".crier" / "config.yaml"
+
+
 class TestNetworkConfig:
     """Tests for network retry/timeout configuration."""
 
