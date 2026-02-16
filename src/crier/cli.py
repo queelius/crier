@@ -5079,6 +5079,72 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
 
 
 @cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+def summary(json_output):
+    """Show registry summary statistics. No API calls.
+
+    Displays article counts by section and platform, and identifies
+    articles with no platform publications.
+    """
+    import json as json_mod
+    from .registry import load_registry
+
+    base_path = get_project_path()
+    registry = load_registry(base_path)
+    articles = registry.get("articles", {})
+
+    total = len(articles)
+    by_section: dict[str, int] = {}
+    by_platform: dict[str, int] = {}
+    unposted = []
+
+    for canonical_url, article in articles.items():
+        # Count by section
+        section = article.get("section", "unknown")
+        by_section[section] = by_section.get(section, 0) + 1
+
+        # Count by platform
+        platforms = article.get("platforms", {})
+        if not platforms:
+            unposted.append(canonical_url)
+        for platform_name in platforms:
+            by_platform[platform_name] = by_platform.get(platform_name, 0) + 1
+
+    if json_output:
+        data = {
+            "total_articles": total,
+            "by_section": by_section,
+            "by_platform": by_platform,
+            "unposted_count": len(unposted),
+            "unposted": unposted,
+        }
+        console.print(json_mod.dumps(data, indent=2))
+        return
+
+    # Rich table output
+    console.print(f"\n[bold]Registry Summary[/bold]\n")
+    console.print(f"Total articles: [bold]{total}[/bold]")
+    console.print(f"Unposted: [bold]{len(unposted)}[/bold]\n")
+
+    if by_section:
+        section_table = Table(title="Articles by Section")
+        section_table.add_column("Section", style="cyan")
+        section_table.add_column("Count", justify="right")
+        for section, count in sorted(by_section.items(), key=lambda x: -x[1]):
+            section_table.add_row(section, str(count))
+        console.print(section_table)
+        console.print()
+
+    if by_platform:
+        platform_table = Table(title="Publications by Platform")
+        platform_table.add_column("Platform", style="green")
+        platform_table.add_column("Count", justify="right")
+        for platform, count in sorted(by_platform.items(), key=lambda x: -x[1]):
+            platform_table.add_row(platform, str(count))
+        console.print(platform_table)
+
+
+@cli.command()
 @click.argument("path", required=False, default=None)
 @click.option("--output", "-o", "output_file", default=None,
               help="Write feed to file (default: stdout)")

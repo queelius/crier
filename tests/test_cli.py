@@ -2787,3 +2787,294 @@ Content here.
 
         result = runner.invoke(cli, ["audit"])
         assert result.exit_code == 0
+
+
+class TestSummaryCommand:
+    """Tests for crier summary command."""
+
+    def test_summary_empty_registry(self, runner, mock_config_and_registry):
+        """Summary works with empty registry."""
+        result = runner.invoke(cli, ["summary"])
+        assert result.exit_code == 0
+        assert "0" in result.output
+
+    def test_summary_with_articles(self, runner, tmp_path, monkeypatch):
+        """Summary shows article and platform counts."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/post/a/": {
+                    "title": "Article A",
+                    "source_file": "content/post/a/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:aaa",
+                    "platforms": {
+                        "devto": {
+                            "id": "1",
+                            "url": "https://dev.to/a",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:aaa",
+                        },
+                        "hashnode": {
+                            "id": "2",
+                            "url": "https://hashnode.dev/a",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:aaa",
+                        },
+                    },
+                },
+                "https://example.com/papers/b/": {
+                    "title": "Paper B",
+                    "source_file": "content/papers/b/index.md",
+                    "section": "papers",
+                    "content_hash": "sha256:bbb",
+                    "platforms": {
+                        "devto": {
+                            "id": "3",
+                            "url": "https://dev.to/b",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:bbb",
+                        },
+                    },
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        # Patch config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        result = runner.invoke(cli, ["summary"])
+        assert result.exit_code == 0
+        # Should contain total count
+        assert "2" in result.output
+
+    def test_summary_json_output(self, runner, mock_config_and_registry):
+        """Summary --json outputs valid JSON."""
+        result = runner.invoke(cli, ["summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert "total_articles" in data
+        assert "by_section" in data
+        assert "by_platform" in data
+        assert "unposted_count" in data
+        assert "unposted" in data
+
+    def test_summary_shows_unposted(self, runner, tmp_path, monkeypatch):
+        """Summary identifies articles with no platforms."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/post/unposted/": {
+                    "title": "Unposted Article",
+                    "source_file": "content/post/unposted/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:xxx",
+                    "platforms": {},
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        result = runner.invoke(cli, ["summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["unposted_count"] == 1
+        assert "https://example.com/post/unposted/" in data["unposted"]
+
+    def test_summary_respects_project_flag(self, runner, tmp_path, monkeypatch):
+        """--project makes summary use the specified project's registry."""
+        project_dir = tmp_path / "my-project"
+        project_dir.mkdir()
+        crier_dir = project_dir / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/test/": {
+                    "title": "Test",
+                    "source_file": "content/post/test/index.md",
+                    "section": "post",
+                    "content_hash": None,
+                    "platforms": {},
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+
+        # Patch config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        # Run from different dir, pointing at project
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["--project", str(project_dir), "summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["total_articles"] == 1
+
+    def test_summary_json_section_counts(self, runner, tmp_path, monkeypatch):
+        """Summary JSON output has correct section breakdowns."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/post/a/": {
+                    "title": "Post A",
+                    "source_file": "content/post/a/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:aaa",
+                    "platforms": {},
+                },
+                "https://example.com/post/b/": {
+                    "title": "Post B",
+                    "source_file": "content/post/b/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:bbb",
+                    "platforms": {},
+                },
+                "https://example.com/papers/c/": {
+                    "title": "Paper C",
+                    "source_file": "content/papers/c/index.md",
+                    "section": "papers",
+                    "content_hash": "sha256:ccc",
+                    "platforms": {},
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        result = runner.invoke(cli, ["summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["total_articles"] == 3
+        assert data["by_section"]["post"] == 2
+        assert data["by_section"]["papers"] == 1
+        assert data["unposted_count"] == 3
+
+    def test_summary_json_platform_counts(self, runner, tmp_path, monkeypatch):
+        """Summary JSON output has correct platform breakdowns."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/post/a/": {
+                    "title": "Post A",
+                    "source_file": "content/post/a/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:aaa",
+                    "platforms": {
+                        "devto": {
+                            "id": "1",
+                            "url": "https://dev.to/a",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:aaa",
+                        },
+                    },
+                },
+                "https://example.com/post/b/": {
+                    "title": "Post B",
+                    "source_file": "content/post/b/index.md",
+                    "section": "post",
+                    "content_hash": "sha256:bbb",
+                    "platforms": {
+                        "devto": {
+                            "id": "2",
+                            "url": "https://dev.to/b",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:bbb",
+                        },
+                        "hashnode": {
+                            "id": "3",
+                            "url": "https://hashnode.dev/b",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "content_hash": "sha256:bbb",
+                        },
+                    },
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        result = runner.invoke(cli, ["summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["by_platform"]["devto"] == 2
+        assert data["by_platform"]["hashnode"] == 1
+        assert data["unposted_count"] == 0
+
+    def test_summary_unknown_section_for_missing_field(self, runner, tmp_path, monkeypatch):
+        """Articles without a section field show as 'unknown'."""
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        registry = {
+            "version": 2,
+            "articles": {
+                "https://example.com/old/": {
+                    "title": "Old Article",
+                    "source_file": "content/post/old/index.md",
+                    "content_hash": "sha256:old",
+                    "platforms": {},
+                },
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+
+        result = runner.invoke(cli, ["summary", "--json"])
+        assert result.exit_code == 0
+        import json
+        data = json.loads(result.output)
+        assert data["by_section"]["unknown"] == 1
