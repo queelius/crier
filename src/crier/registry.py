@@ -147,6 +147,40 @@ def save_registry(registry: dict[str, Any], base_path: Path | None = None) -> No
         raise
 
 
+def infer_section(source_file: str | Path | None) -> str | None:
+    """Infer content section from source file path.
+
+    Extracts the first directory component after 'content/' if present,
+    or the first directory component otherwise.
+
+    Examples:
+        "content/post/2026-01-slug/index.md" -> "post"
+        "content/papers/my-paper/index.md" -> "papers"
+        "content/projects/my-project/index.md" -> "projects"
+        "posts/my-post.md" -> "posts"
+        "index.md" -> None
+        None -> None
+    """
+    if source_file is None:
+        return None
+
+    parts = Path(source_file).parts
+
+    # Find "content" directory and take next part
+    try:
+        content_idx = list(parts).index("content")
+        if content_idx + 1 < len(parts) - 1:  # Must have section + at least filename
+            return parts[content_idx + 1]
+    except ValueError:
+        pass
+
+    # No "content/" prefix — use first directory if there is one
+    if len(parts) > 1:
+        return parts[0]
+
+    return None
+
+
 def record_publication(
     canonical_url: str,
     platform: str,
@@ -179,12 +213,15 @@ def record_publication(
 
     # Initialize article entry if needed
     if canonical_url not in registry["articles"]:
+        section = infer_section(source_file)
         registry["articles"][canonical_url] = {
             "title": title,
             "source_file": str(source_file) if source_file else None,
             "content_hash": content_hash,
             "platforms": {},
         }
+        if section:
+            registry["articles"][canonical_url]["section"] = section
 
     article = registry["articles"][canonical_url]
 

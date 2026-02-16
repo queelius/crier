@@ -10,6 +10,7 @@ from pathlib import Path
 from crier.registry import (
     get_content_hash,
     get_file_content_hash,
+    infer_section,
     record_publication,
     record_failure,
     get_failures,
@@ -1199,3 +1200,97 @@ class TestRegistryWriteAfterPublish:
         assert registry["version"] == 2
         assert registry["articles"] == {}
         assert isinstance(registry["articles"], dict)
+
+
+class TestInferSection:
+    """Tests for infer_section()."""
+
+    def test_content_post_path(self):
+        assert infer_section("content/post/2026-01-01-slug/index.md") == "post"
+
+    def test_content_papers_path(self):
+        assert infer_section("content/papers/my-paper/index.md") == "papers"
+
+    def test_content_projects_path(self):
+        assert infer_section("content/projects/my-project/index.md") == "projects"
+
+    def test_content_writing_path(self):
+        assert infer_section("content/writing/my-story/index.md") == "writing"
+
+    def test_no_content_prefix(self):
+        assert infer_section("posts/my-post.md") == "posts"
+
+    def test_none_input(self):
+        assert infer_section(None) is None
+
+    def test_bare_filename(self):
+        assert infer_section("index.md") is None
+
+    def test_deep_content_path(self):
+        assert infer_section("site/content/post/slug/index.md") == "post"
+
+    def test_path_object(self):
+        assert infer_section(Path("content/post/slug/index.md")) == "post"
+
+
+class TestRecordPublicationSection:
+    """Tests for section field in record_publication()."""
+
+    def test_section_recorded_for_new_article(self, tmp_registry):
+        record_publication(
+            canonical_url="https://example.com/post/test/",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/user/test",
+            title="Test",
+            source_file="content/post/test/index.md",
+        )
+        registry = load_registry()
+        article = registry["articles"]["https://example.com/post/test/"]
+        assert article["section"] == "post"
+
+    def test_section_not_set_for_none_source(self, tmp_registry):
+        record_publication(
+            canonical_url="https://example.com/post/test/",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/user/test",
+            title="Test",
+            source_file=None,
+        )
+        registry = load_registry()
+        article = registry["articles"]["https://example.com/post/test/"]
+        assert "section" not in article
+
+    def test_section_preserved_on_update(self, tmp_registry):
+        """Section set on first record is preserved on subsequent updates."""
+        record_publication(
+            canonical_url="https://example.com/post/test/",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/user/test",
+            source_file="content/post/test/index.md",
+        )
+        # Second publication to a different platform
+        record_publication(
+            canonical_url="https://example.com/post/test/",
+            platform="hashnode",
+            article_id="456",
+            url="https://hashnode.dev/test",
+            source_file="content/post/test/index.md",
+        )
+        registry = load_registry()
+        article = registry["articles"]["https://example.com/post/test/"]
+        assert article["section"] == "post"
+
+    def test_papers_section(self, tmp_registry):
+        record_publication(
+            canonical_url="https://example.com/papers/my-paper/",
+            platform="devto",
+            article_id="789",
+            url="https://dev.to/user/paper",
+            source_file="content/papers/my-paper/index.md",
+        )
+        registry = load_registry()
+        article = registry["articles"]["https://example.com/papers/my-paper/"]
+        assert article["section"] == "papers"
