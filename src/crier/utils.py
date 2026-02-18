@@ -51,17 +51,21 @@ def has_valid_front_matter(file_path: Path) -> bool:
 
 def is_in_content_paths(file_path: Path) -> bool:
     """Check if a file is within configured content_paths."""
-    from .config import get_content_paths
+    from .config import get_content_paths, get_project_root
 
     content_paths = get_content_paths()
     if not content_paths:
         return False
 
+    project_root = get_project_root()
     file_resolved = file_path.resolve()
     for content_path in content_paths:
-        path_obj = Path(content_path).resolve()
+        path_obj = Path(content_path)
+        if not path_obj.is_absolute():
+            path_obj = project_root / path_obj
+        path_resolved = path_obj.resolve()
         try:
-            file_resolved.relative_to(path_obj)
+            file_resolved.relative_to(path_resolved)
             return True
         except ValueError:
             continue
@@ -226,10 +230,11 @@ def find_content_files(explicit_path: str | None = None) -> list[Path]:
         (default: ["_index.md"]).
         Uses file_extensions config (default: [".md"]) for which
         files to scan.
+        Relative content_paths are resolved against site_root (or CWD).
     """
     from .config import (
         get_content_paths, get_exclude_patterns,
-        get_file_extensions, DEFAULT_FILE_EXTENSIONS,
+        get_file_extensions, get_project_root, DEFAULT_FILE_EXTENSIONS,
     )
 
     files: list[Path] = []
@@ -246,13 +251,16 @@ def find_content_files(explicit_path: str | None = None) -> list[Path]:
             for ext in extensions:
                 files.extend(path_obj.glob(f"**/*{ext}"))
     else:
-        # Use configured content_paths
+        # Use configured content_paths, resolved against project root
         content_paths = get_content_paths()
         if not content_paths:
             return []
 
+        project_root = get_project_root()
         for content_path in content_paths:
             path_obj = Path(content_path)
+            if not path_obj.is_absolute():
+                path_obj = project_root / path_obj
             if path_obj.is_file():
                 files.append(path_obj)
             elif path_obj.is_dir():

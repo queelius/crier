@@ -438,3 +438,43 @@ class TestFindContentFiles:
         result = find_content_files(str(d))
         assert len(result) == 1
         assert result[0].name == "post.md"
+
+    def test_resolves_content_paths_against_site_root(self, tmp_path, monkeypatch):
+        """Relative content_paths resolve against site_root, not CWD."""
+        site = tmp_path / "mysite"
+        content = site / "content" / "post" / "hello"
+        content.mkdir(parents=True)
+        (content / "index.md").write_text("---\ntitle: Hello\n---\nHi")
+
+        config_file = tmp_path / "config.yaml"
+        import yaml
+        config_file.write_text(yaml.dump({
+            "site_root": str(site),
+            "content_paths": ["content"],
+            "file_extensions": [".md"],
+            "exclude_patterns": [],
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        monkeypatch.chdir(tmp_path)  # CWD is NOT the site
+
+        files = find_content_files()
+        assert len(files) == 1
+        assert files[0].name == "index.md"
+
+    def test_is_in_content_paths_resolves_against_site_root(self, tmp_path, monkeypatch):
+        """is_in_content_paths resolves relative paths against site_root."""
+        site = tmp_path / "mysite"
+        content = site / "content" / "post.md"
+        content.parent.mkdir(parents=True)
+        content.write_text("---\ntitle: Test\n---\nBody")
+
+        config_file = tmp_path / "config.yaml"
+        import yaml
+        config_file.write_text(yaml.dump({
+            "site_root": str(site),
+            "content_paths": ["content"],
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        monkeypatch.chdir(tmp_path)  # CWD is NOT the site
+
+        assert is_in_content_paths(content) is True
