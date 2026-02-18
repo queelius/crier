@@ -47,6 +47,9 @@ htmlcov/
 config.yaml
 
 
+# Worktrees
+.worktrees/
+
 # Build artifacts
 dist/
 build/
