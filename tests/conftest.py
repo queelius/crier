@@ -47,14 +47,14 @@ It has multiple paragraphs.
 
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
-    """Create a temporary config file and patch the config path."""
+    """Create a temporary global config file and patch the config path.
+
+    All config is global-only now — no local .crier/config.yaml.
+    The .crier/ directory is only for the registry.
+    """
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
-
-    # Create local .crier directory for local config
-    local_config_dir = tmp_path / ".crier"
-    local_config_dir.mkdir()
 
     # Patch the config path
     monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
@@ -63,7 +63,7 @@ def tmp_config(tmp_path, monkeypatch):
     # Clear any cached config
     monkeypatch.delenv("CRIER_CONFIG", raising=False)
 
-    # Change to tmp_path so local config is found there
+    # Change to tmp_path so registry can find .crier/ here if needed
     monkeypatch.chdir(tmp_path)
 
     return config_file

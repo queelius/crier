@@ -21,11 +21,10 @@ from crier.config import (
     remove_content_path,
     load_config,
     load_global_config,
-    load_local_config,
     save_config,
     get_config_path,
-    get_local_config_path,
-    find_local_config,
+    get_site_root,
+    get_project_root,
     get_llm_config,
     set_llm_config,
     is_llm_configured,
@@ -196,7 +195,7 @@ class TestContentPaths:
 
 
 class TestLoadConfig:
-    """Tests for load_config()."""
+    """Tests for load_config() — global only, no merge."""
 
     def test_load_empty_config(self, tmp_config):
         config = load_config()
@@ -207,83 +206,24 @@ class TestLoadConfig:
         assert "platforms" in config
         assert "devto" in config["platforms"]
 
-    def test_local_config_overrides_content_paths(self, tmp_config, tmp_path):
-        """Local content_paths override global config."""
-        # Write global config with content_paths
-        global_config = {"content_paths": ["global_posts"]}
-        tmp_config.write_text(yaml.dump(global_config))
-
-        # Write local config with different content_paths
-        local_config_path = tmp_path / ".crier" / "config.yaml"
-        local_config = {"content_paths": ["local_posts", "local_articles"]}
-        local_config_path.write_text(yaml.dump(local_config))
+    def test_load_config_returns_all_keys(self, tmp_config):
+        """All config keys are read from the single global file."""
+        config_data = {
+            "content_paths": ["content"],
+            "site_base_url": "https://example.com",
+            "platforms": {"devto": {"api_key": "key"}},
+            "profiles": {"blogs": ["devto"]},
+        }
+        tmp_config.write_text(yaml.dump(config_data))
 
         config = load_config()
-        assert config["content_paths"] == ["local_posts", "local_articles"]
+        assert config["content_paths"] == ["content"]
+        assert config["site_base_url"] == "https://example.com"
+        assert config["platforms"]["devto"]["api_key"] == "key"
 
-    def test_local_config_merges_profiles(self, tmp_config, tmp_path):
-        """Local profiles merge with global, local takes precedence."""
-        global_config = {
-            "profiles": {
-                "blogs": ["devto"],
-                "social": ["bluesky"],
-            }
-        }
-        tmp_config.write_text(yaml.dump(global_config))
-
-        local_config_path = tmp_path / ".crier" / "config.yaml"
-        local_config = {
-            "profiles": {
-                "blogs": ["devto", "hashnode"],  # Override global blogs
-                "newsletter": ["buttondown"],    # New profile
-            }
-        }
-        local_config_path.write_text(yaml.dump(local_config))
-
-        config = load_config()
-        # Local overrides global for blogs
-        assert config["profiles"]["blogs"] == ["devto", "hashnode"]
-        # Global social preserved
-        assert config["profiles"]["social"] == ["bluesky"]
-        # Local newsletter added
-        assert config["profiles"]["newsletter"] == ["buttondown"]
-
-
-class TestLoadGlobalConfig:
-    """Tests for load_global_config()."""
-
-    def test_empty_when_no_file(self, tmp_config):
-        result = load_global_config()
-        assert result == {}
-
-    def test_returns_global_only(self, tmp_config, tmp_path):
-        global_config = {"platforms": {"devto": {"api_key": "global_key"}}}
-        tmp_config.write_text(yaml.dump(global_config))
-
-        # Write local config with content_paths
-        local_path = tmp_path / ".crier" / "config.yaml"
-        local_path.write_text(yaml.dump({"content_paths": ["posts"]}))
-
-        result = load_global_config()
-        assert "platforms" in result
-        # Should NOT have local-only keys
-        assert "content_paths" not in result
-
-
-class TestLoadLocalConfig:
-    """Tests for load_local_config()."""
-
-    def test_empty_when_no_file(self, tmp_config):
-        result = load_local_config()
-        assert result == {}
-
-    def test_returns_local_only(self, tmp_config, tmp_path):
-        local_path = tmp_path / ".crier" / "config.yaml"
-        local_path.write_text(yaml.dump({"content_paths": ["posts"], "site_base_url": "https://example.com"}))
-
-        result = load_local_config()
-        assert result["content_paths"] == ["posts"]
-        assert result["site_base_url"] == "https://example.com"
+    def test_load_global_config_is_alias(self, configured_platforms):
+        """load_global_config() is an alias for load_config()."""
+        assert load_config() == load_global_config()
 
 
 class TestSaveConfig:
@@ -305,7 +245,7 @@ class TestSaveConfig:
 
 
 class TestConfigPaths:
-    """Tests for get_config_path and get_local_config_path."""
+    """Tests for get_config_path."""
 
     def test_get_config_path_default(self, tmp_config):
         path = get_config_path()
@@ -316,35 +256,103 @@ class TestConfigPaths:
         monkeypatch.setenv("CRIER_CONFIG", str(custom_path))
         assert get_config_path() == custom_path
 
-    def test_get_local_config_path_from_cwd(self, tmp_config, tmp_path):
-        path = get_local_config_path()
-        expected = tmp_path / ".crier" / "config.yaml"
-        assert path == expected
 
-    def test_get_local_config_path_searches_upward(self, tmp_path, monkeypatch):
-        # Create .crier in parent directory
-        parent_crier = tmp_path / ".crier"
-        parent_crier.mkdir()
-        child_dir = tmp_path / "subdir" / "nested"
-        child_dir.mkdir(parents=True)
-        monkeypatch.chdir(child_dir)
+class TestSiteRoot:
+    """Tests for get_site_root() and get_project_root()."""
 
-        path = get_local_config_path()
-        assert path == parent_crier / "config.yaml"
+    def test_get_site_root_returns_path(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        site = tmp_path / "mysite"
+        site.mkdir()
+        config_file.write_text(yaml.dump({"site_root": str(site)}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        result = get_site_root()
+        assert result == site.resolve()
 
-    def test_find_local_config_returns_none_when_missing(self, tmp_path, monkeypatch):
-        # Use a directory with no .crier
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        monkeypatch.chdir(empty_dir)
-        assert find_local_config() is None
+    def test_get_site_root_expands_tilde(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"site_root": "~/mysite"}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        from pathlib import Path
+        result = get_site_root()
+        assert result == (Path.home() / "mysite").resolve()
 
-    def test_find_local_config_returns_path_when_exists(self, tmp_config, tmp_path):
-        local_path = tmp_path / ".crier" / "config.yaml"
-        local_path.write_text(yaml.dump({"test": True}))
-        result = find_local_config()
-        assert result is not None
-        assert result == local_path
+    def test_get_site_root_returns_none_when_unset(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"platforms": {}}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        assert get_site_root() is None
+
+    def test_get_project_root_uses_site_root(self, tmp_path, monkeypatch):
+        site = tmp_path / "mysite"
+        site.mkdir()
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"site_root": str(site)}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        assert get_project_root() == site.resolve()
+
+    def test_get_project_root_falls_back_to_cwd(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        monkeypatch.chdir(tmp_path)
+        assert get_project_root() == tmp_path.resolve()
+
+
+class TestGlobalOnlyConfig:
+    """Config is global-only — no local config, no merge logic."""
+
+    def test_getters_read_from_global(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "site_base_url": "https://example.com",
+            "exclude_patterns": ["_index.md"],
+            "file_extensions": [".md"],
+            "default_profile": "blogs",
+            "rewrite_author": "claude-code",
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        assert get_site_base_url() == "https://example.com"
+        assert get_exclude_patterns() == ["_index.md"]
+        assert get_file_extensions() == [".md"]
+        assert get_default_profile() == "blogs"
+        assert get_rewrite_author() == "claude-code"
+
+    def test_setters_write_to_global(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"platforms": {}}))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        set_site_base_url("https://new.com")
+        cfg = yaml.safe_load(config_file.read_text())
+        assert cfg["site_base_url"] == "https://new.com"
+        # Other keys preserved
+        assert "platforms" in cfg
+
+    def test_setters_preserve_existing_keys(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "platforms": {"devto": {"api_key": "key"}},
+            "content_paths": ["content"],
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        set_exclude_patterns(["_index.md"])
+        cfg = yaml.safe_load(config_file.read_text())
+        assert cfg["exclude_patterns"] == ["_index.md"]
+        assert cfg["platforms"]["devto"]["api_key"] == "key"
+        assert cfg["content_paths"] == ["content"]
+
+    def test_check_overrides_from_global(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "checks": {
+                "missing-tags": "disabled",
+                "missing-date": "error",
+            }
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+        overrides = get_check_overrides()
+        assert overrides["missing-tags"] == "disabled"
+        assert overrides["missing-date"] == "error"
 
 
 class TestIsImportModeKey:
@@ -655,26 +663,23 @@ class TestCheckOverrides:
     def test_empty_overrides(self, tmp_config):
         assert get_check_overrides() == {}
 
-    def test_check_overrides_from_local_config(self, tmp_config, tmp_path):
-        local_path = tmp_path / ".crier" / "config.yaml"
-        local_config = {
+    def test_check_overrides_from_global_config(self, tmp_config):
+        config = {
             "checks": {
                 "missing-tags": "disabled",
                 "missing-date": "error",
                 "short-body": "disabled",
             }
         }
-        local_path.write_text(yaml.dump(local_config))
+        tmp_config.write_text(yaml.dump(config))
 
         overrides = get_check_overrides()
         assert overrides["missing-tags"] == "disabled"
         assert overrides["missing-date"] == "error"
         assert overrides["short-body"] == "disabled"
 
-    def test_single_override(self, tmp_config, tmp_path):
-        local_path = tmp_path / ".crier" / "config.yaml"
-        local_path.write_text(yaml.dump({"checks": {"missing-title": "warning"}}))
-
+    def test_single_override(self, tmp_config):
+        tmp_config.write_text(yaml.dump({"checks": {"missing-title": "warning"}}))
         overrides = get_check_overrides()
         assert overrides == {"missing-title": "warning"}
 
@@ -831,10 +836,6 @@ class TestEnvironmentVariableOverrides:
         custom_config = tmp_path / "custom.yaml"
         custom_config.write_text(yaml.dump({"platforms": {"devto": {"api_key": "custom_key"}}}))
         monkeypatch.setenv("CRIER_CONFIG", str(custom_config))
-        # Also need to ensure local config search works
-        local_dir = tmp_path / ".crier"
-        local_dir.mkdir(exist_ok=True)
-        monkeypatch.chdir(tmp_path)
 
         assert get_api_key("devto") == "custom_key"
 
@@ -894,126 +895,6 @@ class TestContentPathManipulation:
         add_content_path("only")
         assert remove_content_path("only") is True
         assert get_content_paths() == []
-
-
-class TestLoadConfigWithBasePath:
-    """Tests for load_config() / load_local_config() with base_path parameter."""
-
-    def test_load_config_uses_base_path(self, tmp_path, monkeypatch):
-        """load_config(base_path=X) finds X/.crier/config.yaml."""
-        # Set up global config (empty)
-        config_dir = tmp_path / "global_config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-
-        # cwd has NO .crier directory
-        empty_cwd = tmp_path / "empty_cwd"
-        empty_cwd.mkdir()
-        monkeypatch.chdir(empty_cwd)
-
-        # base_path project has a .crier/config.yaml with content_paths
-        project_dir = tmp_path / "my_project"
-        project_dir.mkdir()
-        local_crier = project_dir / ".crier"
-        local_crier.mkdir()
-        local_config = {"content_paths": ["src/posts", "src/articles"]}
-        (local_crier / "config.yaml").write_text(yaml.dump(local_config))
-
-        config = load_config(base_path=project_dir)
-        assert config.get("content_paths") == ["src/posts", "src/articles"]
-
-    def test_load_config_without_base_path_uses_cwd(self, tmp_path, monkeypatch):
-        """load_config() without base_path still uses cwd."""
-        config_dir = tmp_path / "global_config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-
-        # cwd has .crier with content_paths
-        monkeypatch.chdir(tmp_path)
-        local_crier = tmp_path / ".crier"
-        local_crier.mkdir()
-        local_config = {"content_paths": ["cwd_posts"]}
-        (local_crier / "config.yaml").write_text(yaml.dump(local_config))
-
-        config = load_config()
-        assert config.get("content_paths") == ["cwd_posts"]
-
-    def test_base_path_overrides_cwd(self, tmp_path, monkeypatch):
-        """base_path config takes priority over cwd config."""
-        config_dir = tmp_path / "global_config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-
-        # cwd has one set of content_paths
-        cwd_dir = tmp_path / "cwd_project"
-        cwd_dir.mkdir()
-        (cwd_dir / ".crier").mkdir()
-        (cwd_dir / ".crier" / "config.yaml").write_text(
-            yaml.dump({"content_paths": ["cwd_posts"]})
-        )
-        monkeypatch.chdir(cwd_dir)
-
-        # base_path has different content_paths
-        project_dir = tmp_path / "other_project"
-        project_dir.mkdir()
-        (project_dir / ".crier").mkdir()
-        (project_dir / ".crier" / "config.yaml").write_text(
-            yaml.dump({"content_paths": ["other_posts"]})
-        )
-
-        config = load_config(base_path=project_dir)
-        assert config.get("content_paths") == ["other_posts"]
-
-    def test_get_content_paths_with_base_path(self, tmp_path, monkeypatch):
-        """get_content_paths(base_path=X) reads from X's local config."""
-        config_dir = tmp_path / "global_config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-
-        empty_cwd = tmp_path / "empty_cwd"
-        empty_cwd.mkdir()
-        monkeypatch.chdir(empty_cwd)
-
-        project_dir = tmp_path / "my_project"
-        project_dir.mkdir()
-        (project_dir / ".crier").mkdir()
-        (project_dir / ".crier" / "config.yaml").write_text(
-            yaml.dump({"content_paths": ["content/blog"]})
-        )
-
-        paths = get_content_paths(base_path=project_dir)
-        assert paths == ["content/blog"]
-
-    def test_find_local_config_with_base_path(self, tmp_path, monkeypatch):
-        """find_local_config(base_path=X) finds X/.crier/config.yaml."""
-        # cwd has no .crier
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        monkeypatch.chdir(empty_dir)
-
-        # base_path has .crier/config.yaml
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-        (project_dir / ".crier").mkdir()
-        (project_dir / ".crier" / "config.yaml").write_text(
-            yaml.dump({"test": True})
-        )
-
-        result = find_local_config(base_path=project_dir)
-        assert result is not None
-        assert result == project_dir / ".crier" / "config.yaml"
 
 
 class TestNetworkConfig:
