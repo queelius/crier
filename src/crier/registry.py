@@ -21,25 +21,15 @@ REGISTRY_FILE = "registry.yaml"
 CURRENT_VERSION = 2
 
 
-def get_registry_path(base_path: Path | None = None) -> Path:
+def get_registry_path() -> Path:
     """Get the path to the registry file.
 
-    Searches upward from base_path (or cwd) for a .crier directory,
-    or creates one in the current directory if not found.
+    Located at <site_root>/.crier/registry.yaml.
+    Falls back to CWD/.crier/ if site_root not configured.
     """
-    if base_path is None:
-        base_path = Path.cwd()
-
-    # Search upward for existing .crier directory
-    current = base_path.resolve()
-    while current != current.parent:
-        registry_dir = current / REGISTRY_DIR
-        if registry_dir.exists():
-            return registry_dir / REGISTRY_FILE
-        current = current.parent
-
-    # Not found, use current directory
-    return base_path / REGISTRY_DIR / REGISTRY_FILE
+    from .config import get_site_root
+    root = get_site_root() or Path.cwd()
+    return root / REGISTRY_DIR / REGISTRY_FILE
 
 
 def get_content_hash(content: str) -> str:
@@ -88,9 +78,9 @@ def _migrate_v1_to_v2(v1_data: dict[str, Any]) -> dict[str, Any]:
     return v2_data
 
 
-def load_registry(base_path: Path | None = None) -> dict[str, Any]:
+def load_registry() -> dict[str, Any]:
     """Load the registry from disk, migrating if necessary."""
-    registry_path = get_registry_path(base_path)
+    registry_path = get_registry_path()
 
     if not registry_path.exists():
         return {"version": CURRENT_VERSION, "articles": {}}
@@ -104,7 +94,7 @@ def load_registry(base_path: Path | None = None) -> dict[str, Any]:
     if version == 1:
         data = _migrate_v1_to_v2(data)
         # Save migrated data
-        save_registry(data, base_path)
+        save_registry(data)
 
     # Ensure structure
     if "articles" not in data:
@@ -114,13 +104,13 @@ def load_registry(base_path: Path | None = None) -> dict[str, Any]:
     return data
 
 
-def save_registry(registry: dict[str, Any], base_path: Path | None = None) -> None:
+def save_registry(registry: dict[str, Any]) -> None:
     """Save the registry to disk using atomic write.
 
     Writes to a temp file first, then atomically replaces the target.
     This prevents data loss if the process is killed mid-write.
     """
-    registry_path = get_registry_path(base_path)
+    registry_path = get_registry_path()
 
     # Create directory if needed
     registry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +182,6 @@ def record_publication(
     rewritten: bool = False,
     rewrite_author: str | None = None,
     posted_content: str | None = None,
-    base_path: Path | None = None,
 ) -> None:
     """Record a successful publication to the registry.
 
@@ -207,9 +196,8 @@ def record_publication(
         rewritten: Whether content was rewritten for this platform
         rewrite_author: Who rewrote the content (e.g., 'claude-code')
         posted_content: The actual content posted (for short-form platforms)
-        base_path: Base path for registry lookup
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     # Initialize article entry if needed
     if canonical_url not in registry["articles"]:
@@ -252,7 +240,7 @@ def record_publication(
             platform_data["posted_content"] = posted_content
 
     article["platforms"][platform] = platform_data
-    save_registry(registry, base_path)
+    save_registry(registry)
 
 
 def record_failure(
@@ -261,7 +249,6 @@ def record_failure(
     error_msg: str,
     title: str | None = None,
     source_file: str | Path | None = None,
-    base_path: Path | None = None,
 ) -> None:
     """Record a failed publication attempt.
 
@@ -274,9 +261,8 @@ def record_failure(
         error_msg: Error description
         title: Article title (optional)
         source_file: Path to the source file (optional)
-        base_path: Base path for registry lookup
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url not in registry["articles"]:
         registry["articles"][canonical_url] = {
@@ -304,16 +290,16 @@ def record_failure(
             "last_error_at": now,
         }
 
-    save_registry(registry, base_path)
+    save_registry(registry)
 
 
-def get_failures(base_path: Path | None = None) -> list[dict[str, Any]]:
+def get_failures() -> list[dict[str, Any]]:
     """Get all publications with recorded failures.
 
     Returns list of dicts with: canonical_url, platform, error, error_at, title, source_file.
     Only includes entries that have last_error set (excludes successful-only entries).
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
     failures = []
 
     for canonical_url, article in registry.get("articles", {}).items():
@@ -331,18 +317,18 @@ def get_failures(base_path: Path | None = None) -> list[dict[str, Any]]:
     return failures
 
 
-def get_article(canonical_url: str, base_path: Path | None = None) -> dict[str, Any] | None:
+def get_article(canonical_url: str) -> dict[str, Any] | None:
     """Get an article by canonical URL."""
-    registry = load_registry(base_path)
+    registry = load_registry()
     return registry["articles"].get(canonical_url)
 
 
-def get_article_by_file(file_path: str | Path, base_path: Path | None = None) -> tuple[str, dict[str, Any]] | None:
+def get_article_by_file(file_path: str | Path) -> tuple[str, dict[str, Any]] | None:
     """Find an article by its source file path.
 
     Returns (canonical_url, article_data) or None if not found.
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
     file_path_str = str(file_path)
 
     for canonical_url, article in registry["articles"].items():
@@ -352,18 +338,18 @@ def get_article_by_file(file_path: str | Path, base_path: Path | None = None) ->
     return None
 
 
-def get_all_articles(base_path: Path | None = None) -> dict[str, Any]:
+def get_all_articles() -> dict[str, Any]:
     """Get all tracked articles from the registry."""
-    registry = load_registry(base_path)
+    registry = load_registry()
     return registry.get("articles", {})
 
 
-def get_platform_publications(platform: str, base_path: Path | None = None) -> list[dict[str, Any]]:
+def get_platform_publications(platform: str) -> list[dict[str, Any]]:
     """Get all publications for a specific platform.
 
     Returns list of dicts with canonical_url, title, and platform-specific data.
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
     results = []
 
     for canonical_url, article in registry.get("articles", {}).items():
@@ -383,17 +369,17 @@ def get_platform_publications(platform: str, base_path: Path | None = None) -> l
     return results
 
 
-def is_published(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+def is_published(canonical_url: str, platform: str) -> bool:
     """Check if an article has been published to a specific platform."""
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return False
     return platform in article.get("platforms", {})
 
 
-def get_publication_id(canonical_url: str, platform: str, base_path: Path | None = None) -> str | None:
+def get_publication_id(canonical_url: str, platform: str) -> str | None:
     """Get the platform-specific article ID."""
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return None
     pub = article.get("platforms", {}).get(platform)
@@ -401,13 +387,13 @@ def get_publication_id(canonical_url: str, platform: str, base_path: Path | None
 
 
 def get_publication_info(
-    canonical_url: str, platform: str, base_path: Path | None = None
+    canonical_url: str, platform: str
 ) -> dict[str, Any] | None:
     """Get full publication info for a platform.
 
     Returns dict with: article_id, url, published_at, content_hash, etc.
     """
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return None
     platform_data = article.get("platforms", {}).get(platform)
@@ -429,7 +415,6 @@ def has_content_changed(
     canonical_url: str,
     current_hash: str,
     platform: str | None = None,
-    base_path: Path | None = None,
 ) -> bool:
     """Check if content has changed since last publication.
 
@@ -439,7 +424,7 @@ def has_content_changed(
         platform: If specified, check against when posted to this platform.
                   If None, check against the article's stored hash.
     """
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return True  # New article, consider changed
 
@@ -457,26 +442,26 @@ def has_content_changed(
     return current_hash != old_hash
 
 
-def remove_article(canonical_url: str, base_path: Path | None = None) -> bool:
+def remove_article(canonical_url: str) -> bool:
     """Remove an article from the registry."""
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url in registry["articles"]:
         del registry["articles"][canonical_url]
-        save_registry(registry, base_path)
+        save_registry(registry)
         return True
     return False
 
 
-def remove_publication(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+def remove_publication(canonical_url: str, platform: str) -> bool:
     """Remove a single platform publication from the registry."""
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url in registry["articles"]:
         platforms = registry["articles"][canonical_url].get("platforms", {})
         if platform in platforms:
             del platforms[platform]
-            save_registry(registry, base_path)
+            save_registry(registry)
             return True
     return False
 
@@ -484,7 +469,6 @@ def remove_publication(canonical_url: str, platform: str, base_path: Path | None
 def record_deletion(
     canonical_url: str,
     platform: str,
-    base_path: Path | None = None,
 ) -> bool:
     """Record that a publication was deleted from a platform.
 
@@ -493,7 +477,7 @@ def record_deletion(
 
     Returns True if the deletion was recorded, False if not found.
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url not in registry["articles"]:
         return False
@@ -505,13 +489,13 @@ def record_deletion(
     # Mark as deleted instead of removing
     now = datetime.now(timezone.utc).isoformat()
     article["platforms"][platform]["deleted_at"] = now
-    save_registry(registry, base_path)
+    save_registry(registry)
     return True
 
 
-def is_deleted(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+def is_deleted(canonical_url: str, platform: str) -> bool:
     """Check if a publication has been deleted from a platform."""
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return False
 
@@ -525,7 +509,6 @@ def is_deleted(canonical_url: str, platform: str, base_path: Path | None = None)
 def set_archived(
     canonical_url: str,
     archived: bool = True,
-    base_path: Path | None = None,
 ) -> bool:
     """Set the archived status of an article.
 
@@ -533,7 +516,7 @@ def set_archived(
 
     Returns True if the status was changed, False if article not found.
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url not in registry["articles"]:
         return False
@@ -546,13 +529,13 @@ def set_archived(
         article.pop("archived", None)
         article.pop("archived_at", None)
 
-    save_registry(registry, base_path)
+    save_registry(registry)
     return True
 
 
-def is_archived(canonical_url: str, base_path: Path | None = None) -> bool:
+def is_archived(canonical_url: str) -> bool:
     """Check if an article is archived."""
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return False
     return article.get("archived", False)
@@ -565,7 +548,6 @@ def save_stats(
     likes: int | None = None,
     comments: int | None = None,
     reposts: int | None = None,
-    base_path: Path | None = None,
 ) -> bool:
     """Save engagement stats for a publication.
 
@@ -573,7 +555,7 @@ def save_stats(
 
     Returns True if stats were saved, False if publication not found.
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     if canonical_url not in registry["articles"]:
         return False
@@ -590,21 +572,20 @@ def save_stats(
         "reposts": reposts,
         "fetched_at": now,
     }
-    save_registry(registry, base_path)
+    save_registry(registry)
     return True
 
 
 def get_cached_stats(
     canonical_url: str,
     platform: str,
-    base_path: Path | None = None,
 ) -> dict[str, Any] | None:
     """Get cached stats for a publication.
 
     Returns dict with views, likes, comments, reposts, fetched_at.
     Returns None if no stats cached or publication not found.
     """
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return None
 
@@ -618,13 +599,12 @@ def get_cached_stats(
 def get_stats_age_seconds(
     canonical_url: str,
     platform: str,
-    base_path: Path | None = None,
 ) -> float | None:
     """Get the age of cached stats in seconds.
 
     Returns None if no stats cached.
     """
-    stats = get_cached_stats(canonical_url, platform, base_path)
+    stats = get_cached_stats(canonical_url, platform)
     if not stats or "fetched_at" not in stats:
         return None
 
@@ -645,7 +625,6 @@ def record_thread_publication(
     content_hash: str | None = None,
     rewritten: bool = False,
     rewrite_author: str | None = None,
-    base_path: Path | None = None,
 ) -> None:
     """Record a thread publication to the registry.
 
@@ -663,9 +642,8 @@ def record_thread_publication(
         content_hash: Hash of the source content
         rewritten: Whether content was rewritten
         rewrite_author: Who rewrote the content
-        base_path: Base path for registry lookup
     """
-    registry = load_registry(base_path)
+    registry = load_registry()
 
     # Initialize article entry if needed
     if canonical_url not in registry["articles"]:
@@ -707,12 +685,12 @@ def record_thread_publication(
             platform_data["rewrite_author"] = rewrite_author
 
     article["platforms"][platform] = platform_data
-    save_registry(registry, base_path)
+    save_registry(registry)
 
 
-def is_thread(canonical_url: str, platform: str, base_path: Path | None = None) -> bool:
+def is_thread(canonical_url: str, platform: str) -> bool:
     """Check if a publication is a thread."""
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return False
 
@@ -726,13 +704,12 @@ def is_thread(canonical_url: str, platform: str, base_path: Path | None = None) 
 def get_thread_ids(
     canonical_url: str,
     platform: str,
-    base_path: Path | None = None,
 ) -> list[str] | None:
     """Get the list of post IDs for a thread publication.
 
     Returns None if not a thread or not found.
     """
-    article = get_article(canonical_url, base_path)
+    article = get_article(canonical_url)
     if not article:
         return None
 
