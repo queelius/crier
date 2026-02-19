@@ -1,9 +1,6 @@
 """Shared test fixtures for crier tests."""
 
-import os
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import yaml
@@ -80,7 +77,7 @@ def tmp_registry(tmp_path, monkeypatch):
     registry_file.write_text("version: 2\narticles: {}\n")
 
     # Patch to use tmp_path as cwd for registry discovery
-    original_cwd = Path.cwd()
+    Path.cwd()
     monkeypatch.chdir(tmp_path)
 
     return registry_dir

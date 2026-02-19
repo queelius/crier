@@ -62,16 +62,17 @@ class ScheduledPost:
         )
 
 
-def get_schedule_path(base_path: Path | None = None) -> Path:
+def get_schedule_path() -> Path:
     """Get the schedule.yaml file path."""
-    if base_path is None:
-        base_path = Path.cwd()
-    return base_path / ".crier" / "schedule.yaml"
+    from .config import get_site_root
+
+    root = get_site_root() or Path.cwd()
+    return root / ".crier" / "schedule.yaml"
 
 
-def load_schedule(base_path: Path | None = None) -> dict[str, Any]:
+def load_schedule() -> dict[str, Any]:
     """Load the schedule from disk."""
-    schedule_file = get_schedule_path(base_path)
+    schedule_file = get_schedule_path()
 
     if not schedule_file.exists():
         return {"version": 1, "scheduled_posts": []}
@@ -82,9 +83,9 @@ def load_schedule(base_path: Path | None = None) -> dict[str, Any]:
     return data
 
 
-def save_schedule(schedule: dict[str, Any], base_path: Path | None = None) -> None:
+def save_schedule(schedule: dict[str, Any]) -> None:
     """Save the schedule to disk."""
-    schedule_file = get_schedule_path(base_path)
+    schedule_file = get_schedule_path()
     schedule_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(schedule_file, "w") as f:
@@ -98,7 +99,6 @@ def create_scheduled_post(
     rewrite: str | None = None,
     auto_rewrite: bool = False,
     profile: str | None = None,
-    base_path: Path | None = None,
 ) -> ScheduledPost:
     """Create and save a new scheduled post.
 
@@ -109,7 +109,6 @@ def create_scheduled_post(
         rewrite: Optional custom rewrite content
         auto_rewrite: Whether to use LLM auto-rewrite
         profile: Optional profile name to use instead of platform
-        base_path: Base path for schedule storage
 
     Returns:
         The created ScheduledPost
@@ -130,16 +129,16 @@ def create_scheduled_post(
         profile=profile,
     )
 
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
     schedule["scheduled_posts"].append(post.to_dict())
-    save_schedule(schedule, base_path)
+    save_schedule(schedule)
 
     return post
 
 
-def get_scheduled_post(post_id: str, base_path: Path | None = None) -> ScheduledPost | None:
+def get_scheduled_post(post_id: str) -> ScheduledPost | None:
     """Get a scheduled post by ID."""
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
 
     for post_data in schedule.get("scheduled_posts", []):
         if post_data["id"] == post_id or post_data["id"].startswith(post_id):
@@ -150,18 +149,16 @@ def get_scheduled_post(post_id: str, base_path: Path | None = None) -> Scheduled
 
 def list_scheduled_posts(
     status: str | None = None,
-    base_path: Path | None = None,
 ) -> list[ScheduledPost]:
     """List scheduled posts, optionally filtered by status.
 
     Args:
         status: Filter by status (pending, published, failed, cancelled)
-        base_path: Base path for schedule storage
 
     Returns:
         List of ScheduledPost objects
     """
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
     posts = []
 
     for post_data in schedule.get("scheduled_posts", []):
@@ -173,7 +170,7 @@ def list_scheduled_posts(
     return posts
 
 
-def get_due_posts(base_path: Path | None = None) -> list[ScheduledPost]:
+def get_due_posts() -> list[ScheduledPost]:
     """Get all pending posts that are due for publishing.
 
     Returns posts where:
@@ -184,7 +181,7 @@ def get_due_posts(base_path: Path | None = None) -> list[ScheduledPost]:
         List of due ScheduledPost objects
     """
     now = datetime.now(timezone.utc)
-    posts = list_scheduled_posts(status="pending", base_path=base_path)
+    posts = list_scheduled_posts(status="pending")
 
     return [p for p in posts if p.scheduled_time <= now]
 
@@ -193,7 +190,6 @@ def update_scheduled_post(
     post_id: str,
     status: str | None = None,
     error: str | None = None,
-    base_path: Path | None = None,
 ) -> bool:
     """Update a scheduled post's status.
 
@@ -201,12 +197,11 @@ def update_scheduled_post(
         post_id: Post ID (or prefix)
         status: New status
         error: Error message (for failed status)
-        base_path: Base path for schedule storage
 
     Returns:
         True if updated, False if not found
     """
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
 
     for post_data in schedule.get("scheduled_posts", []):
         if post_data["id"] == post_id or post_data["id"].startswith(post_id):
@@ -214,46 +209,44 @@ def update_scheduled_post(
                 post_data["status"] = status
             if error is not None:
                 post_data["error"] = error
-            save_schedule(schedule, base_path)
+            save_schedule(schedule)
             return True
 
     return False
 
 
-def cancel_scheduled_post(post_id: str, base_path: Path | None = None) -> bool:
+def cancel_scheduled_post(post_id: str) -> bool:
     """Cancel a scheduled post.
 
     Args:
         post_id: Post ID (or prefix)
-        base_path: Base path for schedule storage
 
     Returns:
         True if cancelled, False if not found or not pending
     """
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
 
     for post_data in schedule.get("scheduled_posts", []):
         if post_data["id"] == post_id or post_data["id"].startswith(post_id):
             if post_data["status"] != "pending":
                 return False
             post_data["status"] = "cancelled"
-            save_schedule(schedule, base_path)
+            save_schedule(schedule)
             return True
 
     return False
 
 
-def delete_scheduled_post(post_id: str, base_path: Path | None = None) -> bool:
+def delete_scheduled_post(post_id: str) -> bool:
     """Delete a scheduled post from the schedule.
 
     Args:
         post_id: Post ID (or prefix)
-        base_path: Base path for schedule storage
 
     Returns:
         True if deleted, False if not found
     """
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
     original_count = len(schedule.get("scheduled_posts", []))
 
     schedule["scheduled_posts"] = [
@@ -262,7 +255,7 @@ def delete_scheduled_post(post_id: str, base_path: Path | None = None) -> bool:
     ]
 
     if len(schedule["scheduled_posts"]) < original_count:
-        save_schedule(schedule, base_path)
+        save_schedule(schedule)
         return True
 
     return False
@@ -317,17 +310,16 @@ def parse_schedule_time(time_str: str) -> datetime | None:
     return parsed
 
 
-def cleanup_old_posts(days: int = 30, base_path: Path | None = None) -> int:
+def cleanup_old_posts(days: int = 30) -> int:
     """Remove old completed/cancelled posts from schedule.
 
     Args:
         days: Remove posts older than this many days
-        base_path: Base path for schedule storage
 
     Returns:
         Number of posts removed
     """
-    schedule = load_schedule(base_path)
+    schedule = load_schedule()
     cutoff = datetime.now(timezone.utc).timestamp() - (days * 24 * 60 * 60)
     original_count = len(schedule.get("scheduled_posts", []))
 
@@ -339,6 +331,6 @@ def cleanup_old_posts(days: int = 30, base_path: Path | None = None) -> int:
 
     removed = original_count - len(schedule["scheduled_posts"])
     if removed > 0:
-        save_schedule(schedule, base_path)
+        save_schedule(schedule)
 
     return removed

@@ -1,7 +1,6 @@
 """Tests for crier.threading module."""
 
 import pytest
-from datetime import datetime, timezone
 
 from crier.threading import (
     split_into_thread,
@@ -171,9 +170,23 @@ class TestEstimateThreadCount:
 
 @pytest.fixture
 def tmp_registry(tmp_path, monkeypatch):
-    """Set up a temporary registry directory."""
+    """Set up a temporary registry directory with isolated config.
+
+    Registry now uses get_site_root() from config, so we point
+    CRIER_CONFIG at a temp config with site_root = tmp_path.
+    """
+    import yaml
+
     crier_dir = tmp_path / ".crier"
     crier_dir.mkdir()
+
+    # Write a config that points site_root at tmp_path
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({"site_root": str(tmp_path)}))
+    monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -199,14 +212,13 @@ class TestRegistryThreadFunctions:
                 "https://bsky.app/profile/user/post/333",
             ],
             title="Test Thread",
-            base_path=tmp_registry,
         )
 
         # Verify it's a thread
-        assert is_thread("https://example.com/article", "bluesky", tmp_registry) is True
+        assert is_thread("https://example.com/article", "bluesky") is True
 
         # Verify thread IDs
-        thread_ids = get_thread_ids("https://example.com/article", "bluesky", tmp_registry)
+        thread_ids = get_thread_ids("https://example.com/article", "bluesky")
         assert thread_ids is not None
         assert len(thread_ids) == 3
 
@@ -219,18 +231,17 @@ class TestRegistryThreadFunctions:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        assert is_thread("https://example.com/article", "devto", tmp_registry) is False
+        assert is_thread("https://example.com/article", "devto") is False
 
     def test_is_thread_nonexistent(self, tmp_registry):
         """Nonexistent article is not a thread."""
-        assert is_thread("https://nonexistent.com", "bluesky", tmp_registry) is False
+        assert is_thread("https://nonexistent.com", "bluesky") is False
 
     def test_get_thread_ids_nonexistent(self, tmp_registry):
         """Get thread IDs for nonexistent returns None."""
-        ids = get_thread_ids("https://nonexistent.com", "bluesky", tmp_registry)
+        ids = get_thread_ids("https://nonexistent.com", "bluesky")
         assert ids is None
 
 
@@ -267,7 +278,7 @@ class TestThreadPublishResult:
 
     def test_create_success(self):
         """Create a successful ThreadPublishResult."""
-        from crier.platforms.base import ThreadPublishResult, PublishResult
+        from crier.platforms.base import ThreadPublishResult
 
         result = ThreadPublishResult(
             success=True,
@@ -490,11 +501,10 @@ class TestRegistryThreadEdgeCases:
             root_id="at://did:plc:xxx/post/111",
             root_url="https://bsky.app/profile/user/post/111",
             thread_ids=["id1", "id2"],
-            base_path=tmp_registry,
         )
 
-        assert is_thread("https://example.com/no-urls", "bluesky", tmp_registry) is True
-        ids = get_thread_ids("https://example.com/no-urls", "bluesky", tmp_registry)
+        assert is_thread("https://example.com/no-urls", "bluesky") is True
+        ids = get_thread_ids("https://example.com/no-urls", "bluesky")
         assert ids == ["id1", "id2"]
 
     def test_record_thread_with_rewrite(self, tmp_registry):
@@ -507,10 +517,9 @@ class TestRegistryThreadEdgeCases:
             thread_ids=["123", "124"],
             rewritten=True,
             rewrite_author="claude-code",
-            base_path=tmp_registry,
         )
 
-        registry = load_registry(tmp_registry)
+        registry = load_registry()
         article = registry["articles"]["https://example.com/rewritten"]
         platform_data = article["platforms"]["mastodon"]
         assert platform_data["rewritten"] is True
@@ -525,10 +534,9 @@ class TestRegistryThreadEdgeCases:
             platform="devto",
             article_id="456",
             url="https://dev.to/regular",
-            base_path=tmp_registry,
         )
 
-        ids = get_thread_ids("https://example.com/regular", "devto", tmp_registry)
+        ids = get_thread_ids("https://example.com/regular", "devto")
         assert ids is None
 
     def test_is_thread_wrong_platform(self, tmp_registry):
@@ -539,10 +547,9 @@ class TestRegistryThreadEdgeCases:
             root_id="at://...",
             root_url="https://bsky.app/...",
             thread_ids=["id1", "id2"],
-            base_path=tmp_registry,
         )
 
-        assert is_thread("https://example.com/threaded", "mastodon", tmp_registry) is False
+        assert is_thread("https://example.com/threaded", "mastodon") is False
 
     def test_get_thread_ids_wrong_platform(self, tmp_registry):
         """get_thread_ids returns None for existing article but wrong platform."""
@@ -552,10 +559,9 @@ class TestRegistryThreadEdgeCases:
             root_id="at://...",
             root_url="https://bsky.app/...",
             thread_ids=["id1"],
-            base_path=tmp_registry,
         )
 
-        ids = get_thread_ids("https://example.com/threaded", "mastodon", tmp_registry)
+        ids = get_thread_ids("https://example.com/threaded", "mastodon")
         assert ids is None
 
     def test_record_thread_updates_existing_article(self, tmp_registry):
@@ -568,7 +574,6 @@ class TestRegistryThreadEdgeCases:
             article_id="123",
             url="https://dev.to/article",
             title="Original Title",
-            base_path=tmp_registry,
         )
 
         record_thread_publication(
@@ -578,10 +583,9 @@ class TestRegistryThreadEdgeCases:
             root_url="https://bsky.app/...",
             thread_ids=["id1", "id2"],
             title="Updated Title",
-            base_path=tmp_registry,
         )
 
-        registry = load_registry(tmp_registry)
+        registry = load_registry()
         article = registry["articles"]["https://example.com/article"]
         assert article["title"] == "Updated Title"
         assert "devto" in article["platforms"]
@@ -598,10 +602,9 @@ class TestRegistryThreadEdgeCases:
             thread_ids=["id1"],
             source_file="/path/to/article.md",
             content_hash="sha256:abc123",
-            base_path=tmp_registry,
         )
 
-        registry = load_registry(tmp_registry)
+        registry = load_registry()
         article = registry["articles"]["https://example.com/with-meta"]
         assert article["source_file"] == "/path/to/article.md"
         assert article["content_hash"] == "sha256:abc123"

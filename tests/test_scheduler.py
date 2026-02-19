@@ -2,7 +2,6 @@
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 
 from crier.scheduler import (
     ScheduledPost,
@@ -22,11 +21,23 @@ from crier.scheduler import (
 
 @pytest.fixture
 def tmp_schedule(tmp_path, monkeypatch):
-    """Set up a temporary schedule directory."""
-    crier_dir = tmp_path / ".crier"
+    """Set up a temporary schedule directory with isolated config."""
+    # Create site directory with .crier/ subdir
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    crier_dir = site_dir / ".crier"
     crier_dir.mkdir()
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+
+    # Write a config file pointing site_root to our temp site directory
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(f"site_root: {site_dir}\n")
+
+    # Point CRIER_CONFIG to our isolated config
+    monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+
+    return site_dir
 
 
 class TestScheduledPost:
@@ -72,7 +83,7 @@ class TestLoadSaveSchedule:
 
     def test_load_empty_schedule(self, tmp_schedule):
         """Loading non-existent schedule returns empty structure."""
-        schedule = load_schedule(tmp_schedule)
+        schedule = load_schedule()
         assert schedule["version"] == 1
         assert schedule["scheduled_posts"] == []
 
@@ -84,9 +95,9 @@ class TestLoadSaveSchedule:
                 {"id": "test1", "platform": "devto", "status": "pending"}
             ]
         }
-        save_schedule(schedule, tmp_schedule)
+        save_schedule(schedule)
 
-        loaded = load_schedule(tmp_schedule)
+        loaded = load_schedule()
         assert len(loaded["scheduled_posts"]) == 1
         assert loaded["scheduled_posts"][0]["id"] == "test1"
 
@@ -102,15 +113,14 @@ class TestCreateScheduledPost:
             file_path="test.md",
             platform="devto",
             scheduled_time=future_time,
-            base_path=tmp_schedule,
-        )
+            )
 
         assert post.id is not None
         assert post.platform == "devto"
         assert post.status == "pending"
 
         # Verify it was saved
-        saved = get_scheduled_post(post.id, tmp_schedule)
+        saved = get_scheduled_post(post.id)
         assert saved is not None
         assert saved.platform == "devto"
 
@@ -123,8 +133,7 @@ class TestCreateScheduledPost:
             platform="bluesky",
             scheduled_time=future_time,
             rewrite="Custom short content",
-            base_path=tmp_schedule,
-        )
+            )
 
         assert post.rewrite == "Custom short content"
 
@@ -137,8 +146,7 @@ class TestCreateScheduledPost:
             platform="bluesky",
             scheduled_time=future_time,
             auto_rewrite=True,
-            base_path=tmp_schedule,
-        )
+            )
 
         assert post.auto_rewrite is True
 
@@ -148,33 +156,33 @@ class TestListScheduledPosts:
 
     def test_list_empty(self, tmp_schedule):
         """Empty schedule returns empty list."""
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert posts == []
 
     def test_list_all(self, tmp_schedule):
         """List returns all posts."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
-        create_scheduled_post("b.md", "bluesky", future_time, base_path=tmp_schedule)
+        create_scheduled_post("a.md", "devto", future_time)
+        create_scheduled_post("b.md", "bluesky", future_time)
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 2
 
     def test_list_by_status(self, tmp_schedule):
         """List can filter by status."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
-        create_scheduled_post("b.md", "bluesky", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
+        create_scheduled_post("b.md", "bluesky", future_time)
 
         # Cancel one
-        cancel_scheduled_post(post.id, tmp_schedule)
+        cancel_scheduled_post(post.id)
 
-        pending = list_scheduled_posts(status="pending", base_path=tmp_schedule)
+        pending = list_scheduled_posts(status="pending")
         assert len(pending) == 1
 
-        cancelled = list_scheduled_posts(status="cancelled", base_path=tmp_schedule)
+        cancelled = list_scheduled_posts(status="cancelled")
         assert len(cancelled) == 1
 
 
@@ -184,28 +192,28 @@ class TestGetDuePosts:
     def test_no_due_posts(self, tmp_schedule):
         """Future posts are not due."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        create_scheduled_post("a.md", "devto", future_time)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 0
 
     def test_past_posts_are_due(self, tmp_schedule):
         """Past posts are due."""
         past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        create_scheduled_post("a.md", "devto", past_time, base_path=tmp_schedule)
+        create_scheduled_post("a.md", "devto", past_time)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 1
 
     def test_only_pending_are_due(self, tmp_schedule):
         """Only pending posts are returned as due."""
         past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        post = create_scheduled_post("a.md", "devto", past_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", past_time)
 
         # Cancel the post
-        cancel_scheduled_post(post.id, tmp_schedule)
+        cancel_scheduled_post(post.id)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 0
 
 
@@ -215,32 +223,31 @@ class TestUpdateScheduledPost:
     def test_update_status(self, tmp_schedule):
         """Update changes status."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
 
-        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="published")
 
-        updated = get_scheduled_post(post.id, tmp_schedule)
+        updated = get_scheduled_post(post.id)
         assert updated.status == "published"
 
     def test_update_with_error(self, tmp_schedule):
         """Update can set error message."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
 
         update_scheduled_post(
             post.id,
             status="failed",
             error="API error",
-            base_path=tmp_schedule,
-        )
+            )
 
-        updated = get_scheduled_post(post.id, tmp_schedule)
+        updated = get_scheduled_post(post.id)
         assert updated.status == "failed"
         assert updated.error == "API error"
 
     def test_update_not_found(self, tmp_schedule):
         """Update returns False if not found."""
-        result = update_scheduled_post("nonexistent", status="failed", base_path=tmp_schedule)
+        result = update_scheduled_post("nonexistent", status="failed")
         assert result is False
 
 
@@ -250,28 +257,28 @@ class TestCancelScheduledPost:
     def test_cancel_pending(self, tmp_schedule):
         """Pending posts can be cancelled."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
 
-        result = cancel_scheduled_post(post.id, tmp_schedule)
+        result = cancel_scheduled_post(post.id)
         assert result is True
 
-        updated = get_scheduled_post(post.id, tmp_schedule)
+        updated = get_scheduled_post(post.id)
         assert updated.status == "cancelled"
 
     def test_cancel_non_pending(self, tmp_schedule):
         """Non-pending posts cannot be cancelled."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
 
         # Mark as published
-        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+        update_scheduled_post(post.id, status="published")
 
-        result = cancel_scheduled_post(post.id, tmp_schedule)
+        result = cancel_scheduled_post(post.id)
         assert result is False
 
     def test_cancel_not_found(self, tmp_schedule):
         """Cancel returns False if not found."""
-        result = cancel_scheduled_post("nonexistent", tmp_schedule)
+        result = cancel_scheduled_post("nonexistent")
         assert result is False
 
 
@@ -281,17 +288,17 @@ class TestDeleteScheduledPost:
     def test_delete_post(self, tmp_schedule):
         """Deleting removes post from schedule."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("a.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("a.md", "devto", future_time)
 
-        result = delete_scheduled_post(post.id, tmp_schedule)
+        result = delete_scheduled_post(post.id)
         assert result is True
 
-        deleted = get_scheduled_post(post.id, tmp_schedule)
+        deleted = get_scheduled_post(post.id)
         assert deleted is None
 
     def test_delete_not_found(self, tmp_schedule):
         """Delete returns False if not found."""
-        result = delete_scheduled_post("nonexistent", tmp_schedule)
+        result = delete_scheduled_post("nonexistent")
         assert result is False
 
 
@@ -328,7 +335,7 @@ class TestParseScheduleTime:
 
     def test_parse_invalid(self):
         """Invalid time returns None."""
-        result = parse_schedule_time("not a valid time format xyz123")
+        parse_schedule_time("not a valid time format xyz123")
         # dateparser is quite permissive, but this should fail
         # Actually dateparser might still parse something, so just check it doesn't crash
         # The test passes if no exception is raised
@@ -340,41 +347,41 @@ class TestCleanupOldPosts:
     def test_cleanup_removes_old(self, tmp_schedule):
         """Old completed posts are removed."""
         old_time = datetime.now(timezone.utc) - timedelta(days=60)
-        post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+        post = create_scheduled_post("old.md", "devto", old_time)
+        update_scheduled_post(post.id, status="published")
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 1
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 0
 
     def test_cleanup_keeps_pending(self, tmp_schedule):
         """Pending posts are not removed regardless of age."""
         old_time = datetime.now(timezone.utc) - timedelta(days=60)
-        create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
+        create_scheduled_post("old.md", "devto", old_time)
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 0
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 1
 
     def test_cleanup_keeps_recent(self, tmp_schedule):
         """Recent completed posts are kept."""
         recent_time = datetime.now(timezone.utc) - timedelta(days=7)
-        post = create_scheduled_post("recent.md", "devto", recent_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+        post = create_scheduled_post("recent.md", "devto", recent_time)
+        update_scheduled_post(post.id, status="published")
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 0
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 1
 
     def test_cleanup_with_no_posts(self, tmp_schedule):
         """Cleanup with empty schedule returns 0."""
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 0
 
 
@@ -481,8 +488,7 @@ class TestCreateScheduledPostEdgeCases:
             file_path="test.md",
             platform="devto",
             scheduled_time=naive_time,
-            base_path=tmp_schedule,
-        )
+            )
 
         assert post.scheduled_time.tzinfo is not None
 
@@ -495,26 +501,25 @@ class TestCreateScheduledPostEdgeCases:
             platform="",
             scheduled_time=future_time,
             profile="blogs",
-            base_path=tmp_schedule,
-        )
+            )
 
         assert post.profile == "blogs"
         assert post.platform == ""
 
         # Verify persisted
-        saved = get_scheduled_post(post.id, tmp_schedule)
+        saved = get_scheduled_post(post.id)
         assert saved.profile == "blogs"
 
     def test_create_multiple_posts_for_same_file(self, tmp_schedule):
         """Multiple scheduled posts for the same file are stored separately."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
 
-        post1 = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
-        post2 = create_scheduled_post("test.md", "bluesky", future_time, base_path=tmp_schedule)
+        post1 = create_scheduled_post("test.md", "devto", future_time)
+        post2 = create_scheduled_post("test.md", "bluesky", future_time)
 
         assert post1.id != post2.id
 
-        all_posts = list_scheduled_posts(base_path=tmp_schedule)
+        all_posts = list_scheduled_posts()
         assert len(all_posts) == 2
 
 
@@ -524,16 +529,16 @@ class TestGetScheduledPostEdgeCases:
     def test_get_by_partial_id(self, tmp_schedule):
         """Get post by partial ID prefix."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
 
         # Get by first 4 chars of ID
-        found = get_scheduled_post(post.id[:4], tmp_schedule)
+        found = get_scheduled_post(post.id[:4])
         assert found is not None
         assert found.id == post.id
 
     def test_get_nonexistent_returns_none(self, tmp_schedule):
         """Getting nonexistent post returns None."""
-        result = get_scheduled_post("nonexistent", tmp_schedule)
+        result = get_scheduled_post("nonexistent")
         assert result is None
 
 
@@ -543,23 +548,23 @@ class TestUpdateScheduledPostEdgeCases:
     def test_update_by_partial_id(self, tmp_schedule):
         """Update works with partial ID prefix."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
 
-        result = update_scheduled_post(post.id[:4], status="published", base_path=tmp_schedule)
+        result = update_scheduled_post(post.id[:4], status="published")
         assert result is True
 
-        updated = get_scheduled_post(post.id, tmp_schedule)
+        updated = get_scheduled_post(post.id)
         assert updated.status == "published"
 
     def test_update_error_only(self, tmp_schedule):
         """Update can set error without changing status."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
 
-        result = update_scheduled_post(post.id, error="Rate limited", base_path=tmp_schedule)
+        result = update_scheduled_post(post.id, error="Rate limited")
         assert result is True
 
-        updated = get_scheduled_post(post.id, tmp_schedule)
+        updated = get_scheduled_post(post.id)
         assert updated.error == "Rate limited"
         assert updated.status == "pending"  # Status unchanged
 
@@ -570,27 +575,27 @@ class TestCancelScheduledPostEdgeCases:
     def test_cancel_by_partial_id(self, tmp_schedule):
         """Cancel works with partial ID prefix."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
 
-        result = cancel_scheduled_post(post.id[:4], tmp_schedule)
+        result = cancel_scheduled_post(post.id[:4])
         assert result is True
 
     def test_cancel_failed_post_returns_false(self, tmp_schedule):
         """Cannot cancel a failed post."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="failed", base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
+        update_scheduled_post(post.id, status="failed")
 
-        result = cancel_scheduled_post(post.id, tmp_schedule)
+        result = cancel_scheduled_post(post.id)
         assert result is False
 
     def test_cancel_cancelled_post_returns_false(self, tmp_schedule):
         """Cannot cancel an already-cancelled post."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
-        cancel_scheduled_post(post.id, tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
+        cancel_scheduled_post(post.id)
 
-        result = cancel_scheduled_post(post.id, tmp_schedule)
+        result = cancel_scheduled_post(post.id)
         assert result is False
 
 
@@ -600,21 +605,21 @@ class TestDeleteScheduledPostEdgeCases:
     def test_delete_by_partial_id(self, tmp_schedule):
         """Delete works with partial ID prefix."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
 
-        result = delete_scheduled_post(post.id[:4], tmp_schedule)
+        result = delete_scheduled_post(post.id[:4])
         assert result is True
 
-        all_posts = list_scheduled_posts(base_path=tmp_schedule)
+        all_posts = list_scheduled_posts()
         assert len(all_posts) == 0
 
     def test_delete_removes_any_status(self, tmp_schedule):
         """Delete removes posts regardless of status."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        post = create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="published", base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", future_time)
+        update_scheduled_post(post.id, status="published")
 
-        result = delete_scheduled_post(post.id, tmp_schedule)
+        result = delete_scheduled_post(post.id)
         assert result is True
 
 
@@ -624,11 +629,11 @@ class TestListScheduledPostsEdgeCases:
     def test_list_sorted_by_scheduled_time(self, tmp_schedule):
         """Posts are returned sorted by scheduled_time."""
         now = datetime.now(timezone.utc)
-        create_scheduled_post("late.md", "devto", now + timedelta(hours=5), base_path=tmp_schedule)
-        create_scheduled_post("early.md", "devto", now + timedelta(hours=1), base_path=tmp_schedule)
-        create_scheduled_post("mid.md", "devto", now + timedelta(hours=3), base_path=tmp_schedule)
+        create_scheduled_post("late.md", "devto", now + timedelta(hours=5))
+        create_scheduled_post("early.md", "devto", now + timedelta(hours=1))
+        create_scheduled_post("mid.md", "devto", now + timedelta(hours=3))
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 3
         assert posts[0].file_path == "early.md"
         assert posts[1].file_path == "mid.md"
@@ -637,9 +642,9 @@ class TestListScheduledPostsEdgeCases:
     def test_list_with_status_no_matches(self, tmp_schedule):
         """Filtering by status with no matches returns empty list."""
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        create_scheduled_post("test.md", "devto", future_time, base_path=tmp_schedule)
+        create_scheduled_post("test.md", "devto", future_time)
 
-        posts = list_scheduled_posts(status="published", base_path=tmp_schedule)
+        posts = list_scheduled_posts(status="published")
         assert posts == []
 
 
@@ -650,37 +655,37 @@ class TestGetDuePostsEdgeCases:
         """Post scheduled exactly at now is due."""
         # Create a post with past time
         past_time = datetime.now(timezone.utc) - timedelta(seconds=1)
-        create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
+        create_scheduled_post("test.md", "devto", past_time)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 1
 
     def test_due_posts_excludes_cancelled(self, tmp_schedule):
         """Due posts exclude cancelled posts."""
         past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        post = create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
-        cancel_scheduled_post(post.id, tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", past_time)
+        cancel_scheduled_post(post.id)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 0
 
     def test_due_posts_excludes_failed(self, tmp_schedule):
         """Due posts exclude failed posts."""
         past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        post = create_scheduled_post("test.md", "devto", past_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="failed", base_path=tmp_schedule)
+        post = create_scheduled_post("test.md", "devto", past_time)
+        update_scheduled_post(post.id, status="failed")
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 0
 
     def test_mixed_due_and_future_posts(self, tmp_schedule):
         """Only past posts are returned as due."""
         past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
         future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-        create_scheduled_post("past.md", "devto", past_time, base_path=tmp_schedule)
-        create_scheduled_post("future.md", "devto", future_time, base_path=tmp_schedule)
+        create_scheduled_post("past.md", "devto", past_time)
+        create_scheduled_post("future.md", "devto", future_time)
 
-        due = get_due_posts(tmp_schedule)
+        due = get_due_posts()
         assert len(due) == 1
         assert due[0].file_path == "past.md"
 
@@ -707,19 +712,19 @@ class TestCleanupOldPostsEdgeCases:
     def test_cleanup_removes_old_failed_posts(self, tmp_schedule):
         """Old failed posts are also removed."""
         old_time = datetime.now(timezone.utc) - timedelta(days=60)
-        post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
-        update_scheduled_post(post.id, status="failed", error="API Error", base_path=tmp_schedule)
+        post = create_scheduled_post("old.md", "devto", old_time)
+        update_scheduled_post(post.id, status="failed", error="API Error")
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 1
 
     def test_cleanup_removes_old_cancelled_posts(self, tmp_schedule):
         """Old cancelled posts are also removed."""
         old_time = datetime.now(timezone.utc) - timedelta(days=60)
-        post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
-        cancel_scheduled_post(post.id, tmp_schedule)
+        post = create_scheduled_post("old.md", "devto", old_time)
+        cancel_scheduled_post(post.id)
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 1
 
     def test_cleanup_with_mixed_ages(self, tmp_schedule):
@@ -727,16 +732,16 @@ class TestCleanupOldPostsEdgeCases:
         old_time = datetime.now(timezone.utc) - timedelta(days=60)
         recent_time = datetime.now(timezone.utc) - timedelta(days=7)
 
-        old_post = create_scheduled_post("old.md", "devto", old_time, base_path=tmp_schedule)
-        update_scheduled_post(old_post.id, status="published", base_path=tmp_schedule)
+        old_post = create_scheduled_post("old.md", "devto", old_time)
+        update_scheduled_post(old_post.id, status="published")
 
-        recent_post = create_scheduled_post("recent.md", "devto", recent_time, base_path=tmp_schedule)
-        update_scheduled_post(recent_post.id, status="published", base_path=tmp_schedule)
+        recent_post = create_scheduled_post("recent.md", "devto", recent_time)
+        update_scheduled_post(recent_post.id, status="published")
 
-        pending_post = create_scheduled_post("pending.md", "devto", old_time, base_path=tmp_schedule)
+        create_scheduled_post("pending.md", "devto", old_time)
 
-        removed = cleanup_old_posts(days=30, base_path=tmp_schedule)
+        removed = cleanup_old_posts(days=30)
         assert removed == 1  # Only old published post removed
 
-        posts = list_scheduled_posts(base_path=tmp_schedule)
+        posts = list_scheduled_posts()
         assert len(posts) == 2  # recent + pending remain

@@ -1,20 +1,16 @@
 """Tests for pre-publish content validation (checker module)."""
 
 import json
-import os
-import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
 import yaml
 from click.testing import CliRunner
 
 from crier.checker import (
     CheckResult,
     CheckReport,
-    DEFAULT_SEVERITIES,
     check_article,
     check_content,
     check_external_links,
@@ -729,16 +725,20 @@ class TestCheckConfigOverrides:
     def test_config_disables_check(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir(exist_ok=True)
-        local_config = {
+        # Write check overrides to the global config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        global_config = {
             "checks": {
                 "missing-tags": "disabled",
                 "missing-date": "disabled",
                 "missing-description": "disabled",
             }
         }
-        (crier_dir / "config.yaml").write_text(yaml.dump(local_config))
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(yaml.dump(global_config))
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
 
         fm = {"title": "Test"}  # Missing tags, date, description
         body = " ".join(["word"] * 100)
@@ -752,10 +752,14 @@ class TestCheckConfigOverrides:
     def test_config_promotes_warning_to_error(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir(exist_ok=True)
-        local_config = {"checks": {"missing-date": "error"}}
-        (crier_dir / "config.yaml").write_text(yaml.dump(local_config))
+        # Write check overrides to the global config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        global_config = {"checks": {"missing-date": "error"}}
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(yaml.dump(global_config))
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_file)
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
 
         fm = {"title": "Test", "tags": ["t"], "description": "d"}
         body = " ".join(["word"] * 100)

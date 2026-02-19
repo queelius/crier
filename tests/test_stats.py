@@ -1,27 +1,47 @@
 """Tests for crier stats functionality."""
 
 import pytest
+import yaml
 from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from crier.registry import (
     save_stats,
     get_cached_stats,
     get_stats_age_seconds,
     record_publication,
-    load_registry,
 )
 from crier.platforms.base import ArticleStats
 
 
 @pytest.fixture
 def tmp_registry(tmp_path, monkeypatch):
-    """Set up a temporary registry directory."""
+    """Set up a temporary registry directory with isolated config.
+
+    Registry now uses get_site_root() from config, so we point
+    CRIER_CONFIG at a temp config with site_root = tmp_path.
+    """
     crier_dir = tmp_path / ".crier"
     crier_dir.mkdir()
+
+    # Write a config that points site_root at tmp_path
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({"site_root": str(tmp_path)}))
+    monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+def _setup_isolated_config(tmp_path, monkeypatch):
+    """Helper to set up isolated config for CLI tests that use tmp_path directly."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(exist_ok=True)
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({"site_root": str(tmp_path)}))
+    monkeypatch.setenv("CRIER_CONFIG", str(config_file))
 
 
 class TestArticleStats:
@@ -72,7 +92,6 @@ class TestRegistryStats:
             article_id="123",
             url="https://dev.to/article",
             title="Test Article",
-            base_path=tmp_registry,
         )
 
         # Save stats
@@ -82,12 +101,11 @@ class TestRegistryStats:
             views=500,
             likes=25,
             comments=5,
-            base_path=tmp_registry,
         )
         assert result is True
 
         # Get cached stats
-        stats = get_cached_stats(canonical_url, "devto", tmp_registry)
+        stats = get_cached_stats(canonical_url, "devto")
         assert stats is not None
         assert stats["views"] == 500
         assert stats["likes"] == 25
@@ -101,7 +119,6 @@ class TestRegistryStats:
             canonical_url="https://nonexistent.com",
             platform="devto",
             views=100,
-            base_path=tmp_registry,
         )
         assert result is False
 
@@ -115,7 +132,6 @@ class TestRegistryStats:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
         # Try to save stats for bluesky
@@ -123,13 +139,12 @@ class TestRegistryStats:
             canonical_url=canonical_url,
             platform="bluesky",
             likes=10,
-            base_path=tmp_registry,
         )
         assert result is False
 
     def test_get_cached_stats_not_found(self, tmp_registry):
         """Getting stats for nonexistent article returns None."""
-        stats = get_cached_stats("https://nonexistent.com", "devto", tmp_registry)
+        stats = get_cached_stats("https://nonexistent.com", "devto")
         assert stats is None
 
     def test_get_cached_stats_no_stats(self, tmp_registry):
@@ -141,10 +156,9 @@ class TestRegistryStats:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        stats = get_cached_stats(canonical_url, "devto", tmp_registry)
+        stats = get_cached_stats(canonical_url, "devto")
         assert stats is None
 
     def test_stats_age_seconds(self, tmp_registry):
@@ -156,17 +170,15 @@ class TestRegistryStats:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
         save_stats(
             canonical_url=canonical_url,
             platform="devto",
             views=100,
-            base_path=tmp_registry,
         )
 
-        age = get_stats_age_seconds(canonical_url, "devto", tmp_registry)
+        age = get_stats_age_seconds(canonical_url, "devto")
         assert age is not None
         assert age >= 0
         assert age < 5  # Should be very recent
@@ -180,10 +192,9 @@ class TestRegistryStats:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        age = get_stats_age_seconds(canonical_url, "devto", tmp_registry)
+        age = get_stats_age_seconds(canonical_url, "devto")
         assert age is None
 
 
@@ -298,6 +309,7 @@ class TestStatsCLI:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         runner = CliRunner()
@@ -313,6 +325,7 @@ class TestStatsCLI:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         # Create markdown file
@@ -339,6 +352,7 @@ Content here.
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         # Create markdown file
@@ -359,7 +373,6 @@ Content here.
             url="https://dev.to/test",
             title="Test Article",
             source_file=str(md_file),
-            base_path=tmp_path,
         )
 
         save_stats(
@@ -367,7 +380,6 @@ Content here.
             platform="devto",
             views=100,
             likes=10,
-            base_path=tmp_path,
         )
 
         runner = CliRunner()
@@ -388,6 +400,7 @@ Content here.
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         # Create multiple publications with stats
@@ -399,13 +412,11 @@ Content here.
                 article_id=str(100 + i),
                 url=f"https://dev.to/article{i}",
                 title=f"Article {i}",
-                base_path=tmp_path,
             )
             save_stats(
                 canonical_url=canonical_url,
                 platform="devto",
                 likes=i * 10,  # 0, 10, 20, 30, 40
-                base_path=tmp_path,
             )
 
         runner = CliRunner()
@@ -434,7 +445,6 @@ class TestRegistryStatsEdgeCases:
             platform="bluesky",
             article_id="at://...",
             url="https://bsky.app/...",
-            base_path=tmp_registry,
         )
 
         result = save_stats(
@@ -444,11 +454,10 @@ class TestRegistryStatsEdgeCases:
             likes=42,
             comments=7,
             reposts=15,
-            base_path=tmp_registry,
         )
         assert result is True
 
-        stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+        stats = get_cached_stats(canonical_url, "bluesky")
         assert stats["views"] is None
         assert stats["likes"] == 42
         assert stats["comments"] == 7
@@ -463,13 +472,12 @@ class TestRegistryStatsEdgeCases:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        save_stats(canonical_url=canonical_url, platform="devto", views=100, base_path=tmp_registry)
-        save_stats(canonical_url=canonical_url, platform="devto", views=200, base_path=tmp_registry)
+        save_stats(canonical_url=canonical_url, platform="devto", views=100)
+        save_stats(canonical_url=canonical_url, platform="devto", views=200)
 
-        stats = get_cached_stats(canonical_url, "devto", tmp_registry)
+        stats = get_cached_stats(canonical_url, "devto")
         assert stats["views"] == 200
 
     def test_get_cached_stats_wrong_platform(self, tmp_registry):
@@ -481,17 +489,16 @@ class TestRegistryStatsEdgeCases:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        save_stats(canonical_url=canonical_url, platform="devto", views=100, base_path=tmp_registry)
+        save_stats(canonical_url=canonical_url, platform="devto", views=100)
 
-        stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+        stats = get_cached_stats(canonical_url, "bluesky")
         assert stats is None
 
     def test_stats_age_nonexistent_article(self, tmp_registry):
         """Stats age for nonexistent article returns None."""
-        age = get_stats_age_seconds("https://nonexistent.com", "devto", tmp_registry)
+        age = get_stats_age_seconds("https://nonexistent.com", "devto")
         assert age is None
 
     def test_stats_age_nonexistent_platform(self, tmp_registry):
@@ -503,24 +510,23 @@ class TestRegistryStatsEdgeCases:
             platform="devto",
             article_id="123",
             url="https://dev.to/article",
-            base_path=tmp_registry,
         )
 
-        age = get_stats_age_seconds(canonical_url, "bluesky", tmp_registry)
+        age = get_stats_age_seconds(canonical_url, "bluesky")
         assert age is None
 
     def test_multiple_platforms_independent_stats(self, tmp_registry):
         """Stats for different platforms on same article are independent."""
         canonical_url = "https://example.com/article"
 
-        record_publication(canonical_url=canonical_url, platform="devto", article_id="123", url="u1", base_path=tmp_registry)
-        record_publication(canonical_url=canonical_url, platform="bluesky", article_id="456", url="u2", base_path=tmp_registry)
+        record_publication(canonical_url=canonical_url, platform="devto", article_id="123", url="u1")
+        record_publication(canonical_url=canonical_url, platform="bluesky", article_id="456", url="u2")
 
-        save_stats(canonical_url=canonical_url, platform="devto", views=1000, likes=50, base_path=tmp_registry)
-        save_stats(canonical_url=canonical_url, platform="bluesky", likes=25, reposts=10, base_path=tmp_registry)
+        save_stats(canonical_url=canonical_url, platform="devto", views=1000, likes=50)
+        save_stats(canonical_url=canonical_url, platform="bluesky", likes=25, reposts=10)
 
-        devto_stats = get_cached_stats(canonical_url, "devto", tmp_registry)
-        bluesky_stats = get_cached_stats(canonical_url, "bluesky", tmp_registry)
+        devto_stats = get_cached_stats(canonical_url, "devto")
+        bluesky_stats = get_cached_stats(canonical_url, "bluesky")
 
         assert devto_stats["views"] == 1000
         assert devto_stats["likes"] == 50
@@ -615,6 +621,7 @@ class TestStatsCLIEdgeCases:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         md_file = tmp_path / "article.md"
@@ -627,7 +634,6 @@ class TestStatsCLIEdgeCases:
             url="https://dev.to/my",
             title="My Article",
             source_file=str(md_file),
-            base_path=tmp_path,
         )
 
         runner = CliRunner()
@@ -644,6 +650,7 @@ class TestStatsCLIEdgeCases:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         md_file = tmp_path / "article.md"
@@ -656,7 +663,6 @@ class TestStatsCLIEdgeCases:
             url="https://dev.to/test",
             title="Test",
             source_file=str(md_file),
-            base_path=tmp_path,
         )
 
         runner = CliRunner()
@@ -677,6 +683,7 @@ class TestStatsCLIEdgeCases:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         md_file = tmp_path / "article.md"
@@ -689,7 +696,6 @@ class TestStatsCLIEdgeCases:
             url="https://dev.to/test",
             title="Test",
             source_file=str(md_file),
-            base_path=tmp_path,
         )
 
         # Pre-populate cache
@@ -699,7 +705,6 @@ class TestStatsCLIEdgeCases:
             views=500,
             likes=42,
             comments=7,
-            base_path=tmp_path,
         )
 
         runner = CliRunner()
@@ -720,6 +725,7 @@ class TestStatsCLIEdgeCases:
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()
+        _setup_isolated_config(tmp_path, monkeypatch)
         monkeypatch.chdir(tmp_path)
 
         runner = CliRunner()
