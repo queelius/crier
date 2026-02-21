@@ -1869,9 +1869,13 @@ def config_show():
     # Show content paths with source
     content_paths = get_content_paths()
     if content_paths:
+        from .config import get_project_root
+        project_root = get_project_root()
         console.print("[bold]Content Paths[/bold]")
         for p in content_paths:
             path_obj = Path(p)
+            if not path_obj.is_absolute():
+                path_obj = project_root / path_obj
             if path_obj.exists():
                 console.print(f"  [green]✓[/green] {p}")
             else:
