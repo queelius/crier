@@ -68,7 +68,9 @@ def tmp_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def tmp_registry(tmp_path, monkeypatch):
-    """Create a temporary registry directory."""
+    """Create a temporary registry directory with isolated config."""
+    import yaml
+
     registry_dir = tmp_path / ".crier"
     registry_dir.mkdir()
     registry_file = registry_dir / "registry.yaml"
@@ -76,8 +78,12 @@ def tmp_registry(tmp_path, monkeypatch):
     # Initialize empty registry
     registry_file.write_text("version: 2\narticles: {}\n")
 
-    # Patch to use tmp_path as cwd for registry discovery
-    Path.cwd()
+    # Set up isolated config with site_root pointing to tmp_path
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({"site_root": str(tmp_path)}))
+    monkeypatch.setenv("CRIER_CONFIG", str(config_file))
     monkeypatch.chdir(tmp_path)
 
     return registry_dir

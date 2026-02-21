@@ -1,7 +1,18 @@
-"""Claude Code skill installation for crier."""
+"""Claude Code skill installation for crier.
 
+DEPRECATED: Use the crier Claude Code plugin instead.
+Install from the queelius-plugins marketplace.
+"""
+
+import warnings
 from importlib.resources import files
 from pathlib import Path
+
+DEPRECATION_MSG = (
+    "The built-in 'crier skill' command is deprecated. "
+    "Use the crier Claude Code plugin instead "
+    "(install from the queelius-plugins marketplace)."
+)
 
 SKILL_NAME = "crier"
 
@@ -63,6 +74,9 @@ def is_installed(local: bool | None = None) -> dict[str, bool]:
 def install(local: bool = False) -> Path:
     """Install the crier skill.
 
+    .. deprecated::
+        Use the crier Claude Code plugin instead.
+
     Args:
         local: If True, install to .claude/skills/ (repo-local).
                If False, install to ~/.claude/skills/ (global).
@@ -70,6 +84,7 @@ def install(local: bool = False) -> Path:
     Returns:
         Path to the installed SKILL.md file.
     """
+    warnings.warn(DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
     skill_dir = get_skill_dir(local)
     skill_path = get_skill_path(local)
 
@@ -85,6 +100,9 @@ def install(local: bool = False) -> Path:
 def uninstall(local: bool = False) -> bool:
     """Uninstall the crier skill.
 
+    .. deprecated::
+        Use the crier Claude Code plugin instead.
+
     Args:
         local: If True, uninstall from .claude/skills/.
                If False, uninstall from ~/.claude/skills/.
@@ -92,6 +110,7 @@ def uninstall(local: bool = False) -> bool:
     Returns:
         True if skill was removed, False if it wasn't installed.
     """
+    warnings.warn(DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
     skill_path = get_skill_path(local)
     skill_dir = get_skill_dir(local)
 

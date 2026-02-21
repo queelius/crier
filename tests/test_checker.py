@@ -672,11 +672,14 @@ class TestCheckCLI:
         body = " ".join(["word"] * 100)
         _make_md(content_dir, fm, body)
 
-        # Set up .crier config
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir(exist_ok=True)
-        local_config = {"content_paths": [str(content_dir)], "file_extensions": [".md"]}
-        (crier_dir / "config.yaml").write_text(yaml.dump(local_config))
+        # Set up global config with site_root
+        config_file = tmp_path / "crier_config.yaml"
+        config_file.write_text(yaml.dump({
+            "site_root": str(tmp_path),
+            "content_paths": [str(content_dir)],
+            "file_extensions": [".md"],
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
 
         runner = CliRunner()
         result = runner.invoke(cli, ["check", "--all"])

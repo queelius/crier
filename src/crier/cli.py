@@ -3662,8 +3662,15 @@ def status(file: str | None, show_all: bool, verbose: bool):
 
 @cli.group()
 def skill():
-    """Manage Claude Code skill integration."""
-    pass
+    """Manage Claude Code skill integration (deprecated).
+
+    Use the crier Claude Code plugin instead (queelius-plugins marketplace).
+    """
+    console.print(
+        "[yellow]Warning:[/yellow] The built-in 'crier skill' command is deprecated.\n"
+        "Use the crier Claude Code plugin instead "
+        "(install from the queelius-plugins marketplace).\n"
+    )
 
 
 @skill.command(name="install")
