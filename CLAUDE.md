@@ -44,7 +44,7 @@ ruff format --check src/
 - `feed` — Generate RSS/Atom feeds from content files (`--format`, `--output`, `--limit`, `--tag`)
 - `doctor` — Validate API keys (`--json`)
 - `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
-- `skill` — Manage Claude Code skill installation (`install`, `uninstall`, `status`, `show`)
+- `skill` — Manage Claude Code skill installation (deprecated -- use crier plugin from queelius-plugins marketplace)
 - `register` / `unregister` — Manual registry management
 - `list` — List articles on a platform
 
@@ -64,7 +64,7 @@ ruff format --check src/
 
 **Scheduler** (`scheduler.py`): Content scheduling for future publication:
 - `ScheduledPost` dataclass for scheduled post data
-- Schedule storage in `.crier/schedule.yaml`
+- Schedule storage in `<site_root>/.crier/schedule.yaml`
 - Natural language time parsing via `dateparser`
 
 **Checker** (`checker.py`): Pre-publish content validation:
@@ -72,7 +72,7 @@ ruff format --check src/
 - `check_article()` — Pure validation (no I/O): front matter, content, platform-specific checks
 - `check_file()` — I/O wrapper that reads file and calls `check_article()`
 - `check_external_links()` — Optional external URL validation via HEAD requests
-- Configurable severity overrides in `.crier/config.yaml` `checks:` section
+- Configurable severity overrides in `~/.config/crier/config.yaml` `checks:` section
 - Integrated into `publish` (pre-publish gate) and `audit` (filter with `--check`)
 
 **Threading** (`threading.py`): Thread splitting for social platforms:
@@ -86,18 +86,57 @@ ruff format --check src/
 - Social: bluesky, mastodon, linkedin, threads, twitter (copy-paste mode)
 - Announcement: telegram, discord
 
-**Config** (`config.py`): Two-tier configuration system:
-- **Global** (`~/.config/crier/config.yaml`): API keys and profiles, shared across projects
-- **Local** (`.crier/config.yaml`): Project-specific settings (content_paths, site_base_url, exclude_patterns, file_extensions, default_profile, rewrite_author)
-- Environment variables (`CRIER_{PLATFORM}_API_KEY`) take precedence over config files
+**Config** (`config.py`): Single global configuration:
+- **Global** (`~/.config/crier/config.yaml`): ALL configuration -- API keys, profiles, content paths, site settings
+- `site_root` key locates the content project directory (e.g., `~/github/repos/my-blog`)
+- Registry lives at `<site_root>/.crier/registry.yaml` -- publication state only
+- No local `.crier/config.yaml` -- no merge logic
+- Precedence: global config < environment variables (`CRIER_{PLATFORM}_API_KEY`) < CLI args
 - Supports composable profiles (profiles can reference other profiles)
+
+Example global config structure:
+```yaml
+site_root: ~/github/repos/my-blog
+site_base_url: https://example.com
+content_paths:
+  - content/post
+  - content/note
+file_extensions:
+  - .md
+  - .markdown
+exclude_patterns:
+  - _drafts/*
+  - _index.md
+default_profile: blogs
+
+platforms:
+  devto:
+    api_key: sk-...
+  bluesky:
+    handle: user.bsky.social
+    app_password: ...
+
+profiles:
+  blogs:
+    platforms: [devto, hashnode, medium]
+  social:
+    platforms: [bluesky, mastodon]
+
+checks:
+  missing-tags: disabled
+  missing-date: error
+
+llm:
+  api_key: sk-...
+  model: gpt-4o-mini
+```
 
 **Feed** (`feed.py`): RSS/Atom feed generation from content files:
 - `generate_feed()` — Builds RSS 2.0 or Atom XML from markdown files using `feedgen`
 - `_collect_items()` — Parses files and applies tag/date filters
 - Reuses `parse_markdown_file()`, `get_content_date()`, `get_content_tags()`
 
-**Registry** (`registry.py`): Tracks publications in `.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
+**Registry** (`registry.py`): Tracks publications in `<site_root>/.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
 - Atomic writes via `tempfile.mkstemp()` + `os.replace()` — crash-safe even under `kill -9`
 - `record_failure()` / `get_failures()` — Tracks publication errors for `audit --retry`
 
@@ -113,7 +152,7 @@ ruff format --check src/
 - `auto_rewrite_for_platform()` — LLM retry loop with configurable retries and truncation fallback
 - `AutoRewriteResult` dataclass for structured success/failure results
 
-**Skill** (`skill.py`): Claude Code skill installation. Loads `SKILL.md` from package resources and installs to `~/.claude/skills/crier/`.
+**Skill** (`skill.py`): Claude Code skill installation (deprecated). Loads `SKILL.md` from package resources and installs to `~/.claude/skills/crier/`. Superseded by the crier Claude Code plugin available from the queelius-plugins marketplace.
 
 ## Key Features
 
@@ -367,7 +406,7 @@ crier schedule cancel ID
 crier schedule run                      # Publish all due posts
 ```
 
-Schedule data stored in `.crier/schedule.yaml`.
+Schedule data stored in `<site_root>/.crier/schedule.yaml`.
 
 ## Analytics
 
@@ -480,7 +519,7 @@ crier check article.md --json
 
 **Audit integration:** Use `--check` with `--publish` to skip files that fail validation.
 
-**Configure severity overrides** in `.crier/config.yaml`:
+**Configure severity overrides** in `~/.config/crier/config.yaml`:
 ```yaml
 checks:
   missing-tags: disabled    # Don't care about tags
@@ -514,7 +553,7 @@ Discovery is handled by `_discover_user_platforms()` in `platforms/__init__.py`,
 
 ## Testing
 
-Tests are in `tests/` with 1088 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, and plugin discovery.
+Tests are in `tests/` with 1111 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, and plugin discovery.
 
 **Running tests:**
 ```bash
