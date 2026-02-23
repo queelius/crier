@@ -1083,6 +1083,50 @@ class TestSearchCommand:
         assert data["count"] == 1
         assert data["results"][0]["title"] == "New Post"
 
+    def test_search_date_filter_excludes_dateless(self, runner, mock_config_and_registry):
+        """Files without a front matter date are excluded when --since is used."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "dated.md").write_text(
+            "---\ntitle: Dated Post\ndate: 2025-12-01\n---\nDated content."
+        )
+        (posts_dir / "nodated.md").write_text(
+            "---\ntitle: Undated Post\n---\nUndated content."
+        )
+
+        result = runner.invoke(cli, ["search", str(posts_dir), "--since", "2025-01-01", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["results"][0]["title"] == "Dated Post"
+
+    def test_search_date_source_mtime(self, runner, mock_config_and_registry):
+        """--date-source mtime uses file modification time instead of frontmatter."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        # File with old frontmatter date but recent mtime (just created)
+        (posts_dir / "recent_file.md").write_text(
+            "---\ntitle: Recent File\ndate: 2020-01-01\n---\nOld date but recent file."
+        )
+
+        # With frontmatter (default), this file is excluded (date is 2020)
+        result = runner.invoke(cli, ["search", str(posts_dir), "--since", "2025-01-01", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 0
+
+        # With mtime, the file is included (just created)
+        result = runner.invoke(cli, [
+            "search", str(posts_dir), "--since", "2025-01-01",
+            "--date-source", "mtime", "--json"
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["results"][0]["title"] == "Recent File"
+
     def test_search_json_output(self, runner, mock_config_and_registry):
         """JSON output format works."""
         import json
@@ -1353,6 +1397,41 @@ class TestAutomationFlags:
         data = json.loads(result.output)
         assert data["success"] is False
         assert "nonexistent" in data["error"].lower()
+
+    def test_audit_json_no_header_leak(self, runner, mock_config_and_registry):
+        """--json output should not contain non-JSON header lines."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "test.md").write_text(
+            "---\ntitle: Test\ndate: 2025-12-01\n---\nContent."
+        )
+
+        result = runner.invoke(cli, ["audit", str(posts_dir), "--json"])
+        assert result.exit_code == 0
+        # Should be valid JSON (no "Content Audit" header)
+        data = json.loads(result.output)
+        assert "command" in data
+        assert data["command"] == "audit"
+
+    def test_audit_date_filter_excludes_dateless(self, runner, mock_config_and_registry):
+        """Files without frontmatter date are excluded when --since is used."""
+        import json
+
+        posts_dir = mock_config_and_registry["posts_dir"]
+        (posts_dir / "dated.md").write_text(
+            "---\ntitle: Dated\ndate: 2025-12-01\n---\nContent."
+        )
+        (posts_dir / "undated.md").write_text(
+            "---\ntitle: Undated\n---\nContent."
+        )
+
+        result = runner.invoke(cli, [
+            "audit", str(posts_dir), "--since", "2025-01-01", "--json"
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["files_scanned"] == 1
 
 
 class TestPlatformTypoSuggestion:

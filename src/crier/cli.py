@@ -83,6 +83,35 @@ def _parse_date_filter(value: str) -> datetime:
         )
 
 
+def _filter_files_by_date(
+    files: list,
+    since_dt: datetime | None,
+    until_dt: datetime | None,
+    use_mtime: bool = False,
+) -> list:
+    """Filter files by date (frontmatter by default, or file mtime).
+
+    When using frontmatter date (default), files without a date are excluded.
+    When using mtime, all files have a date so none are excluded.
+    """
+    filtered = []
+    for f in files:
+        if use_mtime:
+            content_date = datetime.fromtimestamp(Path(f).stat().st_mtime)
+        else:
+            content_date = _get_content_date(f)
+            if content_date is None:
+                continue  # skip dateless files when filtering by frontmatter
+        # Make comparison timezone-naive if needed
+        if content_date.tzinfo is not None:
+            content_date = content_date.replace(tzinfo=None)
+        if since_dt and content_date < since_dt:
+            continue
+        if until_dt and content_date > until_dt:
+            continue
+        filtered.append(f)
+    return filtered
+
 
 
 @click.group()
@@ -2367,6 +2396,9 @@ def llm_test():
               help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
 @click.option("--until", "until_date", default=None,
               help="Only include content until this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--date-source", "date_source", type=click.Choice(["frontmatter", "mtime"]),
+              default="frontmatter",
+              help="Date source for --since/--until: frontmatter (default) or file mtime")
 @click.option("--tag", "-T", "tag_filter", multiple=True,
               help="Only include content with these tags (case-insensitive, OR logic)")
 @click.option("--json", "json_output", is_flag=True,
@@ -2392,7 +2424,7 @@ def llm_test():
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
           sample: int | None, include_changed: bool, include_archived: bool,
-          since_date: str | None, until_date: str | None,
+          since_date: str | None, until_date: str | None, date_source: str,
           tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
           auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
           verbose: bool, run_checks: bool, failed: bool, retry: bool):
@@ -2698,20 +2730,8 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     if since_date or until_date:
         since_dt = _parse_date_filter(since_date) if since_date else None
         until_dt = _parse_date_filter(until_date) if until_date else None
-
-        filtered_files = []
-        for f in files:
-            content_date = _get_content_date(f)
-            if content_date:
-                # Make comparison timezone-naive if needed
-                if content_date.tzinfo is not None:
-                    content_date = content_date.replace(tzinfo=None)
-                if since_dt and content_date < since_dt:
-                    continue
-                if until_dt and content_date > until_dt:
-                    continue
-            filtered_files.append(f)
-        files = filtered_files
+        files = _filter_files_by_date(files, since_dt, until_dt,
+                                      use_mtime=(date_source == "mtime"))
 
     # Apply tag filtering
     if tag_filter:
@@ -2754,13 +2774,14 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 )
         return
 
-    console.print("\n[bold]Content Audit[/bold]")
     n_files = len(files)
     n_plats = len(check_platforms)
-    console.print(
-        f"[dim]Checking {n_files} file(s)"
-        f" against {n_plats} platform(s)[/dim]\n"
-    )
+    if not silent:
+        console.print("\n[bold]Content Audit[/bold]")
+        console.print(
+            f"[dim]Checking {n_files} file(s)"
+            f" against {n_plats} platform(s)[/dim]\n"
+        )
 
     # Build audit table and track actionable items
     table = Table(title="Audit Results")
@@ -3228,6 +3249,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
               help="Only include content from this date (e.g., 1w, 7d, 2025-01-01)")
 @click.option("--until", "until_date", default=None,
               help="Only include content until this date (e.g., 1w, 7d, 2025-01-01)")
+@click.option("--date-source", "date_source", type=click.Choice(["frontmatter", "mtime"]),
+              default="frontmatter",
+              help="Date source for --since/--until: frontmatter (default) or file mtime")
 @click.option("--sample", type=int, default=None,
               help="Randomly sample N items")
 @click.option("--json", "json_output", is_flag=True,
@@ -3238,7 +3262,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
               help="Show all tags and descriptions")
 def search(
     path: str | None, tag_filter: tuple[str, ...],
-    since_date: str | None, until_date: str | None,
+    since_date: str | None, until_date: str | None, date_source: str,
     sample: int | None, json_output: bool,
     quiet: bool, verbose: bool,
 ):
@@ -3265,20 +3289,8 @@ def search(
     if since_date or until_date:
         since_dt = _parse_date_filter(since_date) if since_date else None
         until_dt = _parse_date_filter(until_date) if until_date else None
-
-        filtered_files = []
-        for f in files:
-            content_date = _get_content_date(f)
-            if content_date:
-                # Make comparison timezone-naive if needed
-                if content_date.tzinfo is not None:
-                    content_date = content_date.replace(tzinfo=None)
-                if since_dt and content_date < since_dt:
-                    continue
-                if until_dt and content_date > until_dt:
-                    continue
-            filtered_files.append(f)
-        files = filtered_files
+        files = _filter_files_by_date(files, since_dt, until_dt,
+                                      use_mtime=(date_source == "mtime"))
 
     # Apply tag filtering
     if tag_filter:
