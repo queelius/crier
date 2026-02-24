@@ -3072,3 +3072,163 @@ class TestSummaryCommand:
         import json
         data = json.loads(result.output)
         assert data["by_section"]["unknown"] == 1
+
+
+class TestLinkCommand:
+    """Tests for crier link command."""
+
+    def test_link_existing_entry(self, runner, tmp_path, monkeypatch):
+        """Link a content file to an existing registry entry."""
+        # Set up config
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        # Set up registry with an existing entry pointing to a temp file
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        canonical = "https://example.com/post/my-article/"
+        registry = {
+            "version": 2,
+            "articles": {
+                canonical: {
+                    "title": "Old Title",
+                    "source_file": "/tmp/claude/crier-devto.md",
+                    "content_hash": "sha256:oldoldhash",
+                    "platforms": {
+                        "devto": {
+                            "id": "12345",
+                            "url": "https://dev.to/user/my-article",
+                            "published_at": "2026-01-01T00:00:00+00:00",
+                        }
+                    },
+                }
+            },
+        }
+        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
+        monkeypatch.chdir(tmp_path)
+
+        # Create the real content file
+        content_dir = tmp_path / "content" / "post" / "2026-01-01-my-article"
+        content_dir.mkdir(parents=True)
+        content_file = content_dir / "index.md"
+        content_file.write_text(
+            "---\n"
+            "title: My Article\n"
+            f"canonical_url: {canonical}\n"
+            "---\n"
+            "Hello world.\n"
+        )
+
+        result = runner.invoke(cli, [
+            "link",
+            str(content_file),
+            "--url", canonical,
+        ])
+        assert result.exit_code == 0
+        assert "Linked" in result.output
+        assert "existing entry" in result.output
+
+        # Verify registry was updated
+        updated = yaml.safe_load((crier_dir / "registry.yaml").read_text())
+        article = updated["articles"][canonical]
+        assert article["source_file"] == str(content_file)
+        assert article["content_hash"].startswith("sha256:")
+        assert article["section"] == "post"
+        assert article["title"] == "My Article"
+        # Platforms should be preserved
+        assert "devto" in article["platforms"]
+
+    def test_link_new_entry_from_front_matter(self, runner, tmp_path, monkeypatch):
+        """Create a new registry entry from a file with canonical_url in front matter."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+
+        # Empty registry
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+        monkeypatch.chdir(tmp_path)
+
+        # Create content file with canonical_url in front matter
+        canonical = "https://example.com/post/brand-new/"
+        content_dir = tmp_path / "content" / "post" / "2026-02-01-brand-new"
+        content_dir.mkdir(parents=True)
+        content_file = content_dir / "index.md"
+        content_file.write_text(
+            "---\n"
+            "title: Brand New Article\n"
+            f"canonical_url: {canonical}\n"
+            "---\n"
+            "Brand new content.\n"
+        )
+
+        result = runner.invoke(cli, ["link", str(content_file)])
+        assert result.exit_code == 0
+        assert "Created new registry entry" in result.output
+
+        # Verify registry
+        updated = yaml.safe_load((crier_dir / "registry.yaml").read_text())
+        assert canonical in updated["articles"]
+        article = updated["articles"][canonical]
+        assert article["source_file"] == str(content_file)
+        assert article["title"] == "Brand New Article"
+        assert article["content_hash"].startswith("sha256:")
+        assert article["section"] == "post"
+        assert article["platforms"] == {}
+
+    def test_link_file_not_found(self, runner, tmp_path, monkeypatch):
+        """Error when file doesn't exist."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+
+        result = runner.invoke(cli, [
+            "link",
+            str(tmp_path / "nonexistent.md"),
+            "--url", "https://example.com/post/x/",
+        ])
+        assert result.exit_code != 0
+        assert "File not found" in result.output
+
+    def test_link_no_canonical_url(self, runner, tmp_path, monkeypatch):
+        """Error when no canonical URL can be determined."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text("")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
+        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        crier_dir = tmp_path / ".crier"
+        crier_dir.mkdir()
+        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+
+        # File without canonical_url in front matter
+        content_file = tmp_path / "no-url.md"
+        content_file.write_text(
+            "---\n"
+            "title: No URL Article\n"
+            "---\n"
+            "Some content.\n"
+        )
+
+        result = runner.invoke(cli, ["link", str(content_file)])
+        assert result.exit_code != 0
+        assert "No canonical URL" in result.output

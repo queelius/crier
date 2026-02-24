@@ -42,6 +42,9 @@ from .registry import (
     get_article_by_file,
     get_all_articles,
     remove_publication,
+    load_registry,
+    save_registry,
+    infer_section,
 )
 
 console = Console()
@@ -3878,6 +3881,98 @@ def unregister(file: str, platform_name: str):
         console.print(f"[green]✓ Unregistered {file} from {platform_name}[/green]")
     else:
         console.print("[red]Failed to unregister.[/red]")
+
+
+@cli.command()
+@click.argument("file", type=click.Path())
+@click.option("--url", "-u", default=None,
+              help="Canonical URL to link to. If omitted, extracted from file front matter.")
+def link(file: str, url: str | None):
+    """Link a content file to a registry entry.
+
+    Updates the source_file (and content_hash, section, title) for an existing
+    registry entry, or creates a new entry if the canonical URL is not yet tracked.
+
+    This is useful when content was cross-posted using temp files and the registry
+    recorded the temp path instead of the real content file.
+
+    \b
+    Examples:
+        # Link file to an existing entry by canonical URL
+        crier link content/post/2026-02-13-pagevault/index.md --url https://metafunctor.com/post/2026-02-13-pagevault/
+
+        # Create/update entry using canonical_url from front matter
+        crier link content/post/2026-02-13-pagevault/index.md
+    """
+    file_path = Path(file)
+
+    if not file_path.exists():
+        console.print(f"[red]Error: File not found: {file}[/red]")
+        raise SystemExit(1)
+
+    # If no --url, extract canonical_url from front matter
+    if not url:
+        article = parse_markdown_file(file)
+        url = article.canonical_url
+        if not url:
+            console.print("[red]Error: No canonical URL provided and none found in front matter.[/red]")
+            console.print()
+            console.print("[dim]Provide --url or add canonical_url to your file's YAML front matter.[/dim]")
+            raise SystemExit(1)
+
+    # Parse file for title (even if --url was given, we want the title)
+    article = parse_markdown_file(file)
+    title = article.title
+
+    # Compute content hash and section
+    content_hash = get_file_content_hash(file_path)
+    section = infer_section(str(file_path))
+
+    # Load registry and check if entry exists
+    registry = load_registry()
+    existing = registry["articles"].get(url)
+    is_update = existing is not None
+
+    if is_update:
+        # Update existing entry
+        old_source = existing.get("source_file")
+        existing["source_file"] = str(file_path)
+        existing["content_hash"] = content_hash
+        if section:
+            existing["section"] = section
+        if title:
+            existing["title"] = title
+        save_registry(registry)
+
+        console.print(f"[green]Linked {file} to existing entry.[/green]")
+        console.print(f"  [dim]URL:[/dim]     {url}")
+        if old_source and old_source != str(file_path):
+            console.print(f"  [dim]Old file:[/dim] {old_source}")
+        console.print(f"  [dim]New file:[/dim] {file_path}")
+        console.print(f"  [dim]Hash:[/dim]    {content_hash}")
+        if section:
+            console.print(f"  [dim]Section:[/dim]  {section}")
+    else:
+        # Create new entry
+        new_entry: dict = {
+            "title": title,
+            "source_file": str(file_path),
+            "content_hash": content_hash,
+            "platforms": {},
+        }
+        if section:
+            new_entry["section"] = section
+        registry["articles"][url] = new_entry
+        save_registry(registry)
+
+        console.print(f"[green]Created new registry entry for {file}.[/green]")
+        console.print(f"  [dim]URL:[/dim]     {url}")
+        console.print(f"  [dim]File:[/dim]    {file_path}")
+        console.print(f"  [dim]Hash:[/dim]    {content_hash}")
+        if title:
+            console.print(f"  [dim]Title:[/dim]   {title}")
+        if section:
+            console.print(f"  [dim]Section:[/dim]  {section}")
 
 
 @cli.group()
