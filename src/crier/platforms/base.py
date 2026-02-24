@@ -48,6 +48,10 @@ class Article:
     canonical_url: str | None = None
     published: bool = True
     cover_image: str | None = None
+    # Set to True when body contains a short-form rewrite (via --rewrite)
+    # rather than the full article content. Short-form platforms use body
+    # directly when this is True.
+    is_rewrite: bool = False
 
     # Platform-specific ID after publishing
     platform_id: str | None = None

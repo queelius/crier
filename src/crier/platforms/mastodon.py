@@ -45,21 +45,26 @@ class Mastodon(Platform):
     def publish(self, article: Article) -> PublishResult:
         """Post a toot to Mastodon.
 
-        Creates a post with the article title/description and canonical URL.
+        If article.body is provided (e.g., via --rewrite), uses it as the post
+        text. Otherwise constructs from title + description + URL + hashtags.
         """
-        # Create post text: title + description + URL
-        text_parts = [article.title]
-        if article.description:
-            text_parts.append(article.description)
-        if article.canonical_url:
-            text_parts.append(article.canonical_url)
-
-        # Add hashtags from tags
-        if article.tags:
-            hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
-            text_parts.append(hashtags)
-
-        text = "\n\n".join(text_parts)
+        if article.is_rewrite:
+            # Body provided (e.g., via --rewrite) — use it directly
+            text = article.body
+            # Append canonical URL if not already present
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + "\n\n" + article.canonical_url
+        else:
+            # Auto-construct from metadata
+            text_parts = [article.title]
+            if article.description:
+                text_parts.append(article.description)
+            if article.canonical_url:
+                text_parts.append(article.canonical_url)
+            if article.tags:
+                hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
+                text_parts.append(hashtags)
+            text = "\n\n".join(text_parts)
 
         # Check content length
         if error := self._check_content_length(text):
@@ -98,13 +103,17 @@ class Mastodon(Platform):
 
     def update(self, article_id: str, article: Article) -> PublishResult:
         """Update an existing toot (Mastodon supports editing)."""
-        text_parts = [article.title]
-        if article.description:
-            text_parts.append(article.description)
-        if article.canonical_url:
-            text_parts.append(article.canonical_url)
-
-        text = "\n\n".join(text_parts)
+        if article.is_rewrite:
+            text = article.body
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + "\n\n" + article.canonical_url
+        else:
+            text_parts = [article.title]
+            if article.description:
+                text_parts.append(article.description)
+            if article.canonical_url:
+                text_parts.append(article.canonical_url)
+            text = "\n\n".join(text_parts)
 
         # Check content length
         if error := self._check_content_length(text):

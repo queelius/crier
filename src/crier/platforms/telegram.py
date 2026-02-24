@@ -36,7 +36,17 @@ class Telegram(Platform):
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
     def _format_message(self, article: Article) -> str:
-        """Format article as Telegram message with markdown."""
+        """Format article as Telegram message with markdown.
+
+        Uses article.body directly if provided (e.g., via --rewrite).
+        Otherwise constructs from title + description + URL + hashtags.
+        """
+        if article.is_rewrite:
+            text = article.body
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + f"\n\n🔗 {article.canonical_url}"
+            return text
+
         parts = [f"*{article.title}*"]
 
         if article.description:

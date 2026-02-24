@@ -30,7 +30,17 @@ class Twitter(Platform):
         super().__init__(api_key)
 
     def format_for_manual(self, article: Article) -> str:
-        """Format article as a tweet for manual posting."""
+        """Format article as a tweet for manual posting.
+
+        Uses article.body directly if provided (e.g., via --rewrite).
+        Otherwise constructs from title + hashtags + URL.
+        """
+        if article.is_rewrite:
+            text = article.body
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + "\n\n" + article.canonical_url
+            return text
+
         parts = [article.title]
 
         if article.tags:

@@ -756,6 +756,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             canonical_url=article.canonical_url,
             published=article.published,
             cover_image=article.cover_image,
+            is_rewrite=True,
         )
 
     # Require canonical_url for registry tracking

@@ -151,4 +151,5 @@ def _rewritten_article(original: Article, new_body: str) -> Article:
         canonical_url=original.canonical_url,
         published=original.published,
         cover_image=original.cover_image,
+        is_rewrite=True,
     )

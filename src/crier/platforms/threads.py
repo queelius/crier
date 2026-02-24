@@ -163,7 +163,17 @@ class Threads(Platform):
             )
 
     def _format_post(self, article: Article) -> str:
-        """Format article for Threads."""
+        """Format article for Threads.
+
+        Uses article.body directly if provided (e.g., via --rewrite).
+        Otherwise constructs from title + description + URL + hashtags.
+        """
+        if article.is_rewrite:
+            text = article.body
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + "\n\n" + article.canonical_url
+            return text
+
         parts = [article.title]
 
         if article.description:

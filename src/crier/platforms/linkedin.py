@@ -46,8 +46,15 @@ class LinkedIn(Platform):
     def format_for_manual(self, article: Article) -> str:
         """Format article for manual posting to LinkedIn.
 
-        LinkedIn posts work best with a short intro, hashtags, and a link.
+        Uses article.body directly if provided (e.g., via --rewrite).
+        Otherwise constructs from title + description + hashtags + URL.
         """
+        if article.is_rewrite:
+            text = article.body
+            if article.canonical_url and article.canonical_url not in text:
+                text = text + "\n\n" + article.canonical_url
+            return text
+
         parts = [article.title]
 
         if article.description:
@@ -94,17 +101,17 @@ class LinkedIn(Platform):
                 error="Failed to get LinkedIn profile. Check your access token.",
             )
 
-        # Create post text
-        text_parts = [article.title]
-        if article.description:
-            text_parts.append(article.description)
-
-        # Add hashtags from tags
-        if article.tags:
-            hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
-            text_parts.append(hashtags)
-
-        text = "\n\n".join(text_parts)
+        # Create post text — use body if provided (e.g., via --rewrite)
+        if article.is_rewrite:
+            text = article.body
+        else:
+            text_parts = [article.title]
+            if article.description:
+                text_parts.append(article.description)
+            if article.tags:
+                hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
+                text_parts.append(hashtags)
+            text = "\n\n".join(text_parts)
 
         # Check content length
         error = self._check_content_length(text)
