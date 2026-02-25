@@ -2824,7 +2824,9 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         current_hash = get_file_content_hash(file_path) if canonical_url else None
 
         for platform in check_platforms:
-            if canonical_url and is_published(canonical_url, platform):
+            if not canonical_url:
+                row.append("[dim]-[/dim]")
+            elif is_published(canonical_url, platform):
                 # Check if content has changed (dirty)
                 if current_hash and has_content_changed(canonical_url, current_hash, platform):
                     row.append("[yellow]⚠[/yellow]")
@@ -2835,8 +2837,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     uptodate_count += 1
             else:
                 row.append("[red]✗[/red]")
-                if canonical_url:  # Only track if we have a canonical_url
-                    missing_items.append((file_path, platform, canonical_url, title))
+                missing_items.append((file_path, platform, canonical_url, title))
 
         table.add_row(*row)
 
@@ -2880,7 +2881,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     console.print(table)
 
     # Legend
-    console.print("[dim]Legend: ✓ up-to-date  ⚠ changed  ✗ missing[/dim]")
+    console.print("[dim]Legend: ✓ up-to-date  ⚠ changed  ✗ missing  - no canonical URL[/dim]")
 
     # Summary
     total_pairs = len(files) * len(check_platforms)

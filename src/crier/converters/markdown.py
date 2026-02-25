@@ -230,9 +230,12 @@ def parse_markdown_file(
                     except ValueError:
                         continue
 
-        # Infer URL if we have both base_url and content_root
+        # Infer URL if we have both base_url and content_root.
+        # Use the parent of content_root so the section name (e.g., "post")
+        # is preserved in the URL: content/post/slug/ -> /post/slug/
         if base_url and content_root:
-            canonical_url = infer_canonical_url(path, content_root, base_url)
+            inference_root = content_root.parent if content_root.name != "content" else content_root
+            canonical_url = infer_canonical_url(path, inference_root, base_url)
 
     # Handle tags as list or comma-separated string
     if isinstance(raw_tags, list):
