@@ -13,6 +13,7 @@ import yaml
 
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "crier"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
+DEFAULT_DB_FILE = DEFAULT_CONFIG_DIR / "crier.db"
 
 
 def get_config_path() -> Path:
@@ -50,6 +51,20 @@ def _save_global_value(key: str, value: Any) -> None:
     config = load_config()
     config[key] = value
     save_config(config)
+
+
+def get_db_path() -> Path:
+    """Get the path to the SQLite registry database.
+
+    Checks CRIER_DB env var, then config db_path, then default.
+    """
+    if env_db := os.environ.get("CRIER_DB"):
+        return Path(env_db)
+    config = load_config()
+    db_path = config.get("db_path")
+    if db_path:
+        return Path(db_path).expanduser().resolve()
+    return DEFAULT_DB_FILE
 
 
 def get_site_root() -> Path | None:

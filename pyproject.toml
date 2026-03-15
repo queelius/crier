@@ -35,6 +35,7 @@ dependencies = [
     "pyperclip>=1.8.0",
     "dateparser>=1.1.0",
     "feedgen>=1.0.0",
+    "python-slugify>=8.0",
 ]
 
 [project.optional-dependencies]

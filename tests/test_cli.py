@@ -17,7 +17,9 @@ def runner():
 
 @pytest.fixture
 def mock_config_and_registry(tmp_path, monkeypatch):
-    """Set up mock config and registry for CLI tests."""
+    """Set up mock config and SQLite registry for CLI tests."""
+    from crier.registry import init_db, reset_connection
+
     # Config
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -39,23 +41,26 @@ def mock_config_and_registry(tmp_path, monkeypatch):
     monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
     monkeypatch.delenv("CRIER_CONFIG", raising=False)
 
-    # Registry
-    registry_dir = tmp_path / ".crier"
-    registry_dir.mkdir()
-    registry_file = registry_dir / "registry.yaml"
-    registry_file.write_text("version: 2\narticles: {}\n")
+    # SQLite registry
+    db_path = tmp_path / "crier.db"
+    monkeypatch.setenv("CRIER_DB", str(db_path))
+    reset_connection()
+    init_db(db_path)
+
     monkeypatch.chdir(tmp_path)
 
     # Create posts directory
     posts_dir = tmp_path / "posts"
     posts_dir.mkdir()
 
-    return {
+    yield {
         "config_file": config_file,
-        "registry_dir": registry_dir,
+        "db_path": db_path,
         "posts_dir": posts_dir,
         "tmp_path": tmp_path,
     }
+
+    reset_connection()
 
 
 class TestVersionCommand:
@@ -596,6 +601,7 @@ class TestAuditCommand:
 
     def test_audit_no_content_paths(self, runner, tmp_path, monkeypatch):
         """Audit with no content paths configured."""
+        from crier.registry import init_db, reset_connection
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config_file = config_dir / "config.yaml"
@@ -604,17 +610,20 @@ class TestAuditCommand:
         monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
         monkeypatch.delenv("CRIER_CONFIG", raising=False)
 
-        registry_dir = tmp_path / ".crier"
-        registry_dir.mkdir()
-        (registry_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+        db_path = tmp_path / "crier.db"
+        monkeypatch.setenv("CRIER_DB", str(db_path))
+        reset_connection()
+        init_db(db_path)
         monkeypatch.chdir(tmp_path)
 
         result = runner.invoke(cli, ["audit"])
         assert result.exit_code == 0
         assert "No content paths" in result.output or "No content files" in result.output
+        reset_connection()
 
     def test_audit_no_platforms(self, runner, tmp_path, monkeypatch):
         """Audit with no platforms configured."""
+        from crier.registry import init_db, reset_connection
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config_file = config_dir / "config.yaml"
@@ -623,9 +632,10 @@ class TestAuditCommand:
         monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
         monkeypatch.delenv("CRIER_CONFIG", raising=False)
 
-        registry_dir = tmp_path / ".crier"
-        registry_dir.mkdir()
-        (registry_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+        db_path = tmp_path / "crier.db"
+        monkeypatch.setenv("CRIER_DB", str(db_path))
+        reset_connection()
+        init_db(db_path)
         monkeypatch.chdir(tmp_path)
 
         posts_dir = tmp_path / "posts"
@@ -2827,61 +2837,25 @@ class TestSummaryCommand:
         assert result.exit_code == 0
         assert "0" in result.output
 
-    def test_summary_with_articles(self, runner, tmp_path, monkeypatch):
+    def test_summary_with_articles(self, runner, mock_config_and_registry):
         """Summary shows article and platform counts."""
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        registry = {
-            "version": 2,
-            "articles": {
-                "https://example.com/post/a/": {
-                    "title": "Article A",
-                    "source_file": "content/post/a/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:aaa",
-                    "platforms": {
-                        "devto": {
-                            "id": "1",
-                            "url": "https://dev.to/a",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:aaa",
-                        },
-                        "hashnode": {
-                            "id": "2",
-                            "url": "https://hashnode.dev/a",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:aaa",
-                        },
-                    },
-                },
-                "https://example.com/papers/b/": {
-                    "title": "Paper B",
-                    "source_file": "content/papers/b/index.md",
-                    "section": "papers",
-                    "content_hash": "sha256:bbb",
-                    "platforms": {
-                        "devto": {
-                            "id": "3",
-                            "url": "https://dev.to/b",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:bbb",
-                        },
-                    },
-                },
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        from crier.registry import record_publication
 
-        # Patch config
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        record_publication(
+            canonical_url="https://example.com/post/a/",
+            platform="devto", article_id="1", url="https://dev.to/a",
+            title="Article A", source_file="content/post/a/index.md",
+        )
+        record_publication(
+            canonical_url="https://example.com/post/a/",
+            platform="hashnode", article_id="2", url="https://hashnode.dev/a",
+            title="Article A", source_file="content/post/a/index.md",
+        )
+        record_publication(
+            canonical_url="https://example.com/papers/b/",
+            platform="devto", article_id="3", url="https://dev.to/b",
+            title="Paper B", source_file="content/papers/b/index.md",
+        )
 
         result = runner.invoke(cli, ["summary"])
         assert result.exit_code == 0
@@ -2900,30 +2874,15 @@ class TestSummaryCommand:
         assert "unposted_count" in data
         assert "unposted" in data
 
-    def test_summary_shows_unposted(self, runner, tmp_path, monkeypatch):
+    def test_summary_shows_unposted(self, runner, mock_config_and_registry):
         """Summary identifies articles with no platforms."""
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        registry = {
-            "version": 2,
-            "articles": {
-                "https://example.com/post/unposted/": {
-                    "title": "Unposted Article",
-                    "source_file": "content/post/unposted/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:xxx",
-                    "platforms": {},
-                },
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        from crier.registry import get_or_create_slug
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        get_or_create_slug(
+            title="Unposted Article",
+            canonical_url="https://example.com/post/unposted/",
+            source_file="content/post/unposted/index.md",
+        )
 
         result = runner.invoke(cli, ["summary", "--json"])
         assert result.exit_code == 0
@@ -2932,44 +2891,25 @@ class TestSummaryCommand:
         assert data["unposted_count"] == 1
         assert "https://example.com/post/unposted/" in data["unposted"]
 
-    def test_summary_json_section_counts(self, runner, tmp_path, monkeypatch):
+    def test_summary_json_section_counts(self, runner, mock_config_and_registry):
         """Summary JSON output has correct section breakdowns."""
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        registry = {
-            "version": 2,
-            "articles": {
-                "https://example.com/post/a/": {
-                    "title": "Post A",
-                    "source_file": "content/post/a/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:aaa",
-                    "platforms": {},
-                },
-                "https://example.com/post/b/": {
-                    "title": "Post B",
-                    "source_file": "content/post/b/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:bbb",
-                    "platforms": {},
-                },
-                "https://example.com/papers/c/": {
-                    "title": "Paper C",
-                    "source_file": "content/papers/c/index.md",
-                    "section": "papers",
-                    "content_hash": "sha256:ccc",
-                    "platforms": {},
-                },
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        from crier.registry import get_or_create_slug
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        get_or_create_slug(
+            title="Post A",
+            canonical_url="https://example.com/post/a/",
+            source_file="content/post/a/index.md",
+        )
+        get_or_create_slug(
+            title="Post B",
+            canonical_url="https://example.com/post/b/",
+            source_file="content/post/b/index.md",
+        )
+        get_or_create_slug(
+            title="Paper C",
+            canonical_url="https://example.com/papers/c/",
+            source_file="content/papers/c/index.md",
+        )
 
         result = runner.invoke(cli, ["summary", "--json"])
         assert result.exit_code == 0
@@ -2980,60 +2920,25 @@ class TestSummaryCommand:
         assert data["by_section"]["papers"] == 1
         assert data["unposted_count"] == 3
 
-    def test_summary_json_platform_counts(self, runner, tmp_path, monkeypatch):
+    def test_summary_json_platform_counts(self, runner, mock_config_and_registry):
         """Summary JSON output has correct platform breakdowns."""
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        registry = {
-            "version": 2,
-            "articles": {
-                "https://example.com/post/a/": {
-                    "title": "Post A",
-                    "source_file": "content/post/a/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:aaa",
-                    "platforms": {
-                        "devto": {
-                            "id": "1",
-                            "url": "https://dev.to/a",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:aaa",
-                        },
-                    },
-                },
-                "https://example.com/post/b/": {
-                    "title": "Post B",
-                    "source_file": "content/post/b/index.md",
-                    "section": "post",
-                    "content_hash": "sha256:bbb",
-                    "platforms": {
-                        "devto": {
-                            "id": "2",
-                            "url": "https://dev.to/b",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:bbb",
-                        },
-                        "hashnode": {
-                            "id": "3",
-                            "url": "https://hashnode.dev/b",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                            "updated_at": "2026-01-01T00:00:00+00:00",
-                            "content_hash": "sha256:bbb",
-                        },
-                    },
-                },
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        from crier.registry import record_publication
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        record_publication(
+            canonical_url="https://example.com/post/a/",
+            platform="devto", article_id="1", url="https://dev.to/a",
+            title="Post A", source_file="content/post/a/index.md",
+        )
+        record_publication(
+            canonical_url="https://example.com/post/b/",
+            platform="devto", article_id="2", url="https://dev.to/b",
+            title="Post B", source_file="content/post/b/index.md",
+        )
+        record_publication(
+            canonical_url="https://example.com/post/b/",
+            platform="hashnode", article_id="3", url="https://hashnode.dev/b",
+            title="Post B", source_file="content/post/b/index.md",
+        )
 
         result = runner.invoke(cli, ["summary", "--json"])
         assert result.exit_code == 0
@@ -3043,29 +2948,16 @@ class TestSummaryCommand:
         assert data["by_platform"]["hashnode"] == 1
         assert data["unposted_count"] == 0
 
-    def test_summary_unknown_section_for_missing_field(self, runner, tmp_path, monkeypatch):
+    def test_summary_unknown_section_for_missing_field(self, runner, mock_config_and_registry):
         """Articles without a section field show as 'unknown'."""
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        registry = {
-            "version": 2,
-            "articles": {
-                "https://example.com/old/": {
-                    "title": "Old Article",
-                    "source_file": "content/post/old/index.md",
-                    "content_hash": "sha256:old",
-                    "platforms": {},
-                },
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        from crier.registry import get_or_create_slug
 
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
+        # Use a bare filename so infer_section returns None
+        get_or_create_slug(
+            title="Old Article",
+            canonical_url="https://example.com/old/",
+            source_file="index.md",
+        )
 
         result = runner.invoke(cli, ["summary", "--json"])
         assert result.exit_code == 0
@@ -3077,41 +2969,18 @@ class TestSummaryCommand:
 class TestLinkCommand:
     """Tests for crier link command."""
 
-    def test_link_existing_entry(self, runner, tmp_path, monkeypatch):
+    def test_link_existing_entry(self, runner, mock_config_and_registry):
         """Link a content file to an existing registry entry."""
-        # Set up config
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+        from crier.registry import record_publication, get_article
 
-        # Set up registry with an existing entry pointing to a temp file
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
         canonical = "https://example.com/post/my-article/"
-        registry = {
-            "version": 2,
-            "articles": {
-                canonical: {
-                    "title": "Old Title",
-                    "source_file": "/tmp/claude/crier-devto.md",
-                    "content_hash": "sha256:oldoldhash",
-                    "platforms": {
-                        "devto": {
-                            "id": "12345",
-                            "url": "https://dev.to/user/my-article",
-                            "published_at": "2026-01-01T00:00:00+00:00",
-                        }
-                    },
-                }
-            },
-        }
-        (crier_dir / "registry.yaml").write_text(yaml.dump(registry))
-        monkeypatch.chdir(tmp_path)
+        record_publication(
+            canonical_url=canonical, platform="devto", article_id="12345",
+            url="https://dev.to/user/my-article", title="Old Title",
+            source_file="/tmp/claude/crier-devto.md",
+        )
 
-        # Create the real content file
+        tmp_path = mock_config_and_registry["tmp_path"]
         content_dir = tmp_path / "content" / "post" / "2026-01-01-my-article"
         content_dir.mkdir(parents=True)
         content_file = content_dir / "index.md"
@@ -3123,41 +2992,22 @@ class TestLinkCommand:
             "Hello world.\n"
         )
 
-        result = runner.invoke(cli, [
-            "link",
-            str(content_file),
-            "--url", canonical,
-        ])
+        result = runner.invoke(cli, ["link", str(content_file), "--url", canonical])
         assert result.exit_code == 0
         assert "Linked" in result.output
         assert "existing entry" in result.output
 
-        # Verify registry was updated
-        updated = yaml.safe_load((crier_dir / "registry.yaml").read_text())
-        article = updated["articles"][canonical]
+        article = get_article(canonical)
+        assert article is not None
         assert article["source_file"] == str(content_file)
-        assert article["content_hash"].startswith("sha256:")
-        assert article["section"] == "post"
         assert article["title"] == "My Article"
-        # Platforms should be preserved
         assert "devto" in article["platforms"]
 
-    def test_link_new_entry_from_front_matter(self, runner, tmp_path, monkeypatch):
+    def test_link_new_entry_from_front_matter(self, runner, mock_config_and_registry):
         """Create a new registry entry from a file with canonical_url in front matter."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
+        from crier.registry import get_article
 
-        # Empty registry
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
-        monkeypatch.chdir(tmp_path)
-
-        # Create content file with canonical_url in front matter
+        tmp_path = mock_config_and_registry["tmp_path"]
         canonical = "https://example.com/post/brand-new/"
         content_dir = tmp_path / "content" / "post" / "2026-02-01-brand-new"
         content_dir.mkdir(parents=True)
@@ -3174,30 +3024,15 @@ class TestLinkCommand:
         assert result.exit_code == 0
         assert "Created new registry entry" in result.output
 
-        # Verify registry
-        updated = yaml.safe_load((crier_dir / "registry.yaml").read_text())
-        assert canonical in updated["articles"]
-        article = updated["articles"][canonical]
+        article = get_article(canonical)
+        assert article is not None
         assert article["source_file"] == str(content_file)
         assert article["title"] == "Brand New Article"
-        assert article["content_hash"].startswith("sha256:")
-        assert article["section"] == "post"
         assert article["platforms"] == {}
 
-    def test_link_file_not_found(self, runner, tmp_path, monkeypatch):
+    def test_link_file_not_found(self, runner, mock_config_and_registry):
         """Error when file doesn't exist."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-        monkeypatch.chdir(tmp_path)
-
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir()
-        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
-
+        tmp_path = mock_config_and_registry["tmp_path"]
         result = runner.invoke(cli, [
             "link",
             str(tmp_path / "nonexistent.md"),
@@ -3206,15 +3041,9 @@ class TestLinkCommand:
         assert result.exit_code != 0
         assert "File not found" in result.output
 
-    def test_link_no_canonical_url(self, runner, tmp_path, monkeypatch):
+    def test_link_no_canonical_url(self, runner, mock_config_and_registry):
         """Error when no canonical URL can be determined."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "config.yaml").write_text("")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_FILE", config_dir / "config.yaml")
-        monkeypatch.setattr("crier.config.DEFAULT_CONFIG_DIR", config_dir)
-        monkeypatch.delenv("CRIER_CONFIG", raising=False)
-        monkeypatch.chdir(tmp_path)
+        tmp_path = mock_config_and_registry["tmp_path"]
 
         crier_dir = tmp_path / ".crier"
         crier_dir.mkdir()

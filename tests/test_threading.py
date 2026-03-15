@@ -170,17 +170,13 @@ class TestEstimateThreadCount:
 
 @pytest.fixture
 def tmp_registry(tmp_path, monkeypatch):
-    """Set up a temporary registry directory with isolated config.
-
-    Registry now uses get_site_root() from config, so we point
-    CRIER_CONFIG at a temp config with site_root = tmp_path.
-    """
+    """Set up a temporary SQLite registry with isolated config."""
     import yaml
+    from crier.registry import init_db, reset_connection
 
-    crier_dir = tmp_path / ".crier"
-    crier_dir.mkdir()
+    db_path = tmp_path / "crier.db"
+    monkeypatch.setenv("CRIER_DB", str(db_path))
 
-    # Write a config that points site_root at tmp_path
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
@@ -188,7 +184,13 @@ def tmp_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("CRIER_CONFIG", str(config_file))
 
     monkeypatch.chdir(tmp_path)
-    return tmp_path
+
+    reset_connection()
+    init_db(db_path)
+
+    yield tmp_path
+
+    reset_connection()
 
 
 class TestRegistryThreadFunctions:
@@ -607,7 +609,8 @@ class TestRegistryThreadEdgeCases:
         registry = load_registry()
         article = registry["articles"]["https://example.com/with-meta"]
         assert article["source_file"] == "/path/to/article.md"
-        assert article["content_hash"] == "sha256:abc123"
+        # content_hash is no longer stored (dropped in v3)
+        assert article["content_hash"] is None
 
 
 class TestCLIThreadOptions:

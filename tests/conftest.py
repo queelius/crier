@@ -68,15 +68,13 @@ def tmp_config(tmp_path, monkeypatch):
 
 @pytest.fixture
 def tmp_registry(tmp_path, monkeypatch):
-    """Create a temporary registry directory with isolated config."""
-    import yaml
+    """Create a temporary SQLite registry with isolated config."""
+    from crier.registry import init_db, reset_connection
 
-    registry_dir = tmp_path / ".crier"
-    registry_dir.mkdir()
-    registry_file = registry_dir / "registry.yaml"
+    db_path = tmp_path / "crier.db"
 
-    # Initialize empty registry
-    registry_file.write_text("version: 2\narticles: {}\n")
+    # Point CRIER_DB to the temp database
+    monkeypatch.setenv("CRIER_DB", str(db_path))
 
     # Set up isolated config with site_root pointing to tmp_path
     config_dir = tmp_path / "config"
@@ -86,7 +84,14 @@ def tmp_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("CRIER_CONFIG", str(config_file))
     monkeypatch.chdir(tmp_path)
 
-    return registry_dir
+    # Reset any cached connection and initialize fresh DB
+    reset_connection()
+    init_db(db_path)
+
+    yield tmp_path
+
+    # Clean up connection
+    reset_connection()
 
 
 @pytest.fixture

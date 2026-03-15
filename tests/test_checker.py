@@ -844,13 +844,19 @@ class TestAuditCheckIntegration:
     def test_audit_check_flag_accepted(self, tmp_path, monkeypatch):
         """Verify --check flag doesn't cause an error."""
         monkeypatch.chdir(tmp_path)
-        crier_dir = tmp_path / ".crier"
-        crier_dir.mkdir(exist_ok=True)
-        (crier_dir / "config.yaml").write_text(yaml.dump({
+        from crier.registry import init_db, reset_connection
+        db_path = tmp_path / "crier.db"
+        monkeypatch.setenv("CRIER_DB", str(db_path))
+        reset_connection()
+        init_db(db_path)
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / "config.yaml").write_text(yaml.dump({
             "content_paths": [str(tmp_path)],
             "file_extensions": [".md"],
         }))
-        (crier_dir / "registry.yaml").write_text("version: 2\narticles: {}\n")
+        monkeypatch.setenv("CRIER_CONFIG", str(config_dir / "config.yaml"))
 
         # Create a valid file
         fm = {"title": "Test", "date": "2025-01-01", "tags": ["t"], "description": "d"}

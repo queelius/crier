@@ -42,8 +42,6 @@ from .registry import (
     get_article_by_file,
     get_all_articles,
     remove_publication,
-    load_registry,
-    save_registry,
     infer_section,
 )
 
@@ -3926,51 +3924,55 @@ def link(file: str, url: str | None):
     article = parse_markdown_file(file)
     title = article.title
 
-    # Compute content hash and section
-    content_hash = get_file_content_hash(file_path)
-    section = infer_section(str(file_path))
+    from .registry import get_or_create_slug, get_article, find_slug
 
-    # Load registry and check if entry exists
-    registry = load_registry()
-    existing = registry["articles"].get(url)
-    is_update = existing is not None
+    # Check if entry already exists
+    existing_slug = find_slug(canonical_url=url)
+    is_update = existing_slug is not None
 
     if is_update:
-        # Update existing entry
+        existing = get_article(url) or {}
         old_source = existing.get("source_file")
-        existing["source_file"] = str(file_path)
-        existing["content_hash"] = content_hash
-        if section:
-            existing["section"] = section
-        if title:
-            existing["title"] = title
-        save_registry(registry)
+    else:
+        old_source = None
 
+    # get_or_create_slug creates or finds the article entry
+    section = infer_section(str(file_path))
+    slug = get_or_create_slug(
+        title=title or "untitled",
+        canonical_url=url,
+        source_file=str(file_path),
+    )
+
+    # Update source_file and section on existing entry
+    from .registry import get_connection
+    conn = get_connection()
+    updates = ["source_file = ?"]
+    params: list = [str(file_path)]
+    if title:
+        updates.append("title = ?")
+        params.append(title)
+    if section:
+        updates.append("section = ?")
+        params.append(section)
+    params.append(slug)
+    conn.execute(f"UPDATE articles SET {', '.join(updates)} WHERE slug = ?", params)
+    conn.commit()
+
+    if is_update:
         console.print(f"[green]Linked {file} to existing entry.[/green]")
         console.print(f"  [dim]URL:[/dim]     {url}")
         if old_source and old_source != str(file_path):
             console.print(f"  [dim]Old file:[/dim] {old_source}")
         console.print(f"  [dim]New file:[/dim] {file_path}")
-        console.print(f"  [dim]Hash:[/dim]    {content_hash}")
+        console.print(f"  [dim]Slug:[/dim]    {slug}")
         if section:
             console.print(f"  [dim]Section:[/dim]  {section}")
     else:
-        # Create new entry
-        new_entry: dict = {
-            "title": title,
-            "source_file": str(file_path),
-            "content_hash": content_hash,
-            "platforms": {},
-        }
-        if section:
-            new_entry["section"] = section
-        registry["articles"][url] = new_entry
-        save_registry(registry)
-
         console.print(f"[green]Created new registry entry for {file}.[/green]")
         console.print(f"  [dim]URL:[/dim]     {url}")
         console.print(f"  [dim]File:[/dim]    {file_path}")
-        console.print(f"  [dim]Hash:[/dim]    {content_hash}")
+        console.print(f"  [dim]Slug:[/dim]    {slug}")
         if title:
             console.print(f"  [dim]Title:[/dim]   {title}")
         if section:
