@@ -14,9 +14,6 @@ from typing import Any
 from slugify import slugify
 
 
-# Used by cli.py init command and YAML migration detection
-REGISTRY_DIR = ".crier"
-REGISTRY_FILE = "registry.yaml"
 CURRENT_VERSION = 3
 
 # Module-level connection cache
