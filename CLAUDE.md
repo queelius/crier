@@ -35,7 +35,7 @@ ruff format --check src/
 - `publish` — Publish to platforms (supports `--dry-run`, `--profile`, `--manual`, `--rewrite`, `--auto-rewrite`, `--batch`, `--json`, `--schedule`, `--thread`, `--no-check`, `--strict`)
 - `check` — Pre-publish content validation (supports `--to`, `--all`, `--json`, `--strict`, `--check-links`)
 - `status` — Show publication status for files
-- `audit` — Check what's missing/changed (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`, `--check`, `--failed`, `--retry`)
+- `audit` — Check what's missing (supports bulk operations with filters, `--batch`, `--json`, `--include-archived`, `--check`, `--failed`, `--retry`)
 - `search` — Search and list content with metadata (supports `--tag`, `--since`, `--until`, `--sample`, `--json`)
 - `delete` — Delete content from platforms (`--from`, `--all`, `--dry-run`)
 - `archive` / `unarchive` — Exclude/include content from audit --publish
@@ -46,7 +46,8 @@ ruff format --check src/
 - `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
 - `skill` — Manage Claude Code skill installation (deprecated -- use crier plugin from queelius-plugins marketplace)
 - `register` / `unregister` — Manual registry management
-- `list` — List articles on a platform
+- `list` — List articles on a platform (default: registry; `--remote` for live API)
+- `mcp` — Start MCP server for Claude Code integration (`--http` for SSE mode)
 
 **LLM Module** (`llm/`): Optional auto-rewrite using OpenAI-compatible APIs:
 - `provider.py`: Abstract `LLMProvider` interface and `RewriteResult` dataclass
@@ -89,9 +90,8 @@ ruff format --check src/
 **Config** (`config.py`): Single global configuration:
 - **Global** (`~/.config/crier/config.yaml`): ALL configuration -- API keys, profiles, content paths, site settings
 - `site_root` key locates the content project directory (e.g., `~/github/repos/my-blog`)
-- Registry lives at `<site_root>/.crier/registry.yaml` -- publication state only
 - No local `.crier/config.yaml` -- no merge logic
-- Precedence: global config < environment variables (`CRIER_{PLATFORM}_API_KEY`) < CLI args
+- Precedence: global config < environment variables (`CRIER_{PLATFORM}_API_KEY`, `CRIER_DB`) < CLI args
 - Supports composable profiles (profiles can reference other profiles)
 
 Example global config structure:
@@ -136,9 +136,21 @@ llm:
 - `_collect_items()` — Parses files and applies tag/date filters
 - Reuses `parse_markdown_file()`, `get_content_date()`, `get_content_tags()`
 
-**Registry** (`registry.py`): Tracks publications in `<site_root>/.crier/registry.yaml`. Records what's been published where, enables status checks, audit, and backfill.
-- Atomic writes via `tempfile.mkstemp()` + `os.replace()` — crash-safe even under `kill -9`
+**Registry** (`registry.py`): SQLite database at `~/.config/crier/crier.db` (global).
+- **Slug primary key** derived from title via `python-slugify` (not canonical_url)
+- `canonical_url` is optional metadata, not the identity
+- No content hashes — change detection removed entirely
+- All functions accept slug or canonical_url via `_resolve_slug()`
+- `get_or_create_slug(title, canonical_url, source_file)` — find or create article entry
 - `record_failure()` / `get_failures()` — Tracks publication errors for `audit --retry`
+- `CRIER_DB` env var overrides DB path (used for test isolation)
+- SQLite tables: `articles`, `publications`, `stats`, `schema_version`
+
+**MCP Server** (`mcp_server.py`): Exposes registry via Model Context Protocol for Claude Code.
+- Started via `crier mcp` (stdio) or `crier mcp --http` (SSE)
+- 8 tools: `crier_query`, `crier_missing`, `crier_article`, `crier_publications`, `crier_record`, `crier_stats`, `crier_sql`, `crier_summary`
+- Resource: `crier://schema` for DB schema
+- Built on `mcp.server.fastmcp.FastMCP`
 
 **Converters** (`converters/markdown.py`): Parses markdown files with YAML or TOML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
 
@@ -158,14 +170,14 @@ llm:
 
 - **Dry run mode**: Preview before publishing with `--dry-run`
 - **Publishing profiles**: Group platforms (e.g., `--profile blogs`)
-- **Publication tracking**: Registry tracks what's been published where
+- **Publication tracking**: SQLite registry tracks what's been published where (slug-keyed)
+- **MCP server**: `crier mcp` exposes registry to Claude Code for queries and automation
 - **Audit & bulk publish**: Find and publish missing content with `audit --publish`
 - **Bulk operation filters**:
   - `--only-api` — Skip manual/import platforms
   - `--long-form` — Skip short-form platforms (bluesky, mastodon, twitter, threads)
   - `--tag <tag>` — Only include content with matching tags (case-insensitive, OR logic)
   - `--sample N` — Random sample of N items
-  - `--include-changed` — Also update changed content
   - `--include-archived` — Include archived content
   - `--since` / `--until` — Date filtering (supports `1d`, `1w`, `1m`, `1y` or `YYYY-MM-DD`)
 - **Manual mode**: Copy-paste mode for platforms without API access (`--manual` or `api_key: manual`)
@@ -178,7 +190,7 @@ llm:
 - **RSS/Atom feeds**: Generate feeds from content with `crier feed` (`--format atom`, `--output`, `--limit`, `--tag`)
 - **Retry & rate limiting**: All platform API calls use centralized retry with exponential backoff (429, 502-504, timeouts)
 - **Error tracking**: Failed publications are recorded and can be retried with `audit --retry`
-- **Crash-safe registry**: Atomic writes prevent data loss on interrupted operations
+- **SQLite registry**: WAL-mode SQLite with slug primary keys (no YAML, no content hashes)
 - **Stats comparison**: `crier stats --compare` shows cross-platform engagement side-by-side
 - **Relative link resolution**: Converts relative links (`/posts/other/`, `../images/`) to absolute URLs using `site_base_url`
 - **Delete/Archive**: Remove content from platforms (`crier delete`) or exclude from audit (`crier archive`)
@@ -315,15 +327,15 @@ crier config llm test
 
 ## Bulk Operations
 
-Filter order: path → date → platform mode → content type → tag → changed → sampling
+Filter order: path → date → platform mode → content type → tag → sampling
 
 **Bulk operation filters**:
 - `--only-api` — Skip manual/import platforms
 - `--long-form` — Skip short-form platforms (bluesky, mastodon, twitter, threads)
 - `--tag <tag>` — Only include content with matching tags (case-insensitive, OR logic)
 - `--sample N` — Random sample of N items
-- `--include-changed` — Also update changed content
 - `--since` / `--until` — Date filtering (supports `1d`, `1w`, `1m`, `1y` or `YYYY-MM-DD`)
+- `--date-source` — Filter by `frontmatter` (default) or `mtime`
 
 ```bash
 # Fully automated batch mode
@@ -553,7 +565,7 @@ Discovery is handled by `_discover_user_platforms()` in `platforms/__init__.py`,
 
 ## Testing
 
-Tests are in `tests/` with 1111 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, and plugin discovery.
+Tests are in `tests/` with 1163 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, MCP, and plugin discovery.
 
 **Running tests:**
 ```bash
@@ -567,8 +579,10 @@ pytest --cov=crier              # With coverage
 - `sample_article` — Pre-built `Article` object
 - `sample_markdown_file` — Temp markdown file with front matter
 - `tmp_config` — Isolated config environment (patches `DEFAULT_CONFIG_FILE`)
-- `tmp_registry` — Isolated registry in temp directory
+- `tmp_registry` — Isolated SQLite registry (`CRIER_DB` env var + `reset_connection()` + `init_db()`)
 - `mock_env_api_key` — Factory to set `CRIER_{PLATFORM}_API_KEY` env vars
 - `configured_platforms` — Config with devto, bluesky, twitter (manual), profiles
+
+**Test isolation for registry:** Every test that touches the registry MUST set `CRIER_DB` to a temp path, call `reset_connection()`, and `init_db()`. The `tmp_registry` fixture handles this. Local overrides exist in `test_stats.py` and `test_threading.py`.
 
 Platform tests mock `requests` calls rather than hitting real APIs.
