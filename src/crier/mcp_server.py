@@ -218,7 +218,7 @@ def crier_record(
     from .registry import record_publication
 
     record_publication(
-        canonical_url=canonical_url or "",
+        canonical_url=canonical_url or None,
         platform=platform,
         article_id=platform_id,
         url=url,
@@ -281,13 +281,19 @@ def crier_sql(query: str) -> str:
 
     conn = _get_conn()
     try:
-        rows = conn.execute(query).fetchall()
-        if not rows:
-            return json.dumps({"rows": [], "count": 0})
+        # Execute inside a savepoint that is always rolled back to prevent writes
+        conn.execute("SAVEPOINT crier_sql_guard")
+        try:
+            rows = conn.execute(query).fetchall()
+            if not rows:
+                return json.dumps({"rows": [], "count": 0})
 
-        columns = rows[0].keys()
-        result = [dict(zip(columns, row)) for row in rows]
-        return json.dumps({"rows": result, "count": len(result)}, indent=2, default=str)
+            columns = rows[0].keys()
+            result = [dict(zip(columns, row)) for row in rows]
+            return json.dumps({"rows": result, "count": len(result)}, indent=2, default=str)
+        finally:
+            conn.execute("ROLLBACK TO crier_sql_guard")
+            conn.execute("RELEASE crier_sql_guard")
     except Exception as e:
         return json.dumps({"error": str(e)})
 

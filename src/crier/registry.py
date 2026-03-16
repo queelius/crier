@@ -341,6 +341,27 @@ def _update_article_metadata(
         )
 
 
+def update_article_metadata(
+    slug: str,
+    *,
+    title: str | None = None,
+    source_file: str | Path | None = None,
+    canonical_url: str | None = None,
+    section: str | None = None,
+) -> None:
+    """Update article metadata fields (public API).
+
+    Updates only the fields that are provided (non-null).
+    """
+    conn = get_connection()
+    _update_article_metadata(
+        conn, slug,
+        title=title, source_file=source_file,
+        canonical_url=canonical_url, section=section,
+    )
+    conn.commit()
+
+
 def record_publication(
     canonical_url: str,
     platform: str,
@@ -369,10 +390,16 @@ def record_publication(
 
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "INSERT OR REPLACE INTO publications "
+        "INSERT INTO publications "
         "(slug, platform, platform_id, url, published_at, "
         "rewritten, rewrite_author, posted_content) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(slug, platform) DO UPDATE SET "
+        "platform_id = excluded.platform_id, url = excluded.url, "
+        "published_at = excluded.published_at, "
+        "rewritten = excluded.rewritten, rewrite_author = excluded.rewrite_author, "
+        "posted_content = excluded.posted_content, "
+        "last_error = NULL, last_error_at = NULL",
         (slug, platform, article_id, url, now,
          1 if rewritten else 0, rewrite_author, posted_content),
     )
@@ -408,10 +435,17 @@ def record_thread_publication(
 
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "INSERT OR REPLACE INTO publications "
+        "INSERT INTO publications "
         "(slug, platform, platform_id, url, published_at, "
         "is_thread, thread_ids, thread_urls, rewritten, rewrite_author) "
-        "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?) "
+        "ON CONFLICT(slug, platform) DO UPDATE SET "
+        "platform_id = excluded.platform_id, url = excluded.url, "
+        "published_at = excluded.published_at, "
+        "is_thread = excluded.is_thread, thread_ids = excluded.thread_ids, "
+        "thread_urls = excluded.thread_urls, "
+        "rewritten = excluded.rewritten, rewrite_author = excluded.rewrite_author, "
+        "last_error = NULL, last_error_at = NULL",
         (slug, platform, root_id, root_url, now,
          json.dumps(thread_ids), json.dumps(thread_urls) if thread_urls else None,
          1 if rewritten else 0, rewrite_author),
@@ -437,25 +471,13 @@ def record_failure(
     )
 
     now = datetime.now(timezone.utc).isoformat()
-
-    # Check if publication exists (successful prior publish)
-    existing = conn.execute(
-        "SELECT 1 FROM publications WHERE slug = ? AND platform = ?",
-        (slug, platform),
-    ).fetchone()
-
-    if existing:
-        conn.execute(
-            "UPDATE publications SET last_error = ?, last_error_at = ? "
-            "WHERE slug = ? AND platform = ?",
-            (error_msg, now, slug, platform),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO publications (slug, platform, published_at, last_error, last_error_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (slug, platform, now, error_msg, now),
-        )
+    conn.execute(
+        "INSERT INTO publications (slug, platform, published_at, last_error, last_error_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(slug, platform) DO UPDATE SET "
+        "last_error = excluded.last_error, last_error_at = excluded.last_error_at",
+        (slug, platform, now, error_msg, now),
+    )
     conn.commit()
 
 
@@ -690,7 +712,6 @@ def get_publication_info(
 
 
 
-
 # ---------------------------------------------------------------------------
 # Deletion, archiving
 # ---------------------------------------------------------------------------
@@ -822,8 +843,12 @@ def save_stats(
 
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "INSERT OR REPLACE INTO stats (slug, platform, views, likes, comments, reposts, fetched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO stats (slug, platform, views, likes, comments, reposts, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(slug, platform) DO UPDATE SET "
+        "views = excluded.views, likes = excluded.likes, "
+        "comments = excluded.comments, reposts = excluded.reposts, "
+        "fetched_at = excluded.fetched_at",
         (slug, platform, views, likes, comments, reposts, now),
     )
     conn.commit()

@@ -3843,7 +3843,7 @@ def link(file: str, url: str | None):
             console.print("[dim]Provide --url or add canonical_url to your file's YAML front matter.[/dim]")
             raise SystemExit(1)
 
-    from .registry import get_or_create_slug, get_article, find_slug, _update_article_metadata, get_connection
+    from .registry import get_or_create_slug, get_article, find_slug, update_article_metadata
 
     # Check if entry already exists
     existing_slug = find_slug(canonical_url=url)
@@ -3862,12 +3862,10 @@ def link(file: str, url: str | None):
         source_file=str(file_path),
     )
 
-    conn = get_connection()
-    _update_article_metadata(
-        conn, slug,
+    update_article_metadata(
+        slug,
         title=title, source_file=str(file_path), section=section,
     )
-    conn.commit()
 
     if is_update:
         console.print(f"[green]Linked {file} to existing entry.[/green]")
@@ -4640,8 +4638,9 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
             if not api_key or is_manual_mode_key(api_key) or is_import_mode_key(api_key):
                 return None
 
-            platform_obj = get_platform(platform_name, api_key)
-            if not platform_obj or not platform_obj.supports_stats:
+            platform_cls = get_platform(platform_name)
+            platform_obj = platform_cls(api_key)
+            if not platform_obj.supports_stats:
                 return None
 
             stats_result = platform_obj.get_stats(article_id)
@@ -4780,8 +4779,9 @@ def stats(file: str | None, platforms: tuple[str, ...], refresh: bool,
                         and not is_import_mode_key(api_key)
                     )
                     if has_real_key:
-                        platform_obj = get_platform(platform_name, api_key)
-                        if platform_obj and not platform_obj.supports_stats:
+                        platform_cls = get_platform(platform_name)
+                        platform_obj = platform_cls(api_key)
+                        if not platform_obj.supports_stats:
                             platforms_without_stats.append(platform_name)
                 except Exception:
                     pass

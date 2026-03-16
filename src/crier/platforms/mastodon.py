@@ -1,5 +1,6 @@
 """Mastodon platform implementation."""
 
+import re
 from typing import Any
 
 from .base import Article, ArticleStats, DeleteResult, Platform, PublishResult, ThreadPublishResult
@@ -168,14 +169,16 @@ class Mastodon(Platform):
         )
 
         if resp.status_code == 200:
-            import re
             results = []
             for status in resp.json():
                 content_html = status.get("content", "")
-                # Strip HTML tags and normalize whitespace
-                text = re.sub(r'<[^>]+>', ' ', content_html)
-                text = re.sub(r'\s+', ' ', text).strip()
-                # Extract title: first sentence or first 100 chars
+                # Replace block-level tags with newlines, then strip remaining HTML
+                text = re.sub(r'</p>\s*<p[^>]*>', '\n', content_html)
+                text = re.sub(r'<br\s*/?>', '\n', text)
+                text = re.sub(r'<[^>]+>', ' ', text)
+                text = re.sub(r'[^\S\n]+', ' ', text)  # collapse spaces but not newlines
+                text = text.strip()
+                # Title: first paragraph line, capped at 100 chars
                 first_line = text.split('\n')[0].strip()
                 title = first_line[:100] if first_line else text[:100]
                 results.append({
