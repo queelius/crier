@@ -5141,6 +5141,34 @@ def summary(json_output):
 
 
 @cli.command()
+@click.option("--http", is_flag=True, help="Run as HTTP/SSE server instead of stdio")
+def mcp(http):
+    """Start the crier MCP server for Claude Code integration.
+
+    \b
+    By default, runs as a stdio server (for Claude Code).
+    Use --http for HTTP/SSE mode (for testing).
+
+    \b
+    Tools exposed:
+      crier_query         Search articles by section, platform, archived
+      crier_missing       Find content not published to platforms
+      crier_article       Get full article details
+      crier_publications  List publications for a platform
+      crier_record        Record a manual publication
+      crier_stats         Get cached engagement stats
+      crier_sql           Execute SELECT queries on the registry
+      crier_summary       Get registry summary statistics
+    """
+    from .mcp_server import mcp as mcp_server
+
+    if http:
+        mcp_server.run(transport="sse")
+    else:
+        mcp_server.run(transport="stdio")
+
+
+@cli.command()
 @click.argument("path", required=False, default=None)
 @click.option("--output", "-o", "output_file", default=None,
               help="Write feed to file (default: stdout)")

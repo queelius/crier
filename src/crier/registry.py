@@ -809,9 +809,12 @@ def save_stats(
     comments: int | None = None,
     reposts: int | None = None,
 ) -> bool:
-    """Save engagement stats for a publication."""
+    """Save engagement stats for a publication.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
-    slug = find_slug(canonical_url=canonical_url, conn=conn)
+    slug = _resolve_slug(conn, canonical_url)
     if not slug:
         return False
 
@@ -834,9 +837,12 @@ def save_stats(
 
 
 def get_cached_stats(canonical_url: str, platform: str) -> dict[str, Any] | None:
-    """Get cached stats for a publication."""
+    """Get cached stats for a publication.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
-    slug = find_slug(canonical_url=canonical_url, conn=conn)
+    slug = _resolve_slug(conn, canonical_url)
     if not slug:
         return None
 
