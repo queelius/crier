@@ -17,15 +17,12 @@ from crier.registry import (
     get_article_by_file,
     get_article_by_slug,
     get_cached_stats,
-    get_content_hash,
     get_failures,
-    get_file_content_hash,
     get_or_create_slug,
     get_platform_publications,
     get_publication_id,
     get_publication_info,
     get_stats_age_seconds,
-    has_content_changed,
     infer_section,
     is_archived,
     is_deleted,
@@ -46,26 +43,6 @@ from crier.registry import (
     save_stats,
     set_archived,
 )
-
-
-class TestDeprecatedStubs:
-    """Tests for deprecated hash/change-detection stubs."""
-
-    def test_get_content_hash_returns_empty(self):
-        assert get_content_hash("anything") == ""
-
-    def test_get_file_content_hash_returns_empty(self, tmp_path):
-        f = tmp_path / "test.md"
-        f.write_text("content")
-        assert get_file_content_hash(f) == ""
-
-    def test_has_content_changed_always_false(self, tmp_registry):
-        assert has_content_changed("https://example.com/x", "sha256:abc") is False
-
-    def test_has_content_changed_with_platform_always_false(self, tmp_registry):
-        assert has_content_changed(
-            "https://example.com/x", "sha256:abc", platform="devto"
-        ) is False
 
 
 class TestSlug:

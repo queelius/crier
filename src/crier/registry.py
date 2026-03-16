@@ -489,12 +489,12 @@ def get_failures() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def get_article(canonical_url: str) -> dict[str, Any] | None:
-    """Get an article by canonical URL (backward compat)."""
+    """Get an article by slug or canonical URL."""
     conn = get_connection()
-    row = conn.execute(
-        "SELECT * FROM articles WHERE canonical_url = ?",
-        (canonical_url,),
-    ).fetchone()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return None
+    row = conn.execute("SELECT * FROM articles WHERE slug = ?", (slug,)).fetchone()
     if not row:
         return None
     return _article_row_to_dict(conn, row)
@@ -566,8 +566,10 @@ def _article_row_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str
         platforms[p["platform"]] = pdata
 
     result: dict[str, Any] = {
+        "slug": row["slug"],
         "title": row["title"],
         "source_file": row["source_file"],
+        "canonical_url": row["canonical_url"],
         "content_hash": None,  # backward compat
         "platforms": platforms,
     }
@@ -616,28 +618,49 @@ def get_platform_publications(platform: str) -> list[dict[str, Any]]:
     ]
 
 
-def is_published(canonical_url: str, platform: str) -> bool:
-    """Check if an article has been published to a specific platform."""
-    conn = get_connection()
-    # Look up by canonical_url
+def _resolve_slug(conn: sqlite3.Connection, key: str) -> str | None:
+    """Resolve a key (slug or canonical_url) to a slug."""
+    # Try as slug first (cheaper — primary key lookup)
+    row = conn.execute("SELECT slug FROM articles WHERE slug = ?", (key,)).fetchone()
+    if row:
+        return row["slug"]
+    # Try as canonical_url
     row = conn.execute(
-        "SELECT a.slug FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ? "
-        "AND p.deleted_at IS NULL AND p.platform_id IS NOT NULL",
-        (canonical_url, platform),
+        "SELECT slug FROM articles WHERE canonical_url = ?", (key,)
+    ).fetchone()
+    return row["slug"] if row else None
+
+
+def is_published(canonical_url: str, platform: str) -> bool:
+    """Check if an article has been published to a specific platform.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
+    conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM publications "
+        "WHERE slug = ? AND platform = ? "
+        "AND deleted_at IS NULL AND platform_id IS NOT NULL",
+        (slug, platform),
     ).fetchone()
     return row is not None
 
 
 def get_publication_id(canonical_url: str, platform: str) -> str | None:
-    """Get the platform-specific article ID."""
+    """Get the platform-specific article ID.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return None
     row = conn.execute(
-        "SELECT p.platform_id FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
+        "SELECT platform_id FROM publications WHERE slug = ? AND platform = ?",
+        (slug, platform),
     ).fetchone()
     return row["platform_id"] if row else None
 
@@ -645,13 +668,17 @@ def get_publication_id(canonical_url: str, platform: str) -> str | None:
 def get_publication_info(
     canonical_url: str, platform: str
 ) -> dict[str, Any] | None:
-    """Get full publication info for a platform."""
+    """Get full publication info for a platform.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return None
     row = conn.execute(
-        "SELECT p.* FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
+        "SELECT * FROM publications WHERE slug = ? AND platform = ?",
+        (slug, platform),
     ).fetchone()
     if not row:
         return None
@@ -666,27 +693,8 @@ def get_publication_info(
     }
 
 
-# ---------------------------------------------------------------------------
-# Content hash stubs (backward compat — always return None / True)
-# ---------------------------------------------------------------------------
-
-def get_content_hash(content: str) -> str:
-    """Deprecated: content hashing removed. Returns empty string."""
-    return ""
 
 
-def get_file_content_hash(file_path: Path) -> str:
-    """Deprecated: content hashing removed. Returns empty string."""
-    return ""
-
-
-def has_content_changed(
-    canonical_url: str,
-    current_hash: str,
-    platform: str | None = None,
-) -> bool:
-    """Deprecated: always returns False (change detection removed)."""
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -694,84 +702,97 @@ def has_content_changed(
 # ---------------------------------------------------------------------------
 
 def record_deletion(canonical_url: str, platform: str) -> bool:
-    """Record that a publication was deleted from a platform."""
+    """Record that a publication was deleted from a platform.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
-    now = datetime.now(timezone.utc).isoformat()
-    row = conn.execute(
-        "SELECT a.slug FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
-    ).fetchone()
-    if not row:
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
         return False
-    conn.execute(
+    now = datetime.now(timezone.utc).isoformat()
+    result = conn.execute(
         "UPDATE publications SET deleted_at = ? "
         "WHERE slug = ? AND platform = ?",
-        (now, row["slug"], platform),
-    )
-    conn.commit()
-    return True
-
-
-def is_deleted(canonical_url: str, platform: str) -> bool:
-    """Check if a publication has been deleted from a platform."""
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT p.deleted_at FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
-    ).fetchone()
-    return row is not None and row["deleted_at"] is not None
-
-
-def remove_article(canonical_url: str) -> bool:
-    """Remove an article from the registry."""
-    conn = get_connection()
-    result = conn.execute(
-        "DELETE FROM articles WHERE canonical_url = ?",
-        (canonical_url,),
+        (now, slug, platform),
     )
     conn.commit()
     return result.rowcount > 0
 
 
-def remove_publication(canonical_url: str, platform: str) -> bool:
-    """Remove a single platform publication from the registry."""
+def is_deleted(canonical_url: str, platform: str) -> bool:
+    """Check if a publication has been deleted from a platform.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
     row = conn.execute(
-        "SELECT a.slug FROM articles a WHERE a.canonical_url = ?",
-        (canonical_url,),
+        "SELECT deleted_at FROM publications WHERE slug = ? AND platform = ?",
+        (slug, platform),
     ).fetchone()
-    if not row:
+    return row is not None and row["deleted_at"] is not None
+
+
+def remove_article(canonical_url: str) -> bool:
+    """Remove an article from the registry.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
+    conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
+    result = conn.execute("DELETE FROM articles WHERE slug = ?", (slug,))
+    conn.commit()
+    return result.rowcount > 0
+
+
+def remove_publication(canonical_url: str, platform: str) -> bool:
+    """Remove a single platform publication from the registry.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
+    conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
         return False
     result = conn.execute(
         "DELETE FROM publications WHERE slug = ? AND platform = ?",
-        (row["slug"], platform),
+        (slug, platform),
     )
     conn.commit()
     return result.rowcount > 0
 
 
 def set_archived(canonical_url: str, archived: bool = True) -> bool:
-    """Set the archived status of an article."""
+    """Set the archived status of an article.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
     now = datetime.now(timezone.utc).isoformat() if archived else None
-    result = conn.execute(
-        "UPDATE articles SET archived_at = ? WHERE canonical_url = ?",
-        (now, canonical_url),
-    )
+    conn.execute("UPDATE articles SET archived_at = ? WHERE slug = ?", (now, slug))
     conn.commit()
-    return result.rowcount > 0
+    return True
 
 
 def is_archived(canonical_url: str) -> bool:
-    """Check if an article is archived."""
+    """Check if an article is archived.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
     row = conn.execute(
-        "SELECT archived_at FROM articles WHERE canonical_url = ?",
-        (canonical_url,),
+        "SELECT archived_at FROM articles WHERE slug = ?", (slug,)
     ).fetchone()
     return row is not None and row["archived_at"] is not None
 
@@ -849,25 +870,33 @@ def get_stats_age_seconds(canonical_url: str, platform: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 def is_thread(canonical_url: str, platform: str) -> bool:
-    """Check if a publication is a thread."""
+    """Check if a publication is a thread.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return False
     row = conn.execute(
-        "SELECT p.is_thread FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
+        "SELECT is_thread FROM publications WHERE slug = ? AND platform = ?",
+        (slug, platform),
     ).fetchone()
     return row is not None and bool(row["is_thread"])
 
 
 def get_thread_ids(canonical_url: str, platform: str) -> list[str] | None:
-    """Get the list of post IDs for a thread publication."""
+    """Get the list of post IDs for a thread publication.
+
+    Accepts either a slug or canonical_url as the first argument.
+    """
     conn = get_connection()
+    slug = _resolve_slug(conn, canonical_url)
+    if not slug:
+        return None
     row = conn.execute(
-        "SELECT p.thread_ids FROM articles a "
-        "JOIN publications p ON a.slug = p.slug "
-        "WHERE a.canonical_url = ? AND p.platform = ?",
-        (canonical_url, platform),
+        "SELECT thread_ids FROM publications WHERE slug = ? AND platform = ?",
+        (slug, platform),
     ).fetchone()
     if not row or not row["thread_ids"]:
         return None
