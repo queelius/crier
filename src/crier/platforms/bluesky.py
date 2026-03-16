@@ -182,9 +182,14 @@ class Bluesky(Platform):
                 post_id = uri.split("/")[-1] if uri else ""
                 author_handle = post.get("author", {}).get("handle", self.handle)
                 url = f"https://bsky.app/profile/{author_handle}/post/{post_id}" if post_id else ""
+                text = post.get("record", {}).get("text", "")
+                # Extract title: first line, capped at 100 chars
+                first_line = text.split('\n')[0].strip()
+                title = first_line[:100] if first_line else text[:100]
                 results.append({
                     "id": uri,
-                    "title": post.get("record", {}).get("text", "")[:50],
+                    "title": title,
+                    "text": text,
                     "published": True,
                     "url": url,
                 })

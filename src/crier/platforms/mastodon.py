@@ -168,15 +168,24 @@ class Mastodon(Platform):
         )
 
         if resp.status_code == 200:
-            return [
-                {
+            import re
+            results = []
+            for status in resp.json():
+                content_html = status.get("content", "")
+                # Strip HTML tags and normalize whitespace
+                text = re.sub(r'<[^>]+>', ' ', content_html)
+                text = re.sub(r'\s+', ' ', text).strip()
+                # Extract title: first sentence or first 100 chars
+                first_line = text.split('\n')[0].strip()
+                title = first_line[:100] if first_line else text[:100]
+                results.append({
                     "id": status.get("id"),
-                    "title": status.get("content", "")[:50],
+                    "title": title,
+                    "content": text,
                     "published": status.get("visibility") == "public",
                     "url": status.get("url"),
-                }
-                for status in resp.json()
-            ]
+                })
+            return results
         return []
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
