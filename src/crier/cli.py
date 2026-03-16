@@ -35,8 +35,6 @@ from .registry import (
     get_failures,
     get_registry_path,
     is_published,
-    has_content_changed,
-    get_file_content_hash,
     get_publication_info,
     get_platform_publications,
     get_article_by_file,
@@ -1185,7 +1183,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
                     # Record to registry
                     if article.canonical_url:
-                        content_hash = get_file_content_hash(Path(file))
                         mode_id = "import" if getattr(result, 'is_import_mode', False) else "manual"
                         record_publication(
                             canonical_url=article.canonical_url,
@@ -1194,7 +1191,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                             url=post_url or None,
                             title=article.title,
                             source_file=file,
-                            content_hash=content_hash,
                             rewritten=is_rewritten,
                             rewrite_author=rewrite_author if is_rewritten else None,
                             posted_content=posted_content if is_rewritten else None,
@@ -1243,8 +1239,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
 
             # Record successful publication to registry
             if result.success and article.canonical_url:
-                content_hash = get_file_content_hash(Path(file))
-
                 # Use thread-specific recording if this was a thread
                 thread_ids = getattr(result, 'thread_ids', None) if is_thread_result else None
                 if is_thread_result and thread_ids:
@@ -1257,7 +1251,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         thread_urls=getattr(result, 'thread_urls', None),
                         title=article.title,
                         source_file=file,
-                        content_hash=content_hash,
                         rewritten=is_rewritten,
                         rewrite_author=rewrite_author if is_rewritten else None,
                     )
@@ -1269,7 +1262,6 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         url=result.url,
                         title=article.title,
                         source_file=file,
-                        content_hash=content_hash,
                         rewritten=is_rewritten,
                         rewrite_author=rewrite_author if is_rewritten else None,
                         posted_content=posted_content if is_rewritten else None,
@@ -2390,8 +2382,6 @@ def llm_test():
               help="Only check long-form platforms (skip those with character limits)")
 @click.option("--sample", type=int, default=None,
               help="Randomly sample N items for processing")
-@click.option("--include-changed", is_flag=True,
-              help="Include changed/dirty items (default: missing only)")
 @click.option("--include-archived", is_flag=True,
               help="Include archived items (default: skip archived)")
 @click.option("--since", "since_date", default=None,
@@ -2425,7 +2415,7 @@ def llm_test():
               help="Re-attempt only previously failed publications")
 def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str | None,
           publish: bool, yes: bool, dry_run: bool, only_api: bool, long_form: bool,
-          sample: int | None, include_changed: bool, include_archived: bool,
+          sample: int | None, include_archived: bool,
           since_date: str | None, until_date: str | None, date_source: str,
           tag_filter: tuple[str, ...], json_output: bool, batch: bool, quiet: bool,
           auto_rewrite: bool, auto_rewrite_retry: int | None, auto_rewrite_truncate: bool | None,
@@ -2445,7 +2435,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
       --long-form       Skip short-form platforms (bluesky, mastodon, etc.)
       --tag             Filter by tags (case-insensitive, OR logic)
       --sample N        Randomly select N items from the actionable pool
-      --include-changed Also process changed/dirty items (default: missing only)
 
     Use --batch for non-interactive automation (implies --yes --json --only-api).
     """
@@ -2578,7 +2567,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     result = platform_inst.publish(article)
 
                     if result.success:
-                        content_hash = get_file_content_hash(Path(source_file))
                         record_publication(
                             canonical_url=canonical_url,
                             platform=platform_name,
@@ -2586,7 +2574,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                             url=result.url,
                             title=article.title,
                             source_file=source_file,
-                            content_hash=content_hash,
                         )
                         retry_results.append({
                             "platform": platform_name,
@@ -2793,11 +2780,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
         table.add_column(platform, justify="center")
 
     uptodate_count = 0
-    dirty_count = 0
-    # Track actionable items: (file_path, platform, canonical_url, title, action)
-    # action is "publish" for missing or "update" for dirty
     missing_items: list[tuple[Path, str, str, str]] = []
-    dirty_items: list[tuple[Path, str, str, str]] = []
 
     def get_display_path(fp: Path) -> str:
         """Get a display-friendly path, handling both absolute and relative paths."""
@@ -2818,21 +2801,12 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             canonical_url = None
             title = file_path.name
 
-        # Calculate current content hash for dirty detection
-        current_hash = get_file_content_hash(file_path) if canonical_url else None
-
         for platform in check_platforms:
             if not canonical_url:
                 row.append("[dim]-[/dim]")
             elif is_published(canonical_url, platform):
-                # Check if content has changed (dirty)
-                if current_hash and has_content_changed(canonical_url, current_hash, platform):
-                    row.append("[yellow]⚠[/yellow]")
-                    dirty_count += 1
-                    dirty_items.append((file_path, platform, canonical_url, title))
-                else:
-                    row.append("[green]✓[/green]")
-                    uptodate_count += 1
+                row.append("[green]✓[/green]")
+                uptodate_count += 1
             else:
                 row.append("[red]✗[/red]")
                 missing_items.append((file_path, platform, canonical_url, title))
@@ -2851,16 +2825,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 "status": "missing",
                 "action_needed": "publish",
             })
-        for fp, plat, curl, title in dirty_items:
-            actionable_items_json.append({
-                "file": str(fp),
-                "canonical_url": curl,
-                "platform": plat,
-                "title": title,
-                "status": "changed",
-                "action_needed": "update",
-            })
-
         output = {
             "command": "audit",
             "path": path,
@@ -2869,7 +2833,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             "actionable": actionable_items_json,
             "summary": {
                 "up_to_date": uptodate_count,
-                "changed": dirty_count,
                 "missing": len(missing_items),
             },
         }
@@ -2879,7 +2842,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     console.print(table)
 
     # Legend
-    console.print("[dim]Legend: ✓ up-to-date  ⚠ changed  ✗ missing  - no canonical URL[/dim]")
+    console.print("[dim]Legend: ✓ published  ✗ missing  - no canonical URL[/dim]")
 
     # Summary
     total_pairs = len(files) * len(check_platforms)
@@ -2887,31 +2850,22 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
     console.print(f"  Files: {len(files)}")
     console.print(f"  Platforms: {len(check_platforms)}")
     console.print(f"  [dim]Total file-platform pairs: {total_pairs}[/dim]")
-    console.print(f"  Up-to-date: [green]{uptodate_count}[/green]")
-    console.print(f"  Changed: [yellow]{dirty_count}[/yellow]")
+    console.print(f"  Published: [green]{uptodate_count}[/green]")
     console.print(f"  Missing: [red]{len(missing_items)}[/red]")
 
-    actionable_count = len(missing_items) + len(dirty_items)
+    actionable_count = len(missing_items)
     if actionable_count == 0:
         console.print("\n[green]All content is up-to-date![/green]")
         return
 
     if not publish and not dry_run:
         console.print("\n[dim]Use --publish to publish missing content.[/dim]")
-        console.print("[dim]Use --publish --include-changed to also update changed content.[/dim]")
         console.print("[dim]Use --publish --dry-run to preview what would be published.[/dim]")
         return
 
-    # Build combined list with action type: (file_path, platform, canonical_url, title, action)
-    # action is "publish" for missing or "update" for dirty
-    # Default: missing items only. Add dirty items if --include-changed.
     actionable_items: list[tuple[Path, str, str, str, str]] = []
     for item in missing_items:
         actionable_items.append((*item, "publish"))
-
-    if include_changed:
-        for item in dirty_items:
-            actionable_items.append((*item, "update"))
 
     # Apply sampling if requested
     if sample is not None and len(actionable_items) > sample:
@@ -3172,7 +3126,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                         f"[green]✓ {title[:30]}"
                         f" → {platform} ({verb})[/green]"
                     )
-                content_hash = get_file_content_hash(file_path)
                 record_publication(
                     canonical_url=article.canonical_url,
                     platform=platform,
@@ -3180,7 +3133,6 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     url=result.url,
                     title=article.title,
                     source_file=str(file_path),
-                    content_hash=content_hash,
                     rewritten=rewritten,
                     rewrite_author=get_rewrite_author() if rewritten else None,
                     posted_content=rewrite_content if rewritten else None,
@@ -3551,20 +3503,6 @@ def status(file: str | None, show_all: bool, verbose: bool):
         console.print(f"\n[bold]Publication Status: {article_data.get('title', file)}[/bold]")
         console.print(f"[dim]Canonical: {canonical_url}[/dim]")
 
-        # Check if content has changed
-        file_path = Path(file)
-        current_hash = None
-        stored_hash = article_data.get("content_hash")
-        if file_path.exists():
-            current_hash = get_file_content_hash(file_path)
-            if stored_hash and current_hash != stored_hash:
-                console.print("[yellow]⚠ Content has changed since last publication[/yellow]")
-
-        if verbose:
-            console.print(f"[dim]Stored hash: {stored_hash or 'none'}[/dim]")
-            if current_hash:
-                console.print(f"[dim]Current hash: {current_hash}[/dim]")
-
         console.print()
 
         table = Table(title="Publications")
@@ -3636,40 +3574,30 @@ def status(file: str | None, show_all: bool, verbose: bool):
         table.add_column("Source File", style="cyan")
         table.add_column("Title")
         table.add_column("Platforms")
-        table.add_column("Changed")
         if verbose:
             table.add_column("Canonical URL", style="dim", max_width=35)
-            table.add_column("Hash", style="dim", width=8)
 
         for canonical_url, article_data in all_articles.items():
             platforms = article_data.get("platforms", {})
             platform_list = ", ".join(platforms.keys()) if platforms else "[dim]none[/dim]"
 
             source_file = article_data.get("source_file")
-            stored_hash = article_data.get("content_hash")
             if source_file:
                 full_path = Path(source_file)
                 if full_path.exists():
-                    current_hash = get_file_content_hash(full_path)
-                    is_changed = stored_hash and current_hash != stored_hash
-                    changed = "[yellow]⚠ Yes[/yellow]" if is_changed else "No"
                     display_file = source_file
                 else:
-                    changed = "[red]File missing[/red]"
                     display_file = f"{source_file} [dim](missing)[/dim]"
             else:
-                changed = "[dim]?[/dim]"
                 display_file = "[dim]unknown[/dim]"
 
             row = [
                 display_file,
                 (article_data.get("title") or "")[:35],
                 platform_list,
-                changed,
             ]
             if verbose:
                 row.append(canonical_url[:35] if canonical_url else "")
-                row.append(stored_hash[:8] if stored_hash else "-")
             table.add_row(*row)
 
         console.print(table)
@@ -3836,8 +3764,6 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
         if not yes and not click.confirm("Overwrite existing entry?", default=False):
             return
 
-    content_hash = get_file_content_hash(Path(file))
-
     record_publication(
         canonical_url=article.canonical_url,
         platform=platform_name,
@@ -3845,7 +3771,6 @@ def register(file: str, platform_name: str, url: str | None, article_id: str | N
         url=url,
         title=article.title,
         source_file=file,
-        content_hash=content_hash,
     )
 
     console.print(f"[green]✓ Registered {file} as published to {platform_name}[/green]")
@@ -3890,7 +3815,7 @@ def unregister(file: str, platform_name: str):
 def link(file: str, url: str | None):
     """Link a content file to a registry entry.
 
-    Updates the source_file (and content_hash, section, title) for an existing
+    Updates the source_file (and section, title) for an existing
     registry entry, or creates a new entry if the canonical URL is not yet tracked.
 
     This is useful when content was cross-posted using temp files and the registry
