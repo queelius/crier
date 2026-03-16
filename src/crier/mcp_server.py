@@ -88,13 +88,6 @@ def crier_query(
 
     results = []
     for r in rows:
-        # Count publications
-        pub_count = conn.execute(
-            "SELECT COUNT(*) as n FROM publications "
-            "WHERE slug = ? AND deleted_at IS NULL AND platform_id IS NOT NULL",
-            (r["slug"],),
-        ).fetchone()["n"]
-
         platforms = [
             p["platform"] for p in conn.execute(
                 "SELECT platform FROM publications "
@@ -111,7 +104,7 @@ def crier_query(
             "section": r["section"],
             "archived": r["archived_at"] is not None,
             "platforms": platforms,
-            "publication_count": pub_count,
+            "publication_count": len(platforms),
         })
 
     return json.dumps(results, indent=2)

@@ -14,7 +14,7 @@ from typing import Any
 from slugify import slugify
 
 
-# Keep these for backward compat (cli.py imports them for display)
+# Used by cli.py init command and YAML migration detection
 REGISTRY_DIR = ".crier"
 REGISTRY_FILE = "registry.yaml"
 CURRENT_VERSION = 3
@@ -312,32 +312,18 @@ def infer_section(source_file: str | Path | None) -> str | None:
 # Publication recording
 # ---------------------------------------------------------------------------
 
-def record_publication(
-    canonical_url: str,
-    platform: str,
-    article_id: str | None,
-    url: str | None,
+def _update_article_metadata(
+    conn: sqlite3.Connection,
+    slug: str,
+    *,
     title: str | None = None,
     source_file: str | Path | None = None,
-    content_hash: str | None = None,  # ignored, kept for backward compat
-    rewritten: bool = False,
-    rewrite_author: str | None = None,
-    posted_content: str | None = None,
+    canonical_url: str | None = None,
+    section: str | None = None,
 ) -> None:
-    """Record a successful publication to the registry."""
-    conn = get_connection()
-
-    # Get or create the article
-    slug = get_or_create_slug(
-        title=title or "untitled",
-        canonical_url=canonical_url,
-        source_file=source_file,
-        conn=conn,
-    )
-
-    # Update article metadata
+    """Update article metadata fields that are non-null."""
     updates = []
-    params = []
+    params: list = []
     if title:
         updates.append("title = ?")
         params.append(title)
@@ -347,12 +333,42 @@ def record_publication(
     if canonical_url:
         updates.append("canonical_url = ?")
         params.append(canonical_url)
+    if section:
+        updates.append("section = ?")
+        params.append(section)
     if updates:
         params.append(slug)
         conn.execute(
             f"UPDATE articles SET {', '.join(updates)} WHERE slug = ?",
             params,
         )
+
+
+def record_publication(
+    canonical_url: str,
+    platform: str,
+    article_id: str | None,
+    url: str | None,
+    title: str | None = None,
+    source_file: str | Path | None = None,
+    rewritten: bool = False,
+    rewrite_author: str | None = None,
+    posted_content: str | None = None,
+) -> None:
+    """Record a successful publication to the registry."""
+    conn = get_connection()
+
+    slug = get_or_create_slug(
+        title=title or "untitled",
+        canonical_url=canonical_url,
+        source_file=source_file,
+        conn=conn,
+    )
+
+    _update_article_metadata(
+        conn, slug,
+        title=title, source_file=source_file, canonical_url=canonical_url,
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
@@ -375,7 +391,6 @@ def record_thread_publication(
     thread_urls: list[str] | None = None,
     title: str | None = None,
     source_file: str | Path | None = None,
-    content_hash: str | None = None,  # ignored
     rewritten: bool = False,
     rewrite_author: str | None = None,
 ) -> None:
@@ -389,24 +404,10 @@ def record_thread_publication(
         conn=conn,
     )
 
-    # Update article metadata
-    updates = []
-    params: list = []
-    if title:
-        updates.append("title = ?")
-        params.append(title)
-    if source_file:
-        updates.append("source_file = ?")
-        params.append(str(source_file))
-    if canonical_url:
-        updates.append("canonical_url = ?")
-        params.append(canonical_url)
-    if updates:
-        params.append(slug)
-        conn.execute(
-            f"UPDATE articles SET {', '.join(updates)} WHERE slug = ?",
-            params,
-        )
+    _update_article_metadata(
+        conn, slug,
+        title=title, source_file=source_file, canonical_url=canonical_url,
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
@@ -570,7 +571,6 @@ def _article_row_to_dict(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str
         "title": row["title"],
         "source_file": row["source_file"],
         "canonical_url": row["canonical_url"],
-        "content_hash": None,  # backward compat
         "platforms": platforms,
     }
     if row["section"]:
@@ -687,12 +687,9 @@ def get_publication_info(
         "url": row["url"],
         "published_at": row["published_at"],
         "updated_at": row["published_at"],
-        "content_hash": None,  # backward compat
         "rewritten": bool(row["rewritten"]),
         "rewrite_author": row["rewrite_author"],
     }
-
-
 
 
 

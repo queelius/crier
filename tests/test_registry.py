@@ -206,19 +206,17 @@ class TestRecordPublication:
         assert platform_data["rewrite_author"] == "claude-code"
         assert platform_data["posted_content"] == "Short announcement text"
 
-    def test_record_with_content_hash_ignored(self, tmp_registry):
-        """content_hash param is accepted but not stored."""
+    def test_record_without_content_hash(self, tmp_registry):
+        """content_hash parameter was removed in v3."""
         record_publication(
             canonical_url="https://example.com/article",
             platform="devto",
             article_id="123",
             url=None,
-            content_hash="sha256:abc123",
         )
 
         article = get_article("https://example.com/article")
-        # content_hash is always None in the SQLite-backed registry
-        assert article["content_hash"] is None
+        assert "content_hash" not in article
 
 
 class TestIsPublished:
@@ -365,8 +363,7 @@ class TestGetPublicationInfo:
         assert info is not None
         assert info["article_id"] == "12345"
         assert info["url"] == "https://dev.to/article"
-        # content_hash is always None in SQLite registry
-        assert info["content_hash"] is None
+        assert "content_hash" not in info
         assert "published_at" in info
 
     def test_get_publication_info_not_found(self, tmp_registry):

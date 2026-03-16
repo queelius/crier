@@ -594,8 +594,8 @@ class TestRegistryThreadEdgeCases:
         assert "bluesky" in article["platforms"]
         assert article["platforms"]["bluesky"]["is_thread"] is True
 
-    def test_record_thread_with_source_file_and_hash(self, tmp_registry):
-        """Recording thread with source_file and content_hash updates article."""
+    def test_record_thread_with_source_file(self, tmp_registry):
+        """Recording thread with source_file updates article."""
         record_thread_publication(
             canonical_url="https://example.com/with-meta",
             platform="bluesky",
@@ -603,14 +603,11 @@ class TestRegistryThreadEdgeCases:
             root_url="https://bsky.app/...",
             thread_ids=["id1"],
             source_file="/path/to/article.md",
-            content_hash="sha256:abc123",
         )
 
         registry = load_registry()
         article = registry["articles"]["https://example.com/with-meta"]
         assert article["source_file"] == "/path/to/article.md"
-        # content_hash is no longer stored (dropped in v3)
-        assert article["content_hash"] is None
 
 
 class TestCLIThreadOptions:

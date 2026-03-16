@@ -127,22 +127,19 @@ def init():
     configure platforms for cross-posting.
     """
     import questionary
-    from .registry import REGISTRY_DIR, REGISTRY_FILE
+    from .registry import init_db
+    from .config import get_db_path
 
     console.print("\n[bold]Welcome to Crier![/bold]")
     console.print("Let's set up cross-posting for your project.\n")
 
-    # Step 1: Create .crier directory
-    registry_dir = Path.cwd() / REGISTRY_DIR
-    registry_file = registry_dir / REGISTRY_FILE
-
-    if registry_file.exists():
-        console.print(f"[green]✓[/green] Registry already exists: {registry_file}")
+    # Step 1: Initialize SQLite registry
+    db_path = get_db_path()
+    if db_path.exists():
+        console.print(f"[green]✓[/green] Registry already exists: {db_path}")
     else:
-        registry_dir.mkdir(parents=True, exist_ok=True)
-        # Create empty registry
-        registry_file.write_text("version: 2\narticles: {}\n")
-        console.print(f"[green]✓[/green] Created registry: {registry_file}")
+        init_db()
+        console.print(f"[green]✓[/green] Created registry: {db_path}")
 
     console.print()
 
@@ -3482,7 +3479,7 @@ def check(files: tuple[str, ...], platform_args: tuple[str, ...], check_all: boo
 @click.argument("file", type=click.Path(exists=True), required=False)
 @click.option("--all", "-a", "show_all", is_flag=True, hidden=True,
               help="(deprecated) Show all tracked posts")
-@click.option("--verbose", "-v", is_flag=True, help="Show content hashes and all platforms")
+@click.option("--verbose", "-v", is_flag=True, help="Show article IDs, rewrite info, and all platforms")
 def status(file: str | None, show_all: bool, verbose: bool):
     """Show publication status for a file or all tracked posts.
 
@@ -3835,9 +3832,10 @@ def link(file: str, url: str | None):
         console.print(f"[red]Error: File not found: {file}[/red]")
         raise SystemExit(1)
 
-    # If no --url, extract canonical_url from front matter
+    article = parse_markdown_file(file)
+    title = article.title
+
     if not url:
-        article = parse_markdown_file(file)
         url = article.canonical_url
         if not url:
             console.print("[red]Error: No canonical URL provided and none found in front matter.[/red]")
@@ -3845,11 +3843,7 @@ def link(file: str, url: str | None):
             console.print("[dim]Provide --url or add canonical_url to your file's YAML front matter.[/dim]")
             raise SystemExit(1)
 
-    # Parse file for title (even if --url was given, we want the title)
-    article = parse_markdown_file(file)
-    title = article.title
-
-    from .registry import get_or_create_slug, get_article, find_slug
+    from .registry import get_or_create_slug, get_article, find_slug, _update_article_metadata, get_connection
 
     # Check if entry already exists
     existing_slug = find_slug(canonical_url=url)
@@ -3861,7 +3855,6 @@ def link(file: str, url: str | None):
     else:
         old_source = None
 
-    # get_or_create_slug creates or finds the article entry
     section = infer_section(str(file_path))
     slug = get_or_create_slug(
         title=title or "untitled",
@@ -3869,19 +3862,11 @@ def link(file: str, url: str | None):
         source_file=str(file_path),
     )
 
-    # Update source_file and section on existing entry
-    from .registry import get_connection
     conn = get_connection()
-    updates = ["source_file = ?"]
-    params: list = [str(file_path)]
-    if title:
-        updates.append("title = ?")
-        params.append(title)
-    if section:
-        updates.append("section = ?")
-        params.append(section)
-    params.append(slug)
-    conn.execute(f"UPDATE articles SET {', '.join(updates)} WHERE slug = ?", params)
+    _update_article_metadata(
+        conn, slug,
+        title=title, source_file=str(file_path), section=section,
+    )
     conn.commit()
 
     if is_update:
