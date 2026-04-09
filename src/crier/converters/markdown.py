@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 import yaml
 
 from ..platforms.base import Article
-from ..config import get_site_base_url, get_content_paths, infer_canonical_url
+from ..config import get_site_base_url, get_content_paths, get_project_root, infer_canonical_url
 
 
 def resolve_relative_links(body: str, base_url: str) -> str:
@@ -220,9 +220,15 @@ def parse_markdown_file(
         if content_root is None:
             content_paths = get_content_paths()
             if content_paths:
-                # Try each content path to find one that contains this file
+                project_root = get_project_root()
+                # Try each content path to find one that contains this file.
+                # Resolve relative content paths against project_root so we
+                # don't depend on the caller's current working directory.
                 for cp in content_paths:
-                    cp_path = Path(cp).resolve()
+                    cp_path = Path(cp)
+                    if not cp_path.is_absolute():
+                        cp_path = project_root / cp_path
+                    cp_path = cp_path.resolve()
                     try:
                         path.resolve().relative_to(cp_path)
                         content_root = cp_path

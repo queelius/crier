@@ -259,6 +259,50 @@ Here's an image: ![alt](/images/photo.png)
         assert "https://example.com/posts/other-article/" in article.body
         assert "https://example.com/images/photo.png" in article.body
 
+    def test_parse_infers_canonical_url_from_config_regardless_of_cwd(self, tmp_path, monkeypatch):
+        """canonical_url inference must work regardless of the caller's CWD.
+
+        Regression test: parse_markdown_file used to call Path(cp).resolve() on
+        relative content_paths, which resolved against CWD instead of site_root.
+        This meant running crier from a different directory would silently fail
+        to infer canonical URLs, causing audit to skip everything.
+        """
+        import os
+        import yaml
+
+        # Build a fake Hugo site at tmp_path with a relative content_path
+        site = tmp_path / "my-blog"
+        (site / "content" / "post" / "my-article").mkdir(parents=True)
+        md = site / "content" / "post" / "my-article" / "index.md"
+        md.write_text("""\
+---
+title: My Article
+---
+
+Body.
+""")
+
+        # Point global config at the fake site with a RELATIVE content_path
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(yaml.dump({
+            "site_root": str(site),
+            "site_base_url": "https://example.com",
+            "content_paths": ["content/post"],  # Relative!
+        }))
+        monkeypatch.setenv("CRIER_CONFIG", str(config_file))
+
+        # Run from a directory that is NOT the site_root
+        other_dir = tmp_path / "elsewhere"
+        other_dir.mkdir()
+        monkeypatch.chdir(other_dir)
+        assert os.getcwd() == str(other_dir)
+
+        # Should still infer canonical_url correctly
+        article = parse_markdown_file(str(md))
+        assert article.canonical_url == "https://example.com/post/my-article/"
+
 
 class TestResolveRelativeLinks:
     """Tests for resolve_relative_links()."""
