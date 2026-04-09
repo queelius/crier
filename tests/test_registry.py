@@ -625,6 +625,77 @@ class TestDeletionPreservesHistory:
         assert is_published("https://example.com/article", "devto") is False
         assert is_deleted("https://example.com/article", "devto") is True
 
+    def test_republish_clears_deleted_state(self, tmp_registry):
+        """Re-publishing a soft-deleted article clears deleted_at."""
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="123",
+            url="https://dev.to/a",
+        )
+        record_deletion("https://example.com/article", "devto")
+        assert is_deleted("https://example.com/article", "devto") is True
+
+        # Re-publish — should resurrect the publication
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="devto",
+            article_id="456",
+            url="https://dev.to/a-v2",
+        )
+
+        assert is_published("https://example.com/article", "devto") is True
+        assert is_deleted("https://example.com/article", "devto") is False
+
+    def test_republish_as_single_clears_thread_fields(self, tmp_registry):
+        """Re-publishing as a single post clears thread fields from prior thread post."""
+        from crier.registry import record_thread_publication, is_thread, get_thread_ids
+        record_thread_publication(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            root_id="root1",
+            root_url="https://bsky.app/r1",
+            thread_ids=["t1", "t2", "t3"],
+        )
+        assert is_thread("https://example.com/article", "bluesky") is True
+
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            article_id="single1",
+            url="https://bsky.app/s1",
+        )
+
+        assert is_thread("https://example.com/article", "bluesky") is False
+        assert get_thread_ids("https://example.com/article", "bluesky") is None
+
+    def test_republish_as_thread_clears_posted_content(self, tmp_registry):
+        """Re-publishing as a thread clears posted_content from prior single post."""
+        from crier.registry import record_thread_publication, get_publication_info
+        record_publication(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            article_id="s1",
+            url="https://bsky.app/s1",
+            rewritten=True,
+            posted_content="short rewrite",
+        )
+
+        record_thread_publication(
+            canonical_url="https://example.com/article",
+            platform="bluesky",
+            root_id="r1",
+            root_url="https://bsky.app/r1",
+            thread_ids=["t1", "t2"],
+        )
+
+        info = get_publication_info("https://example.com/article", "bluesky")
+        # posted_content should be cleared; thread data present
+        article = get_article("https://example.com/article")
+        pdata = article["platforms"]["bluesky"]
+        assert pdata.get("is_thread") is True
+        assert "posted_content" not in pdata
+
 
 class TestRemoveVsDelete:
     """Tests contrasting remove (hard delete) vs record_deletion (soft delete)."""

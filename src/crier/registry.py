@@ -363,7 +363,7 @@ def update_article_metadata(
 
 
 def record_publication(
-    canonical_url: str,
+    canonical_url: str | None,
     platform: str,
     article_id: str | None,
     url: str | None,
@@ -399,7 +399,8 @@ def record_publication(
         "published_at = excluded.published_at, "
         "rewritten = excluded.rewritten, rewrite_author = excluded.rewrite_author, "
         "posted_content = excluded.posted_content, "
-        "last_error = NULL, last_error_at = NULL",
+        "is_thread = 0, thread_ids = NULL, thread_urls = NULL, "
+        "deleted_at = NULL, last_error = NULL, last_error_at = NULL",
         (slug, platform, article_id, url, now,
          1 if rewritten else 0, rewrite_author, posted_content),
     )
@@ -407,7 +408,7 @@ def record_publication(
 
 
 def record_thread_publication(
-    canonical_url: str,
+    canonical_url: str | None,
     platform: str,
     root_id: str | None,
     root_url: str | None,
@@ -445,7 +446,8 @@ def record_thread_publication(
         "is_thread = excluded.is_thread, thread_ids = excluded.thread_ids, "
         "thread_urls = excluded.thread_urls, "
         "rewritten = excluded.rewritten, rewrite_author = excluded.rewrite_author, "
-        "last_error = NULL, last_error_at = NULL",
+        "posted_content = NULL, "
+        "deleted_at = NULL, last_error = NULL, last_error_at = NULL",
         (slug, platform, root_id, root_url, now,
          json.dumps(thread_ids), json.dumps(thread_urls) if thread_urls else None,
          1 if rewritten else 0, rewrite_author),
@@ -454,7 +456,7 @@ def record_thread_publication(
 
 
 def record_failure(
-    canonical_url: str,
+    canonical_url: str | None,
     platform: str,
     error_msg: str,
     title: str | None = None,

@@ -293,14 +293,3 @@ class ThreadPublishResult:
     results: list[PublishResult] | None = None
     # Error message if failed
     error: str | None = None
-
-    def publish_thread(self, posts: list[str]) -> list[PublishResult]:
-        """Publish a thread of multiple posts.
-
-        Args:
-            posts: List of post content strings (already split and formatted)
-
-        Returns:
-            List of PublishResult, one for each post in the thread
-        """
-        raise NotImplementedError(f"{self.name} does not support thread posting")
