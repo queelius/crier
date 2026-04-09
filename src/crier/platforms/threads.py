@@ -25,6 +25,7 @@ class Threads(Platform):
     description = "Short posts (500 chars)"
     base_url = "https://graph.threads.net/v1.0"
     max_content_length = 500  # Threads character limit
+    is_short_form = True
     api_key_url = "https://developers.facebook.com/"
     supports_delete = False
     supports_stats = True

@@ -1,6 +1,6 @@
 """Tests for crier.rewrite — auto-rewrite logic."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

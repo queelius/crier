@@ -16,6 +16,7 @@ class Mastodon(Platform):
     name = "mastodon"
     description = "Short posts (500 chars)"
     max_content_length = 500  # Default Mastodon limit (some instances allow more)
+    is_short_form = True
     api_key_url = None  # Instance-specific
     supports_threads = True
     supports_stats = True

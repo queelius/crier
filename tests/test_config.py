@@ -1,6 +1,5 @@
 """Tests for crier.config module."""
 
-import pytest
 import yaml
 
 from crier.config import (
@@ -45,7 +44,6 @@ from crier.config import (
     set_rewrite_author,
     DEFAULT_EXCLUDE_PATTERNS,
     DEFAULT_FILE_EXTENSIONS,
-    SHORT_FORM_PLATFORMS,
 )
 
 
@@ -427,7 +425,7 @@ class TestGetApiKeySource:
 
 
 class TestIsShortFormPlatform:
-    """Tests for is_short_form_platform()."""
+    """Tests for is_short_form_platform() — derived from Platform.is_short_form."""
 
     def test_short_form_platforms(self):
         assert is_short_form_platform("bluesky") is True
@@ -439,9 +437,12 @@ class TestIsShortFormPlatform:
         assert is_short_form_platform("devto") is False
         assert is_short_form_platform("hashnode") is False
         assert is_short_form_platform("medium") is False
+        # LinkedIn has max_content_length=3000 but is not short-form
+        assert is_short_form_platform("linkedin") is False
 
-    def test_short_form_platforms_constant(self):
-        assert SHORT_FORM_PLATFORMS == {"bluesky", "mastodon", "twitter", "threads"}
+    def test_unknown_platform(self):
+        """Unknown platforms return False, not an error."""
+        assert is_short_form_platform("nonexistent") is False
 
 
 class TestLLMConfig:

@@ -945,11 +945,6 @@ def load_registry() -> dict[str, Any]:
     return {"version": CURRENT_VERSION, "articles": articles}
 
 
-def save_registry(registry: dict[str, Any]) -> None:
-    """No-op for backward compat. SQLite handles persistence."""
-    pass
-
-
 # ---------------------------------------------------------------------------
 # Migration from YAML v2
 # ---------------------------------------------------------------------------

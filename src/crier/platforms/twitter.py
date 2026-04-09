@@ -21,6 +21,7 @@ class Twitter(Platform):
     name = "twitter"
     description = "Short posts (280 chars, manual)"
     max_content_length = 280  # Twitter character limit
+    is_short_form = True
     compose_url = "https://twitter.com/compose/tweet"
     api_key_url = None  # Manual mode only
     supports_delete = False

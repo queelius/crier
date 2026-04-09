@@ -1,6 +1,5 @@
 """Shared test fixtures for crier tests."""
 
-from pathlib import Path
 
 import pytest
 import yaml

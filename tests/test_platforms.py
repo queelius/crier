@@ -317,6 +317,93 @@ class TestBluesky:
         assert result.success is False
         assert "not support editing" in result.error
 
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    def test_list_articles_returns_full_text(self, mock_post, mock_get):
+        """list_articles returns full text and first-line title (not 50-char truncation)."""
+        # Auth response
+        auth_response = Mock()
+        auth_response.status_code = 200
+        auth_response.json.return_value = {"accessJwt": "token", "did": "did:plc:abc"}
+        mock_post.return_value = auth_response
+
+        # Feed response
+        long_text = "This is a long post about distributed systems. " * 5
+        feed_response = Mock()
+        feed_response.status_code = 200
+        feed_response.json.return_value = {
+            "feed": [
+                {
+                    "post": {
+                        "uri": "at://did:plc:abc/app.bsky.feed.post/xyz1",
+                        "author": {"handle": "alice.bsky.social"},
+                        "record": {"text": long_text},
+                    }
+                }
+            ]
+        }
+        mock_get.return_value = feed_response
+
+        platform = Bluesky("alice.bsky.social:password")
+        articles = platform.list_articles(limit=10)
+
+        assert len(articles) == 1
+        a = articles[0]
+        # Full text is preserved
+        assert a["text"] == long_text
+        # Title is first-line capped at 100 chars (not 50)
+        assert len(a["title"]) > 50
+        assert a["title"] == long_text[:100]
+        # URL is constructed from handle + post_id
+        assert a["url"] == "https://bsky.app/profile/alice.bsky.social/post/xyz1"
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    def test_list_articles_multiline_title(self, mock_post, mock_get):
+        """Multi-line post: title is first line only, text is full content."""
+        auth_response = Mock()
+        auth_response.status_code = 200
+        auth_response.json.return_value = {"accessJwt": "t", "did": "did:plc:a"}
+        mock_post.return_value = auth_response
+
+        feed_response = Mock()
+        feed_response.status_code = 200
+        feed_response.json.return_value = {
+            "feed": [
+                {
+                    "post": {
+                        "uri": "at://did:plc:a/app.bsky.feed.post/id1",
+                        "author": {"handle": "alice.bsky.social"},
+                        "record": {"text": "Crier v2 Released\n\nMajor rewrite with SQLite and MCP."},
+                    }
+                }
+            ]
+        }
+        mock_get.return_value = feed_response
+
+        platform = Bluesky("alice.bsky.social:p")
+        articles = platform.list_articles()
+
+        assert articles[0]["title"] == "Crier v2 Released"
+        assert "SQLite" in articles[0]["text"]
+
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    def test_list_articles_empty(self, mock_post, mock_get):
+        """Empty feed returns empty list."""
+        auth_response = Mock()
+        auth_response.status_code = 200
+        auth_response.json.return_value = {"accessJwt": "t", "did": "did:plc:a"}
+        mock_post.return_value = auth_response
+
+        feed_response = Mock()
+        feed_response.status_code = 200
+        feed_response.json.return_value = {"feed": []}
+        mock_get.return_value = feed_response
+
+        platform = Bluesky("alice.bsky.social:p")
+        assert platform.list_articles() == []
+
 
 class TestMastodon:
     """Tests for Mastodon platform."""
@@ -371,6 +458,119 @@ class TestMastodon:
 
         assert result.success is False
         assert "401" in result.error
+
+    @patch("crier.platforms.base.requests.get")
+    def test_list_articles_strips_html(self, mock_get):
+        """list_articles converts HTML content to plain text with paragraph breaks."""
+        # First call: verify_credentials. Second call: statuses.
+        creds = Mock()
+        creds.status_code = 200
+        creds.json.return_value = {"id": "42"}
+
+        statuses = Mock()
+        statuses.status_code = 200
+        statuses.json.return_value = [
+            {
+                "id": "s1",
+                "url": "https://mastodon.social/@u/s1",
+                "visibility": "public",
+                "content": "<p>Hello <strong>world</strong>!</p><p>Second paragraph.</p>",
+            },
+        ]
+        mock_get.side_effect = [creds, statuses]
+
+        platform = Mastodon("mastodon.social:token")
+        articles = platform.list_articles()
+
+        assert len(articles) == 1
+        a = articles[0]
+        # HTML stripped
+        assert "<p>" not in a["content"]
+        assert "<strong>" not in a["content"]
+        # Paragraph break preserved as newline
+        assert "\n" in a["content"]
+        assert a["content"].startswith("Hello world !")
+        assert "Second paragraph." in a["content"]
+        # Title is first line
+        assert a["title"] == "Hello world !"
+        assert a["url"] == "https://mastodon.social/@u/s1"
+
+    @patch("crier.platforms.base.requests.get")
+    def test_list_articles_br_to_newline(self, mock_get):
+        """<br> and <br/> variants become newlines."""
+        creds = Mock()
+        creds.status_code = 200
+        creds.json.return_value = {"id": "42"}
+
+        statuses = Mock()
+        statuses.status_code = 200
+        statuses.json.return_value = [
+            {
+                "id": "s1",
+                "url": "https://mastodon.social/@u/s1",
+                "visibility": "public",
+                "content": "<p>Line one<br>Line two<br/>Line three<br />Line four</p>",
+            },
+        ]
+        mock_get.side_effect = [creds, statuses]
+
+        platform = Mastodon("mastodon.social:token")
+        articles = platform.list_articles()
+
+        text = articles[0]["content"]
+        assert text.count("\n") >= 3
+        assert "Line one" in text
+        assert "Line four" in text
+
+    @patch("crier.platforms.base.requests.get")
+    def test_list_articles_bare_text(self, mock_get):
+        """Content with no HTML tags still works."""
+        creds = Mock()
+        creds.status_code = 200
+        creds.json.return_value = {"id": "42"}
+
+        statuses = Mock()
+        statuses.status_code = 200
+        statuses.json.return_value = [
+            {
+                "id": "s1",
+                "url": "https://mastodon.social/@u/s1",
+                "visibility": "public",
+                "content": "Just plain text.",
+            },
+        ]
+        mock_get.side_effect = [creds, statuses]
+
+        platform = Mastodon("mastodon.social:token")
+        articles = platform.list_articles()
+        assert articles[0]["title"] == "Just plain text."
+        assert articles[0]["content"] == "Just plain text."
+
+    @patch("crier.platforms.base.requests.get")
+    def test_list_articles_title_capped_at_100(self, mock_get):
+        """Long first paragraph is capped at 100 chars for title."""
+        creds = Mock()
+        creds.status_code = 200
+        creds.json.return_value = {"id": "42"}
+
+        long_para = "A" * 250
+        statuses = Mock()
+        statuses.status_code = 200
+        statuses.json.return_value = [
+            {
+                "id": "s1",
+                "url": "https://mastodon.social/@u/s1",
+                "visibility": "public",
+                "content": f"<p>{long_para}</p>",
+            },
+        ]
+        mock_get.side_effect = [creds, statuses]
+
+        platform = Mastodon("mastodon.social:token")
+        articles = platform.list_articles()
+        assert len(articles[0]["title"]) == 100
+        # But full content is preserved (stripped and collapsed)
+        assert len(articles[0]["content"]) == 250
 
 
 class TestDevTo:
@@ -1062,7 +1262,7 @@ class TestBasePlatformDefaults:
 
     def test_default_delete_unsupported(self):
         """Platform with supports_delete=False returns proper result."""
-        from crier.platforms.base import Platform, DeleteResult
+        from crier.platforms.base import DeleteResult
 
         # Twitter has supports_delete = False (inherited from manual-mode logic)
         platform = Twitter("manual")
@@ -1077,8 +1277,6 @@ class TestBasePlatformDefaults:
 
     def test_default_publish_thread_unsupported(self):
         """Platform without thread support returns error."""
-        from crier.platforms.base import ThreadPublishResult
-
         platform = DevTo("test_key")
         result = platform.publish_thread(["Post 1", "Post 2"])
         assert result.success is False
@@ -1231,6 +1429,7 @@ class TestMastodonPublishThread:
         platform = Mastodon("mastodon.social:token")
         result = platform.publish_thread(["Post 1", "Post 2"])
 
+        assert isinstance(result, ThreadPublishResult)
         assert result.success is True
         assert len(result.post_ids) == 2
         assert result.root_id == "111"

@@ -165,13 +165,16 @@ def get_platform_mode(platform: str) -> str:
         return 'api'
 
 
-# Platforms with character limits that require content rewriting
-SHORT_FORM_PLATFORMS = {'bluesky', 'mastodon', 'twitter', 'threads'}
-
-
 def is_short_form_platform(platform: str) -> bool:
-    """Check if platform has character limits requiring content rewrites."""
-    return platform in SHORT_FORM_PLATFORMS
+    """Check if platform is short-form (tweets, toots, skeets, etc.).
+
+    Derived from the Platform class's `is_short_form` attribute so user
+    plugins can opt in without modifying crier source. Unknown platforms
+    return False.
+    """
+    from .platforms import PLATFORMS
+    cls = PLATFORMS.get(platform)
+    return bool(cls and getattr(cls, "is_short_form", False))
 
 
 def get_api_key_source(platform: str) -> str | None:

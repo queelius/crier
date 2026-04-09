@@ -283,8 +283,13 @@ class TestBackwardCompatImports:
             Platform, Article, PublishResult,
             DeleteResult, ArticleStats, ThreadPublishResult,
         )
+        # All six base types must be re-exported from crier.platforms
         assert Platform is not None
         assert Article is not None
+        assert PublishResult is not None
+        assert DeleteResult is not None
+        assert ArticleStats is not None
+        assert ThreadPublishResult is not None
 
     def test_platforms_dict_has_all_builtins(self):
         """PLATFORMS dict has at least 13 entries."""

@@ -1,6 +1,5 @@
 """Tests for crier.converters module."""
 
-import pytest
 
 from crier.converters import parse_markdown_file, parse_front_matter
 from crier.converters.markdown import resolve_relative_links
@@ -244,7 +243,6 @@ Content.
 
     def test_parse_resolves_relative_links(self, tmp_path, monkeypatch):
         """Test that relative links are resolved when base_url is available."""
-        from crier import config
 
         md_file = tmp_path / "with_links.md"
         md_file.write_text("""\

@@ -15,15 +15,15 @@ crier init
 ```
 
 The `init` command walks you through:
-- Creating the `.crier/` registry directory
+- Creating the SQLite registry at `~/.config/crier/crier.db`
 - Detecting your content directories
 - Configuring platforms with API keys
 
 ### How It Works
 
 1. **Your markdown posts** with YAML front matter are the source of truth
-2. **`.crier/registry.yaml`** tracks what's published where
-3. **`crier audit`** shows what's missing or changed
+2. **SQLite registry** at `~/.config/crier/crier.db` tracks what's published where (slug-keyed)
+3. **`crier audit`** shows what's missing from which platforms
 4. **`crier publish`** or `audit --publish` publishes content
 
 ```bash
@@ -43,14 +43,17 @@ crier audit --publish
 ### With Claude Code
 
 Crier is designed to work with Claude Code for AI-assisted publishing.
-Install the skill with `crier skill install`, then just ask Claude naturally:
+Install the crier plugin from the queelius-plugins marketplace, which
+provides a skill, a `/crier` slash command, a cross-poster agent, and
+an MCP server exposing the registry to Claude. Then ask naturally:
 
 - "Cross-post my latest article to all platforms"
 - "What articles haven't been published to Bluesky?"
 - "Publish this post to Mastodon with a good announcement"
 
-Claude automatically detects when to use the crier skill and follows
-the workflow: audit, select, publish (with rewrites for short-form platforms).
+The MCP server (`crier mcp`) gives Claude direct query access to the
+registry, and the cross-poster agent can handle bulk publishing
+autonomously with rewrites for short-form platforms.
 
 ## Installation
 
@@ -134,13 +137,37 @@ This ensures the registry accurately reflects what's actually published.
 
 ## Configuration
 
-Crier uses two configuration files:
+All configuration lives in a single global file: `~/.config/crier/config.yaml`.
+The registry (publication state) is a SQLite database at `~/.config/crier/crier.db`.
 
-### Global Config (`~/.config/crier/config.yaml`)
-
-API keys and profiles (shared across all projects):
+### Example config
 
 ```yaml
+# Points crier at your content project (e.g., a Hugo site)
+site_root: ~/github/repos/my-blog
+site_base_url: https://example.com
+
+# Directories to scan for markdown files (relative to site_root)
+content_paths:
+  - content/post
+  - content/note
+
+# File extensions to scan (default: .md)
+file_extensions:
+  - .md
+  - .mdx
+
+# Filename patterns to skip
+exclude_patterns:
+  - _drafts/*
+  - _index.md
+
+# Default platforms when --to / --profile not given
+default_profile: everything
+
+# Default author for AI-generated rewrites
+rewrite_author: claude-code
+
 platforms:
   devto:
     api_key: your_key_here
@@ -166,27 +193,11 @@ profiles:
     - social
 ```
 
-### Local Config (`.crier/config.yaml`)
-
-Project-specific settings:
-
-```yaml
-content_paths:
-  - content                    # Directories to scan for markdown files
-site_base_url: https://yoursite.com
-exclude_patterns:
-  - _index.md                  # Files to skip (Hugo section pages)
-file_extensions:
-  - .md
-  - .mdx                       # Optional: for MDX content
-default_profile: everything    # Used when no --to or --profile specified
-rewrite_author: claude-code    # Default author for AI-generated rewrites
-```
-
 | Option | Purpose |
 |--------|---------|
-| `content_paths` | Directories to scan for content |
+| `site_root` | Content project directory (where `content/` lives) |
 | `site_base_url` | For inferring canonical URLs |
+| `content_paths` | Directories to scan for content (resolved against `site_root`) |
 | `exclude_patterns` | Filename patterns to skip |
 | `file_extensions` | Extensions to scan (default: `.md`) |
 | `default_profile` | Default platforms when none specified |
@@ -271,7 +282,7 @@ crier config set KEY VALUE              # Set configuration
 crier config llm show                   # Show LLM configuration
 crier config llm test                   # Test LLM connection
 crier doctor                            # Verify API keys work
-crier skill install                     # Install Claude Code skill
+crier mcp                               # Start MCP server (for Claude Code)
 ```
 
 ## Automation
@@ -352,9 +363,6 @@ crier audit --publish --yes --long-form
 # Random sample of 5 articles
 crier audit --publish --yes --sample 5
 
-# Include changed content (default: missing only)
-crier audit --publish --yes --include-changed
-
 # Filter by path
 crier audit content/post --publish --yes --only-api
 
@@ -380,11 +388,11 @@ crier audit content/post --since 1m --only-api --long-form --sample 10 --publish
 | `--only-api` | Skip manual/import/paste platforms |
 | `--long-form` | Skip short-form platforms (bluesky, mastodon, twitter, threads) |
 | `--sample N` | Random sample of N items |
-| `--include-changed` | Also update changed content (default: missing only) |
+| `--date-source` | Filter by `frontmatter` (default) or `mtime` |
 | `--batch` | Non-interactive mode (implies `--yes --json`, skips manual platforms) |
 | `--json` | Output results as JSON |
 
-Filters are applied in order: path → date → platform mode → content type → changed → sampling
+Filters are applied in order: path → date → platform mode → content type → tag → sampling
 
 ## Delete & Archive
 
@@ -531,7 +539,7 @@ crier check post.md --json
 
 **Publish integration:** Pre-publish checks run automatically before publishing. Use `--no-check` to skip, `--strict` to block on warnings.
 
-**Severity overrides** in `.crier/config.yaml`:
+**Severity overrides** in `~/.config/crier/config.yaml`:
 ```yaml
 checks:
   missing-tags: disabled    # Don't care about tags

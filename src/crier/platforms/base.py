@@ -81,6 +81,9 @@ class Platform(ABC):
     description: str = "Publishing platform"
     # Character limit for content (None means no limit)
     max_content_length: int | None = None
+    # Whether this is a short-form platform (tweets, toots, skeets, etc.)
+    # Short-form platforms typically need a --rewrite or auto-rewrite.
+    is_short_form: bool = False
     # URL for manual compose page (e.g., https://twitter.com/compose/tweet)
     compose_url: str | None = None
     # URL to get API key/credentials

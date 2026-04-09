@@ -1,12 +1,8 @@
 """Tests for crier.registry module (SQLite-backed, v3)."""
 
-import json
-import os
 import threading
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 import yaml
 
 from crier.registry import (
@@ -38,8 +34,6 @@ from crier.registry import (
     record_thread_publication,
     remove_article,
     remove_publication,
-    reset_connection,
-    save_registry,
     save_stats,
     set_archived,
 )
@@ -671,7 +665,7 @@ class TestDeletionPreservesHistory:
 
     def test_republish_as_thread_clears_posted_content(self, tmp_registry):
         """Re-publishing as a thread clears posted_content from prior single post."""
-        from crier.registry import record_thread_publication, get_publication_info
+        from crier.registry import record_thread_publication
         record_publication(
             canonical_url="https://example.com/article",
             platform="bluesky",
@@ -689,12 +683,12 @@ class TestDeletionPreservesHistory:
             thread_ids=["t1", "t2"],
         )
 
-        info = get_publication_info("https://example.com/article", "bluesky")
         # posted_content should be cleared; thread data present
         article = get_article("https://example.com/article")
         pdata = article["platforms"]["bluesky"]
         assert pdata.get("is_thread") is True
         assert "posted_content" not in pdata
+        assert pdata.get("thread_ids") == ["t1", "t2"]
 
 
 class TestRemoveVsDelete:
@@ -956,12 +950,6 @@ class TestSQLitePersistence:
         assert isinstance(registry["articles"], dict)
         assert registry["articles"] == {}
 
-    def test_save_registry_is_noop(self, tmp_registry):
-        """save_registry is a no-op in SQLite mode."""
-        # Should not raise
-        save_registry({"version": 3, "articles": {}})
-        save_registry({"version": 3, "articles": {"some": "data"}})
-
     def test_load_reflects_recorded_data(self, tmp_registry):
         record_publication(
             canonical_url="https://example.com/article",
@@ -1079,7 +1067,7 @@ class TestSQLitePersistence:
         thread-local by default), so we use init_db() with an explicit
         db_path to get fresh connections per thread.
         """
-        from crier.registry import init_db, get_or_create_slug
+        from crier.registry import init_db
 
         db_path = tmp_registry / "crier.db"
 

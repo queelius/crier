@@ -1,8 +1,6 @@
 """Tests for crier.skill module."""
 
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from crier.skill import (
     SKILL_NAME,
@@ -15,9 +13,7 @@ from crier.skill import (
     install,
     uninstall,
     _load_skill_content,
-    _SKILL_CONTENT_CACHE,
 )
-import crier.skill as skill_module
 
 
 class TestConstants:

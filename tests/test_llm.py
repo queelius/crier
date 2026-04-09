@@ -1,10 +1,9 @@
 """Tests for the LLM provider module."""
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock, PropertyMock
+from unittest.mock import Mock, patch
 
 from crier.llm import (
-    LLMProvider,
     LLMProviderError,
     RewriteResult,
     OpenAICompatProvider,
@@ -615,7 +614,6 @@ class TestConfigIntegration:
 
     def test_set_llm_config(self, tmp_config):
         """Test setting LLM config."""
-        import yaml
         from crier.config import set_llm_config, get_llm_config
 
         set_llm_config(
@@ -692,7 +690,6 @@ class TestConfigIntegration:
 
     def test_set_llm_config_new_fields(self, tmp_config):
         """Test setting new LLM config fields."""
-        import yaml
         from crier.config import set_llm_config, get_llm_config
 
         set_llm_config(

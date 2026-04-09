@@ -17,6 +17,7 @@ class Bluesky(Platform):
     description = "Short posts (300 chars)"
     base_url = "https://bsky.social/xrpc"
     max_content_length = 300  # Bluesky character limit
+    is_short_form = True
     api_key_url = "https://bsky.app/settings/app-passwords"
     supports_threads = True
     supports_stats = True
