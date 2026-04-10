@@ -692,6 +692,23 @@ def crier_publish(
     if not details:
         return {"error": "Invalid or expired confirmation token. Request a new one."}
 
+    # Restore rewrite from token (the caller only passes it in step 1)
+    if not rewrite_content and details.get("rewrite_content"):
+        rewrite_content = details["rewrite_content"]
+        rewrite_author = details.get("rewrite_author")
+        is_rewritten = True
+        posted_content = rewrite_content
+        article = Article(
+            title=article.title,
+            body=rewrite_content,
+            description=article.description,
+            tags=article.tags,
+            canonical_url=article.canonical_url,
+            published=article.published,
+            cover_image=article.cover_image,
+            is_rewrite=True,
+        )
+
     # Publish
     try:
         platform_cls = get_platform(platform)
