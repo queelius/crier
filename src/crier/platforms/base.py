@@ -135,6 +135,16 @@ class Platform(ABC):
             )
         return None
 
+    def _append_canonical_url(self, text: str, article: Article) -> str:
+        """Append the canonical URL to text if not already present.
+
+        Used by short-form platforms when publishing a rewrite to ensure
+        the link back to the canonical source is included.
+        """
+        if article.canonical_url and article.canonical_url not in text:
+            return f"{text}\n\n{article.canonical_url}"
+        return text
+
     def retry_request(
         self,
         method: str,

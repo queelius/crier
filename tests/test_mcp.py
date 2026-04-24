@@ -429,6 +429,165 @@ class TestCrierPublish:
         result = crier_publish(str(md), "nonexistent")
         assert "error" in result
 
+    def test_publish_empty_file_path_rejected(self, mcp_registry):
+        """Empty file path must be rejected, not resolved to project root."""
+        result = crier_publish("", "devto")
+        assert "error" in result
+        assert "File not found" in result["error"]
+
+    def test_publish_step2_executes_with_mocked_api(self, mcp_registry, monkeypatch):
+        """Full two-step flow: token from step 1, execute in step 2 with mocked API."""
+        from unittest.mock import patch
+        from crier.platforms.base import PublishResult
+
+        content_dir = mcp_registry / "content" / "post" / "real-article"
+        content_dir.mkdir(parents=True)
+        md = content_dir / "index.md"
+        md.write_text("---\ntitle: Real Article\ncanonical_url: https://ex.com/real/\n---\nBody.")
+
+        # Step 1: get token
+        step1 = crier_publish(str(md), "devto")
+        token = step1["confirmation_token"]
+
+        # Mock devto.publish so step 2 doesn't hit the API
+        with patch("crier.platforms.devto.DevTo.publish") as mock_pub:
+            mock_pub.return_value = PublishResult(
+                success=True, platform="devto",
+                article_id="42", url="https://dev.to/u/real-42",
+            )
+            step2 = crier_publish(str(md), "devto", confirmation_token=token)
+
+        assert step2["success"] is True
+        assert step2["article_id"] == "42"
+        mock_pub.assert_called_once()
+        # The Article passed to publish should have the full body (no rewrite)
+        article_arg = mock_pub.call_args[0][0]
+        assert article_arg.title == "Real Article"
+        assert article_arg.is_rewrite is False
+
+    def test_publish_step2_applies_rewrite_from_token(self, mcp_registry):
+        """Rewrite passed in step 1 must be applied in step 2 (regression: commit 6a3bfbe)."""
+        from unittest.mock import patch
+        from crier.platforms.base import PublishResult
+
+        content_dir = mcp_registry / "content" / "post" / "rewrite-test"
+        content_dir.mkdir(parents=True)
+        md = content_dir / "index.md"
+        md.write_text(
+            "---\ntitle: Rewrite Test\ncanonical_url: https://ex.com/rw/\n---\n"
+            + "X" * 1000  # Long body — would fail short-form limits without rewrite
+        )
+
+        short_rewrite = "Short take."
+
+        # Step 1: with rewrite
+        step1 = crier_publish(
+            str(md), "bluesky",
+            rewrite_content=short_rewrite, rewrite_author="test",
+        )
+        token = step1["confirmation_token"]
+
+        # Step 2: without rewrite args (simulating a caller that only passes the token)
+        with patch("crier.platforms.bluesky.Bluesky.publish") as mock_pub:
+            mock_pub.return_value = PublishResult(
+                success=True, platform="bluesky",
+                article_id="bsky-1", url="https://bsky.app/p/1",
+            )
+            step2 = crier_publish(str(md), "bluesky", confirmation_token=token)
+
+        assert step2["success"] is True
+        # The Article passed must have the rewrite, not the long body
+        article_arg = mock_pub.call_args[0][0]
+        assert article_arg.body == short_rewrite
+        assert article_arg.is_rewrite is True
+
+    def test_publish_step2_token_overrides_caller_args(self, mcp_registry):
+        """Security: step 2 uses token's file/platform, not caller's args.
+
+        A caller must not be able to publish file B using a token for file A.
+        """
+        from unittest.mock import patch
+        from crier.platforms.base import PublishResult
+
+        # Two different files
+        a_dir = mcp_registry / "content" / "post" / "article-a"
+        a_dir.mkdir(parents=True)
+        a_md = a_dir / "index.md"
+        a_md.write_text("---\ntitle: Article A\ncanonical_url: https://ex.com/a/\n---\nA body.")
+
+        b_dir = mcp_registry / "content" / "post" / "article-b"
+        b_dir.mkdir(parents=True)
+        b_md = b_dir / "index.md"
+        b_md.write_text("---\ntitle: Article B\ncanonical_url: https://ex.com/b/\n---\nB body.")
+
+        # Step 1: get token for A
+        step1 = crier_publish(str(a_md), "devto")
+        token = step1["confirmation_token"]
+        assert step1["preview"]["title"] == "Article A"
+
+        # Step 2: caller tries to substitute B
+        with patch("crier.platforms.devto.DevTo.publish") as mock_pub:
+            mock_pub.return_value = PublishResult(
+                success=True, platform="devto",
+                article_id="1", url="https://dev.to/x",
+            )
+            crier_publish(str(b_md), "devto", confirmation_token=token)
+
+        # The article actually published must be A (from token), not B
+        article_arg = mock_pub.call_args[0][0]
+        assert article_arg.title == "Article A"
+
+
+class TestCrierDeleteStep2:
+    """Full two-step delete flow tests."""
+
+    def test_delete_step2_token_overrides_caller_key(self, mcp_registry):
+        """Security: step 2 uses token's key, not caller's args.
+
+        A caller must not be able to delete article B using a token for article A.
+        """
+        _seed_articles()
+
+        # Step 1: get token for post-0
+        step1 = crier_delete("post-0", platform="devto")
+        token = step1["confirmation_token"]
+        assert step1["preview"]["slug"] == "post-0"
+
+        # Step 2: caller tries to substitute post-1
+        result = crier_delete("post-1", platform="devto", confirmation_token=token)
+
+        # The deletion target should be from the token (post-0)
+        assert "deleted" in result
+        assert all(r["platform"] == "devto" for r in result["deleted"])
+
+        # Verify post-0 marked deleted, post-1 untouched
+        from crier.registry import is_deleted
+        assert is_deleted("post-0", "devto") is True
+        assert is_deleted("post-1", "devto") is False
+
+    def test_delete_already_deleted(self, mcp_registry):
+        """Deleting an already-deleted publication returns an error in step 1."""
+        _seed_articles()
+        from crier.registry import record_deletion
+        record_deletion("post-0", "devto")
+
+        result = crier_delete("post-0", platform="devto")
+        assert "error" in result
+        assert "already deleted" in result["error"].lower()
+
+
+class TestCrierStatsValidation:
+    """crier_stats and crier_stats_refresh should validate platform names."""
+
+    def test_stats_invalid_platform(self, mcp_registry):
+        _seed_articles()
+        result = crier_stats("post-0", platform="nonexistent")
+        assert "error" in result
+
+    def test_stats_refresh_invalid_platform(self, mcp_registry):
+        result = crier_stats_refresh(platform="nonexistent")
+        assert "error" in result
+
 
 class TestCrierDoctor:
     def test_doctor_returns_platform_status(self, mcp_registry):

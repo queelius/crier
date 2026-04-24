@@ -170,10 +170,7 @@ class Threads(Platform):
         Otherwise constructs from title + description + URL + hashtags.
         """
         if article.is_rewrite:
-            text = article.body
-            if article.canonical_url and article.canonical_url not in text:
-                text = text + "\n\n" + article.canonical_url
-            return text
+            return self._append_canonical_url(article.body, article)
 
         parts = [article.title]
 

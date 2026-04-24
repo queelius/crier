@@ -35,6 +35,7 @@ Tools (17):
         crier_stats_refresh Fetch fresh stats from platform API
 """
 
+import dataclasses
 import json
 import random
 import secrets
@@ -83,15 +84,26 @@ def _validate_platform(name: str) -> str | None:
 
 
 def _resolve_file(file_path: str) -> Path | None:
-    """Resolve a file path against project root. Returns None if not found."""
+    """Resolve a file path against project root. Returns None if not found or not a file."""
+    if not file_path:
+        return None
     from .config import get_project_root
     p = Path(file_path)
-    if p.is_absolute() and p.exists():
+    if p.is_absolute() and p.is_file():
         return p
     resolved = get_project_root() / p
-    if resolved.exists():
+    if resolved.is_file():
         return resolved
     return None
+
+
+def _apply_rewrite(article, rewrite_content: str):
+    """Return a new Article with body replaced by the rewrite content."""
+    return dataclasses.replace(
+        article,
+        body=rewrite_content,
+        is_rewrite=True,
+    )
 
 
 # ============================================================================
@@ -611,6 +623,22 @@ def crier_publish(
                       rewrite_content="Interesting take on X...",
                       rewrite_author="claude-code")
     """
+    from .converters import parse_markdown_file
+    from .config import get_api_key, get_platform_mode
+    from .platforms import get_platform
+    from .registry import record_publication, record_failure, is_published
+
+    # Step 2: token is the source of truth. Ignore caller args to prevent bypass.
+    if confirmation_token:
+        details = _consume_token(confirmation_token, "publish")
+        if not details:
+            return {"error": "Invalid or expired confirmation token. Request a new one."}
+        file_path = details["file"]
+        platform = details["platform"]
+        rewrite_content = details.get("rewrite_content")
+        rewrite_author = details.get("rewrite_author")
+
+    # Validate platform and resolve file (used by both step 1 and step 2)
     err = _validate_platform(platform)
     if err:
         return {"error": err}
@@ -618,12 +646,6 @@ def crier_publish(
     resolved = _resolve_file(file_path)
     if not resolved:
         return {"error": f"File not found: {file_path}"}
-
-    from .converters import parse_markdown_file
-    from .config import get_api_key, get_platform_mode
-    from .platforms import get_platform
-    from .platforms.base import Article
-    from .registry import record_publication, record_failure, is_published
 
     # Parse article
     try:
@@ -634,7 +656,7 @@ def crier_publish(
     if not article.title:
         return {"error": "Article has no title"}
 
-    # Check API key
+    # Check API key and mode
     api_key = get_api_key(platform)
     if not api_key:
         return {"error": f"No API key configured for {platform}"}
@@ -647,16 +669,7 @@ def crier_publish(
     is_rewritten = bool(rewrite_content)
     posted_content = rewrite_content
     if rewrite_content:
-        article = Article(
-            title=article.title,
-            body=rewrite_content,
-            description=article.description,
-            tags=article.tags,
-            canonical_url=article.canonical_url,
-            published=article.published,
-            cover_image=article.cover_image,
-            is_rewrite=True,
-        )
+        article = _apply_rewrite(article, rewrite_content)
 
     # Build preview
     preview = {
@@ -674,7 +687,7 @@ def crier_publish(
     if dry_run:
         return {"dry_run": True, "preview": preview}
 
-    # Step 1: return preview + token
+    # Step 1: no token yet -> snapshot args into token and return preview
     if not confirmation_token:
         token = _create_token("publish", {
             "file": str(resolved), "platform": platform,
@@ -687,62 +700,39 @@ def crier_publish(
             "message": f"Call again with confirmation_token to publish '{article.title}' to {platform}",
         }
 
-    # Step 2: consume token and execute
-    details = _consume_token(confirmation_token, "publish")
-    if not details:
-        return {"error": "Invalid or expired confirmation token. Request a new one."}
-
-    # Restore rewrite from token (the caller only passes it in step 1)
-    if not rewrite_content and details.get("rewrite_content"):
-        rewrite_content = details["rewrite_content"]
-        rewrite_author = details.get("rewrite_author")
-        is_rewritten = True
-        posted_content = rewrite_content
-        article = Article(
-            title=article.title,
-            body=rewrite_content,
-            description=article.description,
-            tags=article.tags,
-            canonical_url=article.canonical_url,
-            published=article.published,
-            cover_image=article.cover_image,
-            is_rewrite=True,
-        )
-
-    # Publish
+    # Step 2: execute publish
     try:
-        platform_cls = get_platform(platform)
-        platform_obj = platform_cls(api_key)
+        platform_obj = get_platform(platform)(api_key)
         result = platform_obj.publish(article)
     except Exception as e:
         if article.canonical_url:
             record_failure(article.canonical_url, platform, str(e), article.title, str(resolved))
         return {"error": f"Publish failed: {e}"}
 
-    if result.success:
-        if article.canonical_url:
-            record_publication(
-                canonical_url=article.canonical_url,
-                platform=platform,
-                article_id=result.article_id,
-                url=result.url,
-                title=article.title,
-                source_file=str(resolved),
-                rewritten=is_rewritten,
-                rewrite_author=rewrite_author,
-                posted_content=posted_content,
-            )
-        return {
-            "success": True,
-            "platform": platform,
-            "title": article.title,
-            "article_id": result.article_id,
-            "url": result.url,
-        }
-    else:
+    if not result.success:
         if article.canonical_url and result.error:
             record_failure(article.canonical_url, platform, result.error, article.title, str(resolved))
         return {"error": f"Publish failed: {result.error}"}
+
+    if article.canonical_url:
+        record_publication(
+            canonical_url=article.canonical_url,
+            platform=platform,
+            article_id=result.article_id,
+            url=result.url,
+            title=article.title,
+            source_file=str(resolved),
+            rewritten=is_rewritten,
+            rewrite_author=rewrite_author,
+            posted_content=posted_content,
+        )
+    return {
+        "success": True,
+        "platform": platform,
+        "title": article.title,
+        "article_id": result.article_id,
+        "url": result.url,
+    }
 
 
 @mcp.tool()
@@ -766,45 +756,58 @@ def crier_delete(
         # Delete from all platforms
         crier_delete("code-without-purpose", delete_all=True)
     """
-    if platform:
-        err = _validate_platform(platform)
-        if err:
-            return {"error": err}
-
-    if not platform and not delete_all:
-        return {"error": "Specify platform or delete_all=True"}
-
     from .registry import get_article, record_deletion, get_publication_id
     from .config import get_api_key, get_platform_mode
     from .platforms import get_platform
 
-    article = get_article(key)
-    if not article:
-        return {"error": f"Article not found: {key}"}
+    # Step 2: token is the source of truth. Ignore caller args.
+    if confirmation_token:
+        details = _consume_token(confirmation_token, "delete")
+        if not details:
+            return {"error": "Invalid or expired confirmation token."}
+        key = details["key"]
+        target_platforms = details["platforms"]
+        article = get_article(key)
+        if not article:
+            return {"error": f"Article not found: {key}"}
+    else:
+        if platform:
+            err = _validate_platform(platform)
+            if err:
+                return {"error": err}
 
-    # Determine platforms to delete from
-    target_platforms = []
-    if delete_all:
-        target_platforms = [
-            p for p, data in article.get("platforms", {}).items()
-            if "deleted_at" not in data
-        ]
-    elif platform:
-        if platform not in article.get("platforms", {}):
-            return {"error": f"'{article['title']}' not published to {platform}"}
-        target_platforms = [platform]
+        if not platform and not delete_all:
+            return {"error": "Specify platform or delete_all=True"}
 
-    if not target_platforms:
-        return {"error": "Nothing to delete"}
+        article = get_article(key)
+        if not article:
+            return {"error": f"Article not found: {key}"}
 
-    preview = {
-        "title": article["title"],
-        "slug": article["slug"],
-        "platforms_to_delete": target_platforms,
-    }
+        # Determine platforms to delete from
+        target_platforms = []
+        if delete_all:
+            target_platforms = [
+                p for p, data in article.get("platforms", {}).items()
+                if "deleted_at" not in data
+            ]
+        elif platform:
+            pdata = article.get("platforms", {}).get(platform)
+            if not pdata:
+                return {"error": f"'{article['title']}' not published to {platform}"}
+            if "deleted_at" in pdata:
+                return {"error": f"'{article['title']}' on {platform} is already deleted"}
+            target_platforms = [platform]
 
-    # Step 1: return preview + token
-    if not confirmation_token:
+        if not target_platforms:
+            return {"error": "Nothing to delete"}
+
+        preview = {
+            "title": article["title"],
+            "slug": article["slug"],
+            "platforms_to_delete": target_platforms,
+        }
+
+        # Step 1: snapshot into token and return preview
         token = _create_token("delete", {"key": key, "platforms": target_platforms})
         return {
             "confirmation_required": True,
@@ -813,13 +816,9 @@ def crier_delete(
             "message": f"Call again with confirmation_token to delete from {target_platforms}",
         }
 
-    # Step 2: consume and execute
-    details = _consume_token(confirmation_token, "delete")
-    if not details:
-        return {"error": "Invalid or expired confirmation token."}
-
+    # Step 2: execute deletions
     results = []
-    for plat in details["platforms"]:
+    for plat in target_platforms:
         canonical = article.get("canonical_url") or article["slug"]
         pub_id = get_publication_id(canonical, plat)
         api_key = get_api_key(plat)
@@ -864,10 +863,11 @@ def crier_archive(key: str, archived: bool = True) -> dict:
         return {"error": f"Article not found: {key}"}
 
     success = set_archived(key, archived)
-    action = "archived" if archived else "unarchived"
+    verb = "archive" if archived else "unarchive"
+    past = "archived" if archived else "unarchived"
     if success:
-        return {"success": True, "message": f"'{article['title']}' {action}"}
-    return {"error": f"Failed to {action[:-1]}e '{key}'"}
+        return {"success": True, "message": f"'{article['title']}' {past}"}
+    return {"error": f"Failed to {verb} '{key}'"}
 
 
 # ============================================================================
@@ -963,6 +963,11 @@ def crier_stats(key: str, platform: str | None = None) -> dict:
         crier_stats("code-without-purpose")
         crier_stats("code-without-purpose", platform="devto")
     """
+    if platform:
+        err = _validate_platform(platform)
+        if err:
+            return {"error": err}
+
     from .registry import get_cached_stats, get_article
 
     article = get_article(key)
@@ -998,6 +1003,11 @@ def crier_stats_refresh(
         crier_stats_refresh("code-without-purpose")
         crier_stats_refresh("code-without-purpose", platform="devto")
     """
+    if platform:
+        err = _validate_platform(platform)
+        if err:
+            return {"error": err}
+
     from .registry import get_article, get_all_articles, save_stats
     from .config import get_api_key, is_manual_mode_key, is_import_mode_key
     from .platforms import get_platform

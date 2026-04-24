@@ -2,6 +2,7 @@
 
 import os
 import random
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +21,6 @@ from .config import (
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
-from .platforms.base import Article
 from .utils import (
     is_in_content_paths as _is_in_content_paths,
     parse_date_filter as _parse_date_filter_impl,
@@ -741,16 +741,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
         is_rewritten = True
         posted_content = rewrite_content
         # Create a modified article with the rewritten content
-        article = Article(
-            title=article.title,
-            body=rewrite_content,  # Use rewritten content as body
-            description=article.description,
-            tags=article.tags,
-            canonical_url=article.canonical_url,
-            published=article.published,
-            cover_image=article.cover_image,
-            is_rewrite=True,
-        )
+        article = replace(article, body=rewrite_content, is_rewrite=True)
 
     # Require canonical_url for registry tracking
     if not article.canonical_url:
@@ -4137,15 +4128,7 @@ def schedule_run(dry_run: bool, json_output: bool):
 
         # Handle rewrite if specified
         if post.rewrite:
-            article = Article(
-                title=article.title,
-                body=post.rewrite,
-                description=article.description,
-                tags=article.tags,
-                canonical_url=article.canonical_url,
-                published=article.published,
-                cover_image=article.cover_image,
-            )
+            article = replace(article, body=post.rewrite)
 
         # Publish
         try:

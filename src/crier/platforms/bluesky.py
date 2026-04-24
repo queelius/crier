@@ -75,10 +75,7 @@ class Bluesky(Platform):
         """
         if article.is_rewrite:
             # Body provided (e.g., via --rewrite) — use it directly
-            text = article.body
-            # Append canonical URL if not already present
-            if article.canonical_url and article.canonical_url not in text:
-                text = text + "\n\n" + article.canonical_url
+            text = self._append_canonical_url(article.body, article)
         else:
             # Auto-construct from metadata
             text_parts = [article.title]

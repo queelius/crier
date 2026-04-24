@@ -4,7 +4,7 @@ Handles the LLM retry loop, truncation fallback, and Article construction
 for auto-rewritten content. Used by both publish() and audit() in cli.py.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .platforms.base import Article
 from .utils import truncate_at_sentence
@@ -143,13 +143,4 @@ def auto_rewrite_for_platform(
 
 def _rewritten_article(original: Article, new_body: str) -> Article:
     """Create a new Article with rewritten body, preserving metadata."""
-    return Article(
-        title=original.title,
-        body=new_body,
-        description=original.description,
-        tags=original.tags,
-        canonical_url=original.canonical_url,
-        published=original.published,
-        cover_image=original.cover_image,
-        is_rewrite=True,
-    )
+    return replace(original, body=new_body, is_rewrite=True)
