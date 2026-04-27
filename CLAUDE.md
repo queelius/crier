@@ -136,21 +136,36 @@ llm:
 - `_collect_items()` — Parses files and applies tag/date filters
 - Reuses `parse_markdown_file()`, `get_content_date()`, `get_content_tags()`
 
-**Registry** (`registry.py`): SQLite database at `~/.config/crier/crier.db` (global).
-- **Slug primary key** derived from title via `python-slugify` (not canonical_url)
-- `canonical_url` is optional metadata, not the identity
-- No content hashes — change detection removed entirely
-- All functions accept slug or canonical_url via `_resolve_slug()`
-- `get_or_create_slug(title, canonical_url, source_file)` — find or create article entry
-- `record_failure()` / `get_failures()` — Tracks publication errors for `audit --retry`
-- `CRIER_DB` env var overrides DB path (used for test isolation)
-- SQLite tables: `articles`, `publications`, `stats`, `schema_version`
+**Registry** (`registry.py`): SQLite database at `~/.config/crier/crier.db` (global, single file for all projects).
+- **Slug primary key** derived from title via `python-slugify` (not canonical_url). Slug is stable; if the title changes, the slug stays.
+- `canonical_url` is optional metadata, not the identity. A unique index allows lookup but it can be `NULL`.
+- **No content hashes**. Change detection was removed entirely. If content is outdated, re-publish manually.
+- **`_resolve_slug(conn, key)`** is the dispatcher for the dual-key API: every public function accepts either a slug or a canonical_url. It tries the cheap primary-key lookup first, then the canonical_url unique index.
+- `get_or_create_slug(title, canonical_url, source_file)` finds or creates an article entry. Used everywhere a publication is recorded.
+- `update_article_metadata(slug, title, source_file, canonical_url, section)` is the public wrapper for editing article metadata. CLI's `link` command uses this; do NOT import the private `_update_article_metadata` from outside `registry.py`.
+- `record_failure()` / `get_failures()`: failure rows have `platform_id IS NULL`. Most queries filter `WHERE platform_id IS NOT NULL AND deleted_at IS NULL` to get "real" publications; remember this when writing new SQL against the registry.
+- **UPSERT on `record_publication` / `record_thread_publication` / `save_stats` / `record_failure`.** UPSERT (not `INSERT OR REPLACE`) is required because `INSERT OR REPLACE` deletes and reinserts the row, which cascade-deletes dependent stats and silently resets unspecified columns. The UPSERT clauses explicitly enumerate `deleted_at = NULL`, `last_error = NULL`, `is_thread`, `thread_ids`, `posted_content` so re-publishing a soft-deleted post resurrects it cleanly. See regression tests in `TestDeletionPreservesHistory`.
+- `CRIER_DB` env var overrides DB path (used for test isolation).
+- Module-level `_connection` cache; `reset_connection()` is required between tests with different DBs.
+- SQLite tables: `articles`, `publications`, `stats`, `schema_version`. WAL mode, foreign keys ON.
+- **YAML migration**: `migrate_yaml_to_sqlite(yaml_path, db_path)` migrates a v2 YAML registry to the SQLite schema; renames the YAML to `.bak`.
 
-**MCP Server** (`mcp_server.py`): Exposes registry via Model Context Protocol for Claude Code.
+**MCP Server** (`mcp_server.py`, ~1100 lines): Full CLI parity for Claude Code via Model Context Protocol.
 - Started via `crier mcp` (stdio) or `crier mcp --http` (SSE)
-- 8 tools: `crier_query`, `crier_missing`, `crier_article`, `crier_publications`, `crier_record`, `crier_stats`, `crier_sql`, `crier_summary`
-- Resource: `crier://schema` for DB schema
-- Built on `mcp.server.fastmcp.FastMCP`
+- **17 tools** in 4 categories:
+  - Registry: `crier_query`, `crier_missing`, `crier_article`, `crier_publications`, `crier_record`, `crier_failures`, `crier_summary`, `crier_sql`
+  - Content: `crier_search`, `crier_check`
+  - Actions: `crier_publish`, `crier_delete`, `crier_archive`
+  - Platform: `crier_list_remote`, `crier_doctor`, `crier_stats`, `crier_stats_refresh`
+- **3 resources**: `crier://schema`, `crier://config` (sanitized), `crier://platforms` (capabilities + modes)
+- **Two-step confirmation** for destructive ops (`crier_publish`, `crier_delete`):
+  - Step 1: call without `confirmation_token` to get a preview + token (5-min TTL)
+  - Step 2: call with `confirmation_token` to execute
+  - **Critical invariant: step 2 treats the token as source of truth.** All parameters (file, platform, rewrite_content, key, target_platforms) come from the token. Caller args on step 2 are ignored. This prevents a token-substitution bypass where a caller could get a token for operation A and use it to authorize operation B. See `_create_token` / `_consume_token` in `mcp_server.py`.
+- `crier_sql` runs queries inside a `SAVEPOINT crier_sql_guard` that is always rolled back, so even non-SELECT statements have no effect (defense in depth on top of `startswith("SELECT")`).
+- All tools return **dicts** (FastMCP serializes them); validation errors return `{"error": "..."}`.
+- Tools use lazy imports (`from .X import Y` inside functions) for fast MCP startup and to avoid circular imports.
+- Built on `mcp.server.fastmcp.FastMCP`.
 
 **Converters** (`converters/markdown.py`): Parses markdown files with YAML or TOML front matter into `Article` objects. Automatically resolves relative links (e.g., `/posts/other/`) to absolute URLs using `site_base_url` so they work on cross-posted platforms.
 
@@ -165,6 +180,13 @@ llm:
 - `AutoRewriteResult` dataclass for structured success/failure results
 
 **Skill** (`skill.py`): Claude Code skill installation (deprecated). Loads `SKILL.md` from package resources and installs to `~/.claude/skills/crier/`. Superseded by the crier Claude Code plugin available from the queelius-plugins marketplace.
+
+**Crier Plugin** (separate repo at `~/github/alex-claude-plugins/crier/`): the user-facing Claude Code integration. Composed of:
+- `skills/crier/SKILL.md`: judgment context (rewrite voice, platform culture). Intentionally short (~90 lines); MCP tools are self-describing so the skill doesn't repeat the CLI reference.
+- `commands/crier.md`: the `/crier` slash command for interactive workflows.
+- `agents/cross-poster.md`: autonomous bulk-publishing agent. Calls MCP tools directly (not Bash).
+- `agents/auditor.md`: read-only analysis agent (gap analysis, performance review, staleness, failure triage).
+- `.mcp.json`: registers the `crier mcp` stdio server with the plugin.
 
 ## Key Features
 
@@ -539,6 +561,28 @@ checks:
   short-body: disabled      # Allow short posts
 ```
 
+## Non-Obvious Conventions
+
+These conventions are not visible from reading any single file. Violating them will cause regressions.
+
+**Token-as-source-of-truth (MCP destructive ops).** In `crier_publish` and `crier_delete`, step 2 reads ALL operation parameters from the consumed token. Caller arguments on step 2 are intentionally ignored. This prevents a token-substitution bypass. If you add a new parameter to step 1, you MUST add it to the token's `details` dict and read it back in step 2. See `_create_token` / `_consume_token` in `mcp_server.py` and the `test_*_step2_token_overrides_caller_args` regression tests.
+
+**`_resolve_slug` dual-key dispatch.** Every public registry function that takes a "key" parameter (named `canonical_url` for backwards compat) actually accepts either a slug or a canonical_url. Internally it goes through `_resolve_slug(conn, key)` which tries the slug primary-key lookup first. Do not assume the parameter is one or the other; use it as opaque.
+
+**Failure rows masquerade as publications.** `record_failure` writes a row to the `publications` table with `platform_id IS NULL`. SQL queries that want "real" publications must filter `WHERE platform_id IS NOT NULL AND deleted_at IS NULL`. Forgetting this filter will count failed attempts as successful publications.
+
+**UPSERT, not `INSERT OR REPLACE`.** `INSERT OR REPLACE` triggers `ON DELETE CASCADE` on the stats table and silently resets unlisted columns. Use `INSERT ... ON CONFLICT DO UPDATE SET` and explicitly list every column that should reset on conflict (`deleted_at = NULL`, `last_error = NULL`, etc.). Locked in by `TestDeletionPreservesHistory` regression tests.
+
+**Lazy imports in `mcp_server.py`.** Top-level imports are kept minimal so MCP startup is fast (tool-list time matters). Most module imports happen inside tool functions. This is intentional, not laziness.
+
+**Article reconstruction via `dataclasses.replace`.** When applying a rewrite to an `Article`, use `_apply_rewrite(article, content)` (in `mcp_server.py`) or `dataclasses.replace(article, body=..., is_rewrite=True)` directly. Manually constructing `Article(...)` will silently drop fields if `Article` ever grows new attributes.
+
+**Short-form platform detection via class attribute.** `is_short_form_platform(name)` reads `PLATFORMS[name].is_short_form` (a class attribute on the `Platform` subclass). User plugins opt in by setting `is_short_form = True` on their class. Do NOT add a hardcoded set in `config.py`.
+
+**Registry path is global, content paths are per-site.** `get_db_path()` returns `~/.config/crier/crier.db` (overridable via `CRIER_DB`). `get_content_paths()` returns paths relative to `get_project_root()` (which is `site_root` from config, not CWD). Don't conflate them.
+
+**No `.crier/registry.yaml`.** The registry is SQLite. Old YAML registries can be migrated via `migrate_yaml_to_sqlite()` from `registry.py`.
+
 ## Adding a New Platform
 
 1. Create `platforms/newplatform.py` implementing the `Platform` abstract class
@@ -565,7 +609,7 @@ Discovery is handled by `_discover_user_platforms()` in `platforms/__init__.py`,
 
 ## Testing
 
-Tests are in `tests/` with 1163 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, MCP, and plugin discovery.
+Tests are in `tests/` with 1212 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, MCP (62 tests), and plugin discovery.
 
 **Running tests:**
 ```bash
