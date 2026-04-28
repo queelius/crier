@@ -9,6 +9,20 @@ from dataclasses import dataclass, replace
 from .platforms.base import Article
 from .utils import truncate_at_sentence
 
+__all__ = ["AutoRewriteResult", "apply_rewrite", "auto_rewrite_for_platform"]
+
+
+def apply_rewrite(article: Article, new_body: str) -> Article:
+    """Return a copy of article with body replaced and is_rewrite=True.
+
+    Single source of truth for "the article has been rewritten for a
+    platform". Used by both the auto-rewrite retry loop and the MCP
+    server's manual rewrite path. Using ``dataclasses.replace`` ensures
+    new Article fields are picked up automatically without manual
+    constructor maintenance.
+    """
+    return replace(article, body=new_body, is_rewrite=True)
+
 
 @dataclass
 class AutoRewriteResult:
@@ -106,7 +120,7 @@ def auto_rewrite_for_platform(
                 )
             return AutoRewriteResult(
                 success=True,
-                article=_rewritten_article(article, final_text),
+                article=apply_rewrite(article, final_text),
                 rewrite_text=final_text,
             )
 
@@ -120,7 +134,7 @@ def auto_rewrite_for_platform(
                 )
             return AutoRewriteResult(
                 success=True,
-                article=_rewritten_article(article, truncated),
+                article=apply_rewrite(article, truncated),
                 rewrite_text=truncated,
             )
 
@@ -139,8 +153,3 @@ def auto_rewrite_for_platform(
             success=False,
             error=f"Auto-rewrite failed: {e}",
         )
-
-
-def _rewritten_article(original: Article, new_body: str) -> Article:
-    """Create a new Article with rewritten body, preserving metadata."""
-    return replace(original, body=new_body, is_rewrite=True)

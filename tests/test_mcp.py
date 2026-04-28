@@ -573,7 +573,41 @@ class TestCrierDeleteStep2:
 
         result = crier_delete("post-0", platform="devto")
         assert "error" in result
-        assert "already deleted" in result["error"].lower()
+
+    def test_delete_skips_failure_only_rows_in_delete_all(self, mcp_registry):
+        """delete_all must skip failure-only entries (platform_id IS NULL).
+
+        Failure rows from record_failure surface in _article_row_to_dict's
+        platforms map but are not real publications. CLAUDE.md documents
+        this convention.
+        """
+        from crier.registry import record_publication, record_failure
+
+        # Article with one real publication on devto and a failure-only row on hashnode
+        record_publication(
+            canonical_url="https://example.com/x/", platform="devto",
+            article_id="123", url="https://dev.to/x", title="Article X",
+        )
+        record_failure(
+            canonical_url="https://example.com/x/", platform="hashnode",
+            error_msg="API down", title="Article X",
+        )
+
+        # Step 1: preview should only target devto
+        step1 = crier_delete("article-x", delete_all=True)
+        assert step1.get("confirmation_required") is True
+        assert step1["preview"]["platforms_to_delete"] == ["devto"]
+
+    def test_delete_rejects_failure_only_single_platform(self, mcp_registry):
+        """Single-platform delete must reject a failure-only row as 'not published'."""
+        from crier.registry import record_failure
+        record_failure(
+            canonical_url="https://example.com/y/", platform="bluesky",
+            error_msg="Auth failed", title="Article Y",
+        )
+        result = crier_delete("article-y", platform="bluesky")
+        assert "error" in result
+        assert "not published" in result["error"]
 
 
 class TestCrierStatsValidation:

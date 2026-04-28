@@ -35,7 +35,6 @@ Tools (17):
         crier_stats_refresh Fetch fresh stats from platform API
 """
 
-import dataclasses
 import json
 import random
 import secrets
@@ -95,15 +94,6 @@ def _resolve_file(file_path: str) -> Path | None:
     if resolved.is_file():
         return resolved
     return None
-
-
-def _apply_rewrite(article, rewrite_content: str):
-    """Return a new Article with body replaced by the rewrite content."""
-    return dataclasses.replace(
-        article,
-        body=rewrite_content,
-        is_rewrite=True,
-    )
 
 
 # ============================================================================
@@ -593,6 +583,111 @@ def crier_check(
 # ============================================================================
 
 
+def _prepare_publish(
+    file_path: str,
+    platform: str,
+    rewrite_content: str | None,
+):
+    """Validate inputs and load the article for crier_publish.
+
+    Shared by step 1 (preview + token) and step 2 (execute). Returns either
+    an error dict (caller should return it as-is) or a tuple of
+    ``(resolved_path, article, api_key, is_rewritten, posted_content)``.
+
+    The rewrite, when provided, is applied here so both branches see the
+    final Article that will be posted.
+    """
+    from .converters import parse_markdown_file
+    from .config import get_api_key, get_platform_mode
+
+    err = _validate_platform(platform)
+    if err:
+        return {"error": err}
+
+    resolved = _resolve_file(file_path)
+    if not resolved:
+        return {"error": f"File not found: {file_path}"}
+
+    try:
+        article = parse_markdown_file(str(resolved))
+    except Exception as e:
+        return {"error": f"Failed to parse {file_path}: {e}"}
+
+    if not article.title:
+        return {"error": "Article has no title"}
+
+    api_key = get_api_key(platform)
+    if not api_key:
+        return {"error": f"No API key configured for {platform}"}
+
+    mode = get_platform_mode(platform)
+    if mode != "api":
+        return {"error": f"{platform} is in {mode} mode (not API). Use CLI for manual/import."}
+
+    is_rewritten = bool(rewrite_content)
+    posted_content = rewrite_content
+    if rewrite_content:
+        from .rewrite import apply_rewrite
+        article = apply_rewrite(article, rewrite_content)
+
+    return resolved, article, api_key, is_rewritten, posted_content
+
+
+def _execute_publish(
+    resolved: Path,
+    article,
+    platform: str,
+    api_key: str,
+    is_rewritten: bool,
+    posted_content: str | None,
+    rewrite_author: str | None,
+) -> dict:
+    """Run the platform publish call and record the outcome.
+
+    Records success via record_publication and any failure (exception or
+    PublishResult.success=False) via record_failure, mirroring CLI publish
+    semantics. Returns the MCP-shaped result dict.
+    """
+    from .platforms import get_platform
+    from .registry import record_failure, record_publication
+
+    canonical = article.canonical_url
+
+    try:
+        platform_obj = get_platform(platform)(api_key)
+        result = platform_obj.publish(article)
+    except Exception as e:
+        if canonical:
+            record_failure(canonical, platform, str(e), article.title, str(resolved))
+        return {"error": f"Publish failed: {e}"}
+
+    if not result.success:
+        if canonical and result.error:
+            record_failure(canonical, platform, result.error, article.title, str(resolved))
+        return {"error": f"Publish failed: {result.error}"}
+
+    if canonical:
+        record_publication(
+            canonical_url=canonical,
+            platform=platform,
+            article_id=result.article_id,
+            url=result.url,
+            title=article.title,
+            source_file=str(resolved),
+            rewritten=is_rewritten,
+            rewrite_author=rewrite_author,
+            posted_content=posted_content,
+        )
+
+    return {
+        "success": True,
+        "platform": platform,
+        "title": article.title,
+        "article_id": result.article_id,
+        "url": result.url,
+    }
+
+
 @mcp.tool()
 def crier_publish(
     file_path: str,
@@ -623,115 +718,63 @@ def crier_publish(
                       rewrite_content="Interesting take on X...",
                       rewrite_author="claude-code")
     """
-    from .converters import parse_markdown_file
-    from .config import get_api_key, get_platform_mode
-    from .platforms import get_platform
-    from .registry import record_publication, record_failure, is_published
-
-    # Step 2: token is the source of truth. Ignore caller args to prevent bypass.
+    # Step 2: token is the source of truth. Caller args are ignored to prevent
+    # token-substitution bypass; see the test_*_step2_token_overrides_caller_args
+    # regressions in tests/test_mcp.py.
     if confirmation_token:
         details = _consume_token(confirmation_token, "publish")
         if not details:
             return {"error": "Invalid or expired confirmation token. Request a new one."}
-        file_path = details["file"]
-        platform = details["platform"]
-        rewrite_content = details.get("rewrite_content")
-        rewrite_author = details.get("rewrite_author")
 
-    # Validate platform and resolve file (used by both step 1 and step 2)
-    err = _validate_platform(platform)
-    if err:
-        return {"error": err}
+        prepared = _prepare_publish(
+            details["file"],
+            details["platform"],
+            details.get("rewrite_content"),
+        )
+        if isinstance(prepared, dict):
+            return prepared
+        resolved, article, api_key, is_rewritten, posted_content = prepared
 
-    resolved = _resolve_file(file_path)
-    if not resolved:
-        return {"error": f"File not found: {file_path}"}
+        return _execute_publish(
+            resolved, article, details["platform"], api_key,
+            is_rewritten, posted_content, details.get("rewrite_author"),
+        )
 
-    # Parse article
-    try:
-        article = parse_markdown_file(str(resolved))
-    except Exception as e:
-        return {"error": f"Failed to parse {file_path}: {e}"}
+    # Step 1 / dry_run: validate, build preview, optionally mint a token.
+    prepared = _prepare_publish(file_path, platform, rewrite_content)
+    if isinstance(prepared, dict):
+        return prepared
+    resolved, article, _api_key, is_rewritten, _posted = prepared
 
-    if not article.title:
-        return {"error": "Article has no title"}
-
-    # Check API key and mode
-    api_key = get_api_key(platform)
-    if not api_key:
-        return {"error": f"No API key configured for {platform}"}
-
-    mode = get_platform_mode(platform)
-    if mode != "api":
-        return {"error": f"{platform} is in {mode} mode (not API). Use CLI for manual/import."}
-
-    # Apply rewrite if provided
-    is_rewritten = bool(rewrite_content)
-    posted_content = rewrite_content
-    if rewrite_content:
-        article = _apply_rewrite(article, rewrite_content)
-
-    # Build preview
+    from .registry import is_published
+    canonical = article.canonical_url
     preview = {
         "file": str(resolved),
         "title": article.title,
         "platform": platform,
-        "canonical_url": article.canonical_url,
+        "canonical_url": canonical,
         "is_rewrite": is_rewritten,
         "body_length": len(article.body) if article.body else 0,
-        "already_published": is_published(
-            article.canonical_url or "", platform
-        ) if article.canonical_url else False,
+        "already_published": is_published(canonical, platform) if canonical else False,
     }
 
     if dry_run:
         return {"dry_run": True, "preview": preview}
 
-    # Step 1: no token yet -> snapshot args into token and return preview
-    if not confirmation_token:
-        token = _create_token("publish", {
-            "file": str(resolved), "platform": platform,
-            "rewrite_content": rewrite_content, "rewrite_author": rewrite_author,
-        })
-        return {
-            "confirmation_required": True,
-            "preview": preview,
-            "confirmation_token": token,
-            "message": f"Call again with confirmation_token to publish '{article.title}' to {platform}",
-        }
-
-    # Step 2: execute publish
-    try:
-        platform_obj = get_platform(platform)(api_key)
-        result = platform_obj.publish(article)
-    except Exception as e:
-        if article.canonical_url:
-            record_failure(article.canonical_url, platform, str(e), article.title, str(resolved))
-        return {"error": f"Publish failed: {e}"}
-
-    if not result.success:
-        if article.canonical_url and result.error:
-            record_failure(article.canonical_url, platform, result.error, article.title, str(resolved))
-        return {"error": f"Publish failed: {result.error}"}
-
-    if article.canonical_url:
-        record_publication(
-            canonical_url=article.canonical_url,
-            platform=platform,
-            article_id=result.article_id,
-            url=result.url,
-            title=article.title,
-            source_file=str(resolved),
-            rewritten=is_rewritten,
-            rewrite_author=rewrite_author,
-            posted_content=posted_content,
-        )
-    return {
-        "success": True,
+    token = _create_token("publish", {
+        "file": str(resolved),
         "platform": platform,
-        "title": article.title,
-        "article_id": result.article_id,
-        "url": result.url,
+        "rewrite_content": rewrite_content,
+        "rewrite_author": rewrite_author,
+    })
+    return {
+        "confirmation_required": True,
+        "preview": preview,
+        "confirmation_token": token,
+        "message": (
+            f"Call again with confirmation_token to publish "
+            f"'{article.title}' to {platform}"
+        ),
     }
 
 
@@ -756,94 +799,119 @@ def crier_delete(
         # Delete from all platforms
         crier_delete("code-without-purpose", delete_all=True)
     """
-    from .registry import get_article, record_deletion, get_publication_id
-    from .config import get_api_key, get_platform_mode
-    from .platforms import get_platform
+    from .registry import get_article
 
-    # Step 2: token is the source of truth. Ignore caller args.
+    # Step 2: token is the source of truth. Caller args are ignored to prevent
+    # token-substitution bypass; see test_delete_step2_token_overrides_caller_key.
     if confirmation_token:
         details = _consume_token(confirmation_token, "delete")
         if not details:
             return {"error": "Invalid or expired confirmation token."}
-        key = details["key"]
-        target_platforms = details["platforms"]
-        article = get_article(key)
+        article = get_article(details["key"])
         if not article:
-            return {"error": f"Article not found: {key}"}
-    else:
-        if platform:
-            err = _validate_platform(platform)
-            if err:
-                return {"error": err}
+            return {"error": f"Article not found: {details['key']}"}
+        return {"deleted": _execute_deletes(article, details["platforms"])}
 
-        if not platform and not delete_all:
-            return {"error": "Specify platform or delete_all=True"}
+    # Step 1: validate, resolve targets, return preview + token.
+    if platform:
+        err = _validate_platform(platform)
+        if err:
+            return {"error": err}
 
-        article = get_article(key)
-        if not article:
-            return {"error": f"Article not found: {key}"}
+    if not platform and not delete_all:
+        return {"error": "Specify platform or delete_all=True"}
 
-        # Determine platforms to delete from
-        target_platforms = []
-        if delete_all:
-            target_platforms = [
-                p for p, data in article.get("platforms", {}).items()
-                if "deleted_at" not in data
-            ]
-        elif platform:
-            pdata = article.get("platforms", {}).get(platform)
-            if not pdata:
-                return {"error": f"'{article['title']}' not published to {platform}"}
-            if "deleted_at" in pdata:
-                return {"error": f"'{article['title']}' on {platform} is already deleted"}
-            target_platforms = [platform]
+    article = get_article(key)
+    if not article:
+        return {"error": f"Article not found: {key}"}
 
-        if not target_platforms:
-            return {"error": "Nothing to delete"}
+    target_platforms, err_msg = _resolve_delete_targets(article, platform, delete_all)
+    if err_msg:
+        return {"error": err_msg}
 
-        preview = {
+    token = _create_token("delete", {"key": key, "platforms": target_platforms})
+    return {
+        "confirmation_required": True,
+        "preview": {
             "title": article["title"],
             "slug": article["slug"],
             "platforms_to_delete": target_platforms,
-        }
+        },
+        "confirmation_token": token,
+        "message": f"Call again with confirmation_token to delete from {target_platforms}",
+    }
 
-        # Step 1: snapshot into token and return preview
-        token = _create_token("delete", {"key": key, "platforms": target_platforms})
-        return {
-            "confirmation_required": True,
-            "preview": preview,
-            "confirmation_token": token,
-            "message": f"Call again with confirmation_token to delete from {target_platforms}",
-        }
 
-    # Step 2: execute deletions
-    results = []
+def _resolve_delete_targets(
+    article: dict,
+    platform: str | None,
+    delete_all: bool,
+) -> tuple[list[str], str | None]:
+    """Determine which platforms a delete should target.
+
+    Returns ``(target_platforms, error)``: at most one is non-empty.
+    """
+    # Filter out failure-only rows (platform_id IS NULL) and soft-deleted rows.
+    # _article_row_to_dict surfaces all publication rows; we only want real
+    # publications. See the failure-row convention in CLAUDE.md.
+    def _is_real_publication(data: dict) -> bool:
+        return "deleted_at" not in data and bool(data.get("id"))
+
+    if delete_all:
+        targets = [
+            p for p, data in article.get("platforms", {}).items()
+            if _is_real_publication(data)
+        ]
+        if not targets:
+            return [], "Nothing to delete"
+        return targets, None
+
+    # Single platform path; caller ensured platform is set.
+    pdata = article.get("platforms", {}).get(platform)
+    if not pdata or not pdata.get("id"):
+        return [], f"'{article['title']}' not published to {platform}"
+    if "deleted_at" in pdata:
+        return [], f"'{article['title']}' on {platform} is already deleted"
+    return [platform], None
+
+
+def _execute_deletes(article: dict, target_platforms: list[str]) -> list[dict]:
+    """Run platform delete calls for the given article, recording each outcome.
+
+    Always records a deletion in the registry, even when the platform call
+    fails or the platform is in non-API mode -- the user has already consented
+    via the confirmation token, so the registry should reflect that intent.
+    """
+    from .config import get_api_key, get_platform_mode
+    from .platforms import get_platform
+    from .registry import get_publication_id, record_deletion
+
+    canonical = article.get("canonical_url") or article["slug"]
+    results: list[dict] = []
+
     for plat in target_platforms:
-        canonical = article.get("canonical_url") or article["slug"]
         pub_id = get_publication_id(canonical, plat)
         api_key = get_api_key(plat)
-        mode = get_platform_mode(plat)
 
-        if mode != "api" or not api_key or not pub_id:
+        # Non-API mode, missing key, or missing platform_id -> only mark in registry.
+        if get_platform_mode(plat) != "api" or not api_key or not pub_id:
             record_deletion(canonical, plat)
             results.append({"platform": plat, "status": "marked_deleted"})
             continue
 
         try:
-            platform_cls = get_platform(plat)
-            platform_obj = platform_cls(api_key)
-            del_result = platform_obj.delete(pub_id)
+            del_result = get_platform(plat)(api_key).delete(pub_id)
             record_deletion(canonical, plat)
             results.append({
                 "platform": plat,
                 "status": "deleted" if del_result.success else "marked_deleted",
-                "error": del_result.error if not del_result.success else None,
+                "error": None if del_result.success else del_result.error,
             })
         except Exception as e:
             record_deletion(canonical, plat)
             results.append({"platform": plat, "status": "marked_deleted", "error": str(e)})
 
-    return {"deleted": results}
+    return results
 
 
 @mcp.tool()

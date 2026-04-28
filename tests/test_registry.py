@@ -690,6 +690,73 @@ class TestDeletionPreservesHistory:
         assert "posted_content" not in pdata
         assert pdata.get("thread_ids") == ["t1", "t2"]
 
+    def test_record_thread_clears_deleted_state(self, tmp_registry):
+        """record_thread_publication UPSERT must clear deleted_at on conflict.
+
+        Regression: INSERT OR REPLACE used to clear it implicitly. The UPSERT
+        rewrite must enumerate deleted_at = NULL to preserve resurrection.
+        """
+        from crier.registry import record_thread_publication
+        record_publication(
+            canonical_url="https://example.com/article", platform="bluesky",
+            article_id="single", url="https://bsky.app/s",
+        )
+        record_deletion("https://example.com/article", "bluesky")
+        assert is_deleted("https://example.com/article", "bluesky") is True
+
+        # Re-publish as a thread; UPSERT should clear deleted_at
+        record_thread_publication(
+            canonical_url="https://example.com/article", platform="bluesky",
+            root_id="root", root_url="https://bsky.app/r",
+            thread_ids=["t1", "t2"],
+        )
+        assert is_deleted("https://example.com/article", "bluesky") is False
+        assert is_published("https://example.com/article", "bluesky") is True
+
+    def test_save_stats_does_not_resurrect_deleted_publication(self, tmp_registry):
+        """save_stats must not affect publication state.
+
+        Stats live in a separate table, but a buggy UPSERT could cascade. This
+        test pins that updating stats on a soft-deleted publication does not
+        resurrect it.
+        """
+        record_publication(
+            canonical_url="https://example.com/article", platform="devto",
+            article_id="123", url="https://dev.to/article",
+        )
+        record_deletion("https://example.com/article", "devto")
+        assert is_deleted("https://example.com/article", "devto") is True
+
+        # save_stats on deleted publication: should be a no-op or update stats
+        # without changing publication state.
+        save_stats(
+            "https://example.com/article", "devto",
+            views=100, likes=10,
+        )
+        assert is_deleted("https://example.com/article", "devto") is True
+        assert is_published("https://example.com/article", "devto") is False
+
+    def test_record_failure_does_not_clear_deleted_state(self, tmp_registry):
+        """record_failure UPSERT must preserve deleted_at on a successful publication.
+
+        A failed retry attempt must not silently undelete the prior soft-delete.
+        The UPSERT only updates last_error/last_error_at on conflict; deleted_at
+        must stay set.
+        """
+        record_publication(
+            canonical_url="https://example.com/article", platform="devto",
+            article_id="123", url="https://dev.to/article",
+        )
+        record_deletion("https://example.com/article", "devto")
+        assert is_deleted("https://example.com/article", "devto") is True
+
+        # Record a failure on the same (slug, platform); deleted_at should remain
+        record_failure(
+            canonical_url="https://example.com/article", platform="devto",
+            error_msg="API timeout",
+        )
+        assert is_deleted("https://example.com/article", "devto") is True
+
 
 class TestRemoveVsDelete:
     """Tests contrasting remove (hard delete) vs record_deletion (soft delete)."""

@@ -2,7 +2,6 @@
 
 import os
 import random
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from .config import (
 )
 from .converters import parse_markdown_file
 from .platforms import PLATFORMS, get_platform
+from .rewrite import apply_rewrite
 from .utils import (
     is_in_content_paths as _is_in_content_paths,
     parse_date_filter as _parse_date_filter_impl,
@@ -740,8 +740,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
     if rewrite_content:
         is_rewritten = True
         posted_content = rewrite_content
-        # Create a modified article with the rewritten content
-        article = replace(article, body=rewrite_content, is_rewrite=True)
+        article = apply_rewrite(article, rewrite_content)
 
     # Require canonical_url for registry tracking
     if not article.canonical_url:
@@ -4126,9 +4125,12 @@ def schedule_run(dry_run: bool, json_output: bool):
                 console.print(f"[red]✗[/red] {post.id}: No API key for {platform_name}")
             continue
 
-        # Handle rewrite if specified
+        # Handle rewrite if specified.
+        # Use apply_rewrite so is_rewrite=True is set; short-form platforms
+        # branch on that flag and would otherwise discard the body.
+        is_rewritten = bool(post.rewrite)
         if post.rewrite:
-            article = replace(article, body=post.rewrite)
+            article = apply_rewrite(article, post.rewrite)
 
         # Publish
         try:
@@ -4148,6 +4150,8 @@ def schedule_run(dry_run: bool, json_output: bool):
                         url=result.url,
                         title=article.title,
                         source_file=str(file_path),
+                        rewritten=is_rewritten,
+                        posted_content=post.rewrite if is_rewritten else None,
                     )
 
                 results.append({

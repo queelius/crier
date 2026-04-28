@@ -2096,6 +2096,56 @@ class TestScheduleCommands:
         data = json.loads(result.output)
         assert data["posts"] == [] or data["count"] == 0
 
+    def test_schedule_run_applies_rewrite_with_is_rewrite_flag(
+        self, runner, mock_config_and_registry
+    ):
+        """Scheduler must set is_rewrite=True when applying a rewrite.
+
+        Regression: short-form platforms branch on article.is_rewrite. If the
+        scheduler's apply_rewrite forgets that flag, the rewrite content gets
+        silently discarded and the platform falls back to title+description+URL.
+        """
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        from crier.platforms.base import PublishResult
+        from crier.scheduler import create_scheduled_post
+
+        # Create a post file
+        posts_dir = mock_config_and_registry["posts_dir"]
+        md = posts_dir / "scheduled-test.md"
+        md.write_text(
+            "---\ntitle: Scheduled Test\n"
+            "canonical_url: https://example.com/scheduled/\n---\n"
+            + "X" * 1000
+        )
+
+        # Schedule a publish-with-rewrite for a past time so it's due now
+        past = datetime.now(timezone.utc) - timedelta(minutes=5)
+        rewrite_text = "Hand-crafted short-form rewrite."
+        create_scheduled_post(
+            file_path=str(md),
+            platform="bluesky",
+            scheduled_time=past,
+            rewrite=rewrite_text,
+        )
+
+        # Run scheduler with mocked platform.publish so we can inspect the Article
+        with patch("crier.platforms.bluesky.Bluesky.publish") as mock_pub:
+            mock_pub.return_value = PublishResult(
+                success=True, platform="bluesky",
+                article_id="bsky-1", url="https://bsky.app/post/1",
+            )
+            result = runner.invoke(cli, ["schedule", "run"])
+
+        assert result.exit_code == 0
+        mock_pub.assert_called_once()
+        article_arg = mock_pub.call_args[0][0]
+        assert article_arg.is_rewrite is True, (
+            "Scheduler must set is_rewrite=True; otherwise short-form platforms "
+            "discard the rewrite body and use title+description+URL instead."
+        )
+        assert article_arg.body == rewrite_text
+
 
 class TestStatusDeletedArticle:
     """Tests for status command with deleted articles."""
