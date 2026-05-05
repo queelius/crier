@@ -65,7 +65,14 @@ class FediversePlatform(Platform):
         super().__init__(api_key)
 
         if ":" in api_key and instance is None:
-            self.instance, self.access_token = api_key.split(":", 1)
+            # api_key may already include a scheme ("http://localhost:3000:tok"
+            # is legitimate for self-hosted dev instances). When it does, the
+            # token separator is the LAST colon; otherwise the FIRST colon
+            # separates a bare host from its token.
+            if api_key.startswith(("http://", "https://")):
+                self.instance, self.access_token = api_key.rsplit(":", 1)
+            else:
+                self.instance, self.access_token = api_key.split(":", 1)
         else:
             self.instance = instance or self.default_instance
             self.access_token = api_key
@@ -88,8 +95,12 @@ class FediversePlatform(Platform):
 
     # --- post composition helpers ---------------------------------------
 
-    def _compose_text(self, article: Article) -> str:
-        """Build the post text from an Article."""
+    def _compose_text(self, article: Article, *, include_hashtags: bool = True) -> str:
+        """Build the post text from an Article.
+
+        ``include_hashtags`` is true for new posts and false for edits, so
+        that updating a status doesn't append a hashtag block.
+        """
         if article.is_rewrite:
             return self._append_canonical_url(article.body, article)
 
@@ -98,22 +109,33 @@ class FediversePlatform(Platform):
             text_parts.append(article.description)
         if article.canonical_url:
             text_parts.append(article.canonical_url)
-        if article.tags:
+        if include_hashtags and article.tags:
             hashtags = " ".join(f"#{tag.replace('-', '')}" for tag in article.tags[:5])
             text_parts.append(hashtags)
         return "\n\n".join(text_parts)
 
-    def _compose_update_text(self, article: Article) -> str:
-        """Build the post text for an update (no hashtags)."""
-        if article.is_rewrite:
-            return self._append_canonical_url(article.body, article)
+    def _publish_result(self, resp: Any, ok_codes: tuple[int, ...]) -> PublishResult:
+        """Convert a status response into a PublishResult.
 
-        text_parts = [article.title]
-        if article.description:
-            text_parts.append(article.description)
-        if article.canonical_url:
-            text_parts.append(article.canonical_url)
-        return "\n\n".join(text_parts)
+        When the response indicates success, ``article_id`` is set from the
+        body's ``id`` field; if the field is missing, it stays ``None``
+        rather than the literal string ``"None"``, so the registry doesn't
+        accumulate garbage IDs from misbehaving servers.
+        """
+        if resp.status_code in ok_codes:
+            result = resp.json()
+            raw_id = result.get("id")
+            return PublishResult(
+                success=True,
+                platform=self.name,
+                article_id=str(raw_id) if raw_id is not None else None,
+                url=result.get("url"),
+            )
+        return PublishResult(
+            success=False,
+            platform=self.name,
+            error=f"{resp.status_code}: {resp.text}",
+        )
 
     @staticmethod
     def _strip_html(content_html: str) -> str:
@@ -138,48 +160,25 @@ class FediversePlatform(Platform):
         text = self._compose_text(article)
 
         if error := self._check_content_length(text):
-            return PublishResult(
-                success=False,
-                platform=self.name,
-                error=error,
-            )
-
-        data = {
-            "status": text,
-            "visibility": "public" if article.published else "private",
-        }
+            return PublishResult(success=False, platform=self.name, error=error)
 
         resp = self.retry_request(
             "post",
             f"{self.instance}/api/v1/statuses",
             headers=self.headers,
-            json=data,
+            json={
+                "status": text,
+                "visibility": "public" if article.published else "private",
+            },
         )
-
-        if resp.status_code in (200, 201):
-            result = resp.json()
-            return PublishResult(
-                success=True,
-                platform=self.name,
-                article_id=str(result.get("id")),
-                url=result.get("url"),
-            )
-        return PublishResult(
-            success=False,
-            platform=self.name,
-            error=f"{resp.status_code}: {resp.text}",
-        )
+        return self._publish_result(resp, ok_codes=(200, 201))
 
     def update(self, article_id: str, article: Article) -> PublishResult:
         """Edit an existing status (Mastodon-API supports edits)."""
-        text = self._compose_update_text(article)
+        text = self._compose_text(article, include_hashtags=False)
 
         if error := self._check_content_length(text):
-            return PublishResult(
-                success=False,
-                platform=self.name,
-                error=error,
-            )
+            return PublishResult(success=False, platform=self.name, error=error)
 
         resp = self.retry_request(
             "put",
@@ -187,20 +186,7 @@ class FediversePlatform(Platform):
             headers=self.headers,
             json={"status": text},
         )
-
-        if resp.status_code == 200:
-            result = resp.json()
-            return PublishResult(
-                success=True,
-                platform=self.name,
-                article_id=str(result.get("id")),
-                url=result.get("url"),
-            )
-        return PublishResult(
-            success=False,
-            platform=self.name,
-            error=f"{resp.status_code}: {resp.text}",
-        )
+        return self._publish_result(resp, ok_codes=(200,))
 
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
         """List your recent statuses."""
@@ -289,16 +275,26 @@ class FediversePlatform(Platform):
         post_urls: list[str] = []
         reply_to_id: str | None = None
 
+        def thread_result(success: bool, error: str | None = None) -> ThreadPublishResult:
+            return ThreadPublishResult(
+                success=success,
+                platform=self.name,
+                error=error,
+                root_id=post_ids[0] if post_ids else None,
+                root_url=post_urls[0] if post_urls else None,
+                post_ids=post_ids,
+                post_urls=post_urls,
+                results=results,
+            )
+
         for i, post_text in enumerate(posts):
             if len(post_text) > self.max_content_length:
-                return ThreadPublishResult(
+                return thread_result(
                     success=False,
-                    platform=self.name,
                     error=(
                         f"Post {i + 1} exceeds character limit "
                         f"({len(post_text)} > {self.max_content_length})"
                     ),
-                    results=results,
                 )
 
             data: dict[str, Any] = {"status": post_text, "visibility": "public"}
@@ -311,50 +307,17 @@ class FediversePlatform(Platform):
                 headers=self.headers,
                 json=data,
             )
+            post_result = self._publish_result(resp, ok_codes=(200, 201))
+            results.append(post_result)
 
-            if resp.status_code in (200, 201):
-                result = resp.json()
-                status_id = str(result.get("id"))
-                url = result.get("url")
-                reply_to_id = status_id
-                post_ids.append(status_id)
-                post_urls.append(url)
-                results.append(
-                    PublishResult(
-                        success=True,
-                        platform=self.name,
-                        article_id=status_id,
-                        url=url,
-                    )
-                )
-            else:
-                results.append(
-                    PublishResult(
-                        success=False,
-                        platform=self.name,
-                        error=f"{resp.status_code}: {resp.text}",
-                    )
-                )
-                return ThreadPublishResult(
+            if not post_result.success:
+                return thread_result(
                     success=False,
-                    platform=self.name,
-                    error=(
-                        f"Failed on post {i + 1}: "
-                        f"{resp.status_code}: {resp.text}"
-                    ),
-                    root_id=post_ids[0] if post_ids else None,
-                    root_url=post_urls[0] if post_urls else None,
-                    post_ids=post_ids,
-                    post_urls=post_urls,
-                    results=results,
+                    error=f"Failed on post {i + 1}: {resp.status_code}: {resp.text}",
                 )
 
-        return ThreadPublishResult(
-            success=True,
-            platform=self.name,
-            root_id=post_ids[0] if post_ids else None,
-            root_url=post_urls[0] if post_urls else None,
-            post_ids=post_ids,
-            post_urls=post_urls,
-            results=results,
-        )
+            reply_to_id = post_result.article_id
+            post_ids.append(post_result.article_id)
+            post_urls.append(post_result.url)
+
+        return thread_result(success=True)

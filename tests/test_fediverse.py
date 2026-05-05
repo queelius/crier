@@ -24,6 +24,21 @@ from crier.platforms.mastodon import Mastodon
 from crier.platforms.pleroma import Pleroma
 
 
+# --- Fixtures ----------------------------------------------------------
+
+
+@pytest.fixture
+def mastodon():
+    """Mastodon configured against its default instance."""
+    return Mastodon("mastodon.social:tok")
+
+
+@pytest.fixture
+def pleroma():
+    """Pleroma configured against a representative instance."""
+    return Pleroma("pleroma.example.com:tok")
+
+
 # --- Discovery and registration ----------------------------------------
 
 
@@ -105,6 +120,25 @@ def test_authorization_header_set():
     assert m.headers["Content-Type"] == "application/json"
 
 
+def test_api_key_with_http_scheme_uses_last_colon():
+    """Self-hosted dev instances often run http:// with non-default ports.
+
+    A naive split(":", 1) would split at the scheme's colon and produce a
+    broken instance ("http") plus a token starting with "//"; the parser
+    must recognize a scheme prefix and use the LAST colon as the token
+    separator instead.
+    """
+    p = Pleroma("http://localhost:3000:devtok")
+    assert p.instance == "http://localhost:3000"
+    assert p.access_token == "devtok"
+
+
+def test_api_key_with_https_scheme_uses_last_colon():
+    p = Pleroma("https://my.pleroma.example:8443:tok123")
+    assert p.instance == "https://my.pleroma.example:8443"
+    assert p.access_token == "tok123"
+
+
 # --- Per-subclass class attributes -------------------------------------
 
 
@@ -124,22 +158,20 @@ def test_class_names_distinct():
 # --- Composition helpers (no network) ----------------------------------
 
 
-def test_compose_text_uses_rewrite_body():
-    m = Mastodon("mastodon.social:tok")
+def test_compose_text_uses_rewrite_body(mastodon):
     article = Article(
         title="Title that should NOT appear",
         body="Custom rewrite body",
         canonical_url="https://example.com/post/",
         is_rewrite=True,
     )
-    text = m._compose_text(article)
+    text = mastodon._compose_text(article)
     assert "Custom rewrite body" in text
     assert "Title that should NOT appear" not in text
     assert "https://example.com/post/" in text
 
 
-def test_compose_text_auto_constructs_when_not_rewrite():
-    m = Mastodon("mastodon.social:tok")
+def test_compose_text_auto_constructs_when_not_rewrite(mastodon):
     article = Article(
         title="My Post",
         body="The full long-form body that we ignore for fediverse posts.",
@@ -148,7 +180,7 @@ def test_compose_text_auto_constructs_when_not_rewrite():
         tags=["python", "long-form-thinking"],
         is_rewrite=False,
     )
-    text = m._compose_text(article)
+    text = mastodon._compose_text(article)
     assert "My Post" in text
     assert "A short description." in text
     assert "https://example.com/post/" in text
@@ -157,14 +189,13 @@ def test_compose_text_auto_constructs_when_not_rewrite():
     assert "#longformthinking" in text
 
 
-def test_compose_text_caps_hashtags_at_five():
-    m = Mastodon("mastodon.social:tok")
+def test_compose_text_caps_hashtags_at_five(mastodon):
     article = Article(
         title="X",
         body="full body unused for tag composition",
         tags=["a", "b", "c", "d", "e", "f", "g"],
     )
-    text = m._compose_text(article)
+    text = mastodon._compose_text(article)
     for tag in "abcde":
         assert f"#{tag}" in text
     for tag in "fg":
@@ -191,7 +222,27 @@ def test_strip_html_collapses_inline_whitespace():
 
 
 @patch("crier.platforms.base.requests.post")
-def test_pleroma_publish_uses_pleroma_instance(mock_post):
+def test_publish_with_missing_id_returns_none_not_string(mock_post):
+    """Misbehaving server returns 201 but no ``id`` field.
+
+    The registry receives ``article_id`` as ``None``, never the literal
+    string ``"None"``, which would silently pollute the publications
+    table with garbage IDs that no platform call could ever resolve.
+    """
+    mock_resp = MagicMock(status_code=201)
+    mock_resp.json.return_value = {"url": "https://mastodon.social/@u/x"}
+    mock_post.return_value = mock_resp
+
+    m = Mastodon("mastodon.social:tok")
+    result = m.publish(Article(title="x", body="hello", is_rewrite=True))
+
+    assert result.success
+    assert result.article_id is None
+    assert result.article_id != "None"
+
+
+@patch("crier.platforms.base.requests.post")
+def test_pleroma_publish_uses_pleroma_instance(mock_post, pleroma):
     """Verify Pleroma instance URL ends up in the request, not mastodon.social."""
     mock_resp = MagicMock(status_code=201)
     mock_resp.json.return_value = {
@@ -200,9 +251,8 @@ def test_pleroma_publish_uses_pleroma_instance(mock_post):
     }
     mock_post.return_value = mock_resp
 
-    p = Pleroma("pleroma.example.com:tok")
     article = Article(title="x", body="hello", is_rewrite=True)
-    result = p.publish(article)
+    result = pleroma.publish(article)
 
     assert result.success
     assert result.platform == "pleroma"
@@ -255,7 +305,7 @@ def test_publish_respects_subclass_max_content_length(mock_post):
 
 
 @patch("crier.platforms.base.requests.get")
-def test_get_stats_returns_engagement_fields(mock_get):
+def test_get_stats_returns_engagement_fields(mock_get, mastodon):
     """get_stats parses favourites/replies/reblogs from the status response."""
     mock_resp = MagicMock(status_code=200)
     mock_resp.json.return_value = {
@@ -266,8 +316,7 @@ def test_get_stats_returns_engagement_fields(mock_get):
     }
     mock_get.return_value = mock_resp
 
-    m = Mastodon("mastodon.social:tok")
-    stats = m.get_stats("x")
+    stats = mastodon.get_stats("x")
     assert stats is not None
     assert stats.likes == 12
     assert stats.comments == 3
@@ -275,7 +324,7 @@ def test_get_stats_returns_engagement_fields(mock_get):
 
 
 @patch("crier.platforms.base.requests.post")
-def test_publish_thread_chains_replies(mock_post):
+def test_publish_thread_chains_replies(mock_post, mastodon):
     """Each post after the first carries in_reply_to_id from the previous."""
     responses = [
         MagicMock(status_code=201),
@@ -287,8 +336,7 @@ def test_publish_thread_chains_replies(mock_post):
     responses[2].json.return_value = {"id": "3", "url": "u3"}
     mock_post.side_effect = responses
 
-    m = Mastodon("mastodon.social:tok")
-    result = m.publish_thread(["one", "two", "three"])
+    result = mastodon.publish_thread(["one", "two", "three"])
 
     assert result.success
     assert result.post_ids == ["1", "2", "3"]
