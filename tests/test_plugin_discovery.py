@@ -212,10 +212,19 @@ class TestPluginShadowsBuiltin:
 class TestDiscoverPackagePlatforms:
     """Tests for _discover_package_platforms() built-in discovery."""
 
-    def test_discovers_all_13_builtins(self):
-        """All 13 built-in platforms are discovered."""
+    def test_discovers_all_builtins(self):
+        """All built-in platforms are discovered.
+
+        Locked to 14: the original 13 plus pleroma, which was added when
+        the Mastodon-API logic was extracted into a FediversePlatform
+        base. The base lives in ``_fediverse.py`` and the leading
+        underscore keeps it out of discovery.
+        """
         result = _discover_package_platforms()
-        assert len(result) == 13
+        assert len(result) == 14
+        # _fediverse is internal; the base class must NOT be registered
+        assert "fediverseplatform" not in result
+        assert "fediverse" not in result
 
     def test_expected_platform_names(self):
         """Discovered platform names match the expected set."""
@@ -223,7 +232,7 @@ class TestDiscoverPackagePlatforms:
         expected = {
             "devto", "bluesky", "mastodon", "hashnode", "medium",
             "linkedin", "ghost", "buttondown", "telegram", "discord",
-            "threads", "wordpress", "twitter",
+            "threads", "wordpress", "twitter", "pleroma",
         }
         assert set(result.keys()) == expected
 

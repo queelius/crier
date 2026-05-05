@@ -81,11 +81,13 @@ ruff format --check src/
 - `format_thread()` adds thread indicators (numbered, emoji, or simple style)
 - Used by Bluesky and Mastodon `publish_thread()` implementations
 
-**Platform Categories** (13 total):
+**Platform Categories** (14 total):
 - Blog: devto, hashnode, medium, ghost, wordpress
 - Newsletter: buttondown
-- Social: bluesky, mastodon, linkedin, threads, twitter (copy-paste mode)
+- Social: bluesky, mastodon, pleroma, linkedin, threads, twitter (copy-paste mode)
 - Announcement: telegram, discord
+
+Mastodon and Pleroma both inherit from `FediversePlatform` (defined in `platforms/_fediverse.py`) which encapsulates the Mastodon-API-compatible REST protocol. The leading underscore on the module name keeps the base class out of platform auto-discovery; only its concrete subclasses (each with their own `name`, `default_instance`, and `max_content_length`) get registered. Adding Akkoma, GoToSocial, or another Mastodon-API-compatible server is a ~10-line subclass.
 
 **Config** (`config.py`): Single global configuration:
 - **Global** (`~/.config/crier/config.yaml`): ALL configuration -- API keys, profiles, content paths, site settings
@@ -593,6 +595,26 @@ These conventions are not visible from reading any single file. Violating them w
 6. Register in `platforms/__init__.py` by adding to `PLATFORMS` dict
 7. Update README.md with API key format
 
+### Adding a Mastodon-API-Compatible Server (Pleroma, Akkoma, GoToSocial, ...)
+
+If the new platform implements Mastodon's REST API (most fediverse servers do), inherit from `FediversePlatform` instead of `Platform` and override only the class attributes that differ:
+
+```python
+from ._fediverse import FediversePlatform
+
+class Akkoma(FediversePlatform):
+    name = "akkoma"
+    description = "Short posts on Akkoma fediverse server"
+    max_content_length = 5000  # adjust per your instance
+    default_instance = None    # users configure per their instance
+```
+
+All request logic (publish, update, list, delete, threads, stats, HTML stripping) is inherited unchanged. Servers that do NOT implement Mastodon's API (Lemmy, PeerTube) need their own platform classes deriving directly from `Platform`.
+
+### Hidden base classes (leading underscore)
+
+Files in `platforms/` that start with `_` are skipped by auto-discovery. Use this for shared base classes that are not themselves user-visible platforms (currently `_fediverse.py`). The class is still importable via standard Python imports; only the registry-builder ignores it.
+
 ### User Plugins
 
 Users can add custom platforms without modifying the crier source:
@@ -609,7 +631,7 @@ Discovery is handled by `_discover_user_platforms()` in `platforms/__init__.py`,
 
 ## Testing
 
-Tests are in `tests/` with 1212 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, MCP (62 tests), and plugin discovery.
+Tests are in `tests/` with 1244 tests covering config, registry, converters, CLI, platforms, scheduler, stats, threading, checker, utils, rewrite, feed, skill, MCP (62 tests), plugin discovery, and the Fediverse abstraction (26 tests).
 
 **Running tests:**
 ```bash

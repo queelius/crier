@@ -979,6 +979,7 @@ class TestPlatformRegistry:
             "ghost": "https://example.com:key_id:key_secret",
             "bluesky": "handle.bsky.social:app_password",
             "mastodon": "mastodon.social:access_token",
+            "pleroma": "pleroma.example.com:access_token",
             "hashnode": "api_key:publication_id",
             "telegram": "bot_token:chat_id",
             "discord": "https://discord.com/api/webhooks/123/abc",
