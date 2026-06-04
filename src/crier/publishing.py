@@ -137,3 +137,59 @@ def prepare_publish(
         rewritten=rewritten, posted_content=posted_content,
         rewrite_author=rewrite_author,
     )
+
+
+def publish_one(
+    file_path: str | Path,
+    platform: str,
+    *,
+    rewrite_content: str | None = None,
+    rewrite_author: str | None = None,
+    auto_rewrite: bool = False,
+    llm_provider=None,
+    auto_rewrite_retry: int = 0,
+    auto_rewrite_truncate: bool = False,
+    draft: bool = False,
+    dry_run: bool = False,
+    silent: bool = True,
+    console=None,
+) -> PublishOutcome:
+    """Publish one file to one api-mode platform.
+
+    Does NOT record to the registry, prompt, or (by default) print. Returns a
+    PublishOutcome wrapping the PublishResult plus rewrite bookkeeping. On
+    dry_run, prepares the article and returns a synthetic success result
+    without calling the platform.
+    """
+    plan = prepare_publish(
+        file_path, platform,
+        rewrite_content=rewrite_content, rewrite_author=rewrite_author,
+        auto_rewrite=auto_rewrite, llm_provider=llm_provider,
+        auto_rewrite_retry=auto_rewrite_retry,
+        auto_rewrite_truncate=auto_rewrite_truncate,
+        draft=draft, silent=silent, console=console,
+    )
+
+    if plan.error:
+        return PublishOutcome(
+            result=PublishResult(success=False, platform=platform, error=plan.error),
+            article=plan.article,
+        )
+
+    if dry_run:
+        return PublishOutcome(
+            result=PublishResult(success=True, platform=platform),
+            article=plan.article, rewritten=plan.rewritten,
+            posted_content=plan.posted_content, rewrite_author=plan.rewrite_author,
+        )
+
+    try:
+        platform_obj = get_platform(platform)(plan.api_key)
+        result = platform_obj.publish(plan.article)
+    except Exception as e:
+        result = PublishResult(success=False, platform=platform, error=str(e))
+
+    return PublishOutcome(
+        result=result, article=plan.article, rewritten=plan.rewritten,
+        posted_content=plan.posted_content, rewrite_author=plan.rewrite_author,
+    )

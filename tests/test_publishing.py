@@ -1,7 +1,7 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from crier.platforms.base import Article
-from crier.publishing import PublishOutcome, prepare_publish
+from crier.platforms.base import Article, PublishResult
+from crier.publishing import PublishOutcome, prepare_publish, publish_one
 
 
 def _article():
@@ -56,7 +56,47 @@ def test_prepare_publish_explicit_rewrite(mode, key, parse):
     assert plan.article.is_rewrite is True
 
 
-# PublishOutcome is imported above for use in Task 2 tests; verify importable
+# PublishOutcome is imported above for use in tests; verify importable
 def test_publish_outcome_importable():
     """PublishOutcome is importable from crier.publishing."""
     assert PublishOutcome is not None
+
+
+@patch("crier.publishing.get_platform")
+@patch("crier.publishing.parse_markdown_file")
+@patch("crier.publishing.get_api_key", return_value="real-key")
+@patch("crier.publishing.get_platform_mode", return_value="api")
+def test_publish_one_success(mode, key, parse, get_plat):
+    parse.return_value = _article()
+    inst = MagicMock()
+    inst.publish.return_value = PublishResult(
+        success=True, platform="devto", article_id="123",
+        url="https://dev.to/x/123",
+    )
+    get_plat.return_value = lambda _key: inst
+    outcome = publish_one("post.md", "devto")
+    assert outcome.result.success is True
+    assert outcome.result.article_id == "123"
+    assert outcome.article.title == "Hello World"
+    assert outcome.rewritten is False
+
+
+@patch("crier.publishing.get_platform")
+@patch("crier.publishing.parse_markdown_file")
+@patch("crier.publishing.get_api_key", return_value="real-key")
+@patch("crier.publishing.get_platform_mode", return_value="api")
+def test_publish_one_dry_run_does_not_call_publish(mode, key, parse, get_plat):
+    parse.return_value = _article()
+    inst = MagicMock()
+    get_plat.return_value = lambda _key: inst
+    outcome = publish_one("post.md", "devto", dry_run=True)
+    assert outcome.result.success is True
+    assert outcome.article is not None
+    inst.publish.assert_not_called()
+
+
+@patch("crier.publishing.get_platform_mode", return_value="manual")
+def test_publish_one_propagates_prepare_error(mode):
+    outcome = publish_one("post.md", "twitter")
+    assert outcome.result.success is False
+    assert "manual" in outcome.result.error
