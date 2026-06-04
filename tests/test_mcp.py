@@ -649,3 +649,41 @@ class TestCrierStatsRefresh:
     def test_refresh_empty_registry(self, mcp_registry):
         result = crier_stats_refresh()
         assert result["count"] == 0
+
+
+def test_execute_publish_delegates_to_publish_one(monkeypatch, tmp_path):
+    """_execute_publish uses publish_one for the platform call."""
+    from pathlib import Path
+
+    from crier.platforms.base import Article, PublishResult
+    import crier.mcp_server as mcp_server
+
+    # Set up an isolated registry so record_publication works
+    db_path = tmp_path / "crier.db"
+    monkeypatch.setenv("CRIER_DB", str(db_path))
+    reset_connection()
+    init_db(db_path)
+
+    called = {}
+
+    def fake_publish_one(file_path, platform, **kwargs):
+        called["file_path"] = file_path
+        called["platform"] = platform
+        from crier.publishing import PublishOutcome
+        return PublishOutcome(
+            result=PublishResult(success=True, platform=platform,
+                                 article_id="99", url="https://x/99"),
+            article=Article(title="T", body="b",
+                            canonical_url="https://example.com/p/"),
+        )
+
+    monkeypatch.setattr("crier.publishing.publish_one", fake_publish_one)
+
+    art = Article(title="T", body="b", canonical_url="https://example.com/p/")
+    out = mcp_server._execute_publish(
+        Path("p.md"), art, "devto", "key", False, None, None,
+    )
+    assert out["success"] is True
+    assert called["platform"] == "devto"
+
+    reset_connection()
