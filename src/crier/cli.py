@@ -2511,101 +2511,65 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                     })
                     continue
 
-                try:
-                    article = parse_markdown_file(source_file)
-                except Exception as e:
+                if dry_run:
                     retry_results.append({
                         "platform": platform_name,
                         "canonical_url": canonical_url,
-                        "success": False,
-                        "error": f"Parse error: {e}",
+                        "success": True,
+                        "action": "would_retry",
                     })
                     continue
 
-                api_key = get_api_key(platform_name)
-                if not api_key or is_manual_mode_key(api_key):
+                from .publishing import publish_one
+
+                if not silent:
+                    console.print(
+                        f"[dim]Retrying {platform_name}"
+                        f" for {Path(source_file).name}...[/dim]"
+                    )
+
+                outcome = publish_one(source_file, platform_name)
+                result = outcome.result
+
+                if result.success:
+                    record_publication(
+                        canonical_url=canonical_url,
+                        platform=platform_name,
+                        article_id=result.article_id,
+                        url=result.url,
+                        title=outcome.article.title if outcome.article else None,
+                        source_file=source_file,
+                    )
                     retry_results.append({
                         "platform": platform_name,
                         "canonical_url": canonical_url,
-                        "success": False,
-                        "error": "No API key configured",
+                        "success": True,
+                        "url": result.url,
                     })
-                    continue
-
-                try:
-                    platform_cls = get_platform(platform_name)
-                    platform_inst = platform_cls(api_key)
-
                     if not silent:
                         console.print(
-                            f"[dim]Retrying {platform_name}"
-                            f" for {Path(source_file).name}...[/dim]"
+                            f"  [green]✓ {platform_name}:"
+                            f" {result.url or 'published'}[/green]"
                         )
-
-                    if dry_run:
-                        retry_results.append({
-                            "platform": platform_name,
-                            "canonical_url": canonical_url,
-                            "success": True,
-                            "action": "would_retry",
-                        })
-                        continue
-
-                    result = platform_inst.publish(article)
-
-                    if result.success:
-                        record_publication(
-                            canonical_url=canonical_url,
-                            platform=platform_name,
-                            article_id=result.article_id,
-                            url=result.url,
-                            title=article.title,
-                            source_file=source_file,
-                        )
-                        retry_results.append({
-                            "platform": platform_name,
-                            "canonical_url": canonical_url,
-                            "success": True,
-                            "url": result.url,
-                        })
-                        if not silent:
-                            console.print(
-                                f"  [green]✓ {platform_name}:"
-                                f" {result.url or 'published'}[/green]"
-                            )
-                    else:
-                        record_failure(
-                            canonical_url=canonical_url,
-                            platform=platform_name,
-                            error_msg=result.error or "Unknown error",
-                            title=article.title,
-                            source_file=source_file,
-                        )
-                        retry_results.append({
-                            "platform": platform_name,
-                            "canonical_url": canonical_url,
-                            "success": False,
-                            "error": result.error,
-                        })
-                        if not silent:
-                            console.print(
-                                f"  [red]✗ {platform_name}:"
-                                f" {result.error}[/red]"
-                            )
-
-                except Exception as e:
+                else:
                     record_failure(
                         canonical_url=canonical_url,
                         platform=platform_name,
-                        error_msg=str(e),
+                        error_msg=result.error or "Unknown error",
+                        title=outcome.article.title if outcome.article else None,
                         source_file=source_file,
                     )
                     retry_results.append({
                         "platform": platform_name,
                         "canonical_url": canonical_url,
                         "success": False,
-                        "error": str(e),
+                        "error": result.error,
                     })
+                    if not silent:
+                        console.print(
+                            f"  [red]✗ {platform_name}:"
+                            f" {result.error}[/red]"
+                        )
 
             successes = sum(1 for r in retry_results if r["success"])
             fails = len(retry_results) - successes

@@ -2508,7 +2508,7 @@ class TestAuditFailedFlag:
 class TestAuditRetryFlag:
     """Tests for crier audit --retry."""
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_audit_retry_success(self, mock_get_platform, runner, mock_config_and_registry):
         """Record a failure, mock successful re-publish, verify success message and exit code 0."""
         from crier.platforms.base import PublishResult
@@ -2604,7 +2604,7 @@ Content for dry retry.
         assert data["results"][0]["success"] is False
         assert "Source file not found" in data["results"][0]["error"]
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_audit_retry_partial_exit_code(self, mock_get_platform, runner, mock_config_and_registry):
         """Two failures, one retry succeeds one fails, verify exit code 2."""
         from crier.platforms.base import PublishResult
