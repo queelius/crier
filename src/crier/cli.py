@@ -3005,47 +3005,60 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
             continue
 
         try:
-            platform_cls = get_platform(platform)
-            plat = platform_cls(api_key)
-
-            # Check if auto-rewrite is needed for this platform
-            publish_article = article
-            max_len = platform_cls.max_content_length
-            rewritten = False
-            rewrite_content = None
-
-            if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
-                from .rewrite import auto_rewrite_for_platform
-
-                rw = auto_rewrite_for_platform(
-                    article, platform, max_len, llm_provider,
-                    retry_count=auto_rewrite_retry or 0,
-                    truncate_fallback=bool(auto_rewrite_truncate),
-                    silent=silent, console=console,
-                )
-                if rw.success:
-                    publish_article = rw.article
-                    rewritten = True
-                    rewrite_content = rw.rewrite_text
-                else:
-                    publish_results.append({
-                        "file": str(file_path),
-                        "platform": platform,
-                        "success": False,
-                        "error": rw.error,
-                        "action": action,
-                    })
-                    fail_count += 1
-                    continue
-
             if action == "publish":
-                # New publication
+                from .publishing import publish_one
+
                 if not silent:
                     console.print(f"[dim]Publishing {title[:30]} → {platform}...[/dim]")
-                result = plat.publish(publish_article)
+                outcome = publish_one(
+                    str(file_path), platform,
+                    auto_rewrite=auto_rewrite,
+                    llm_provider=llm_provider,
+                    auto_rewrite_retry=auto_rewrite_retry or 0,
+                    auto_rewrite_truncate=bool(auto_rewrite_truncate),
+                    silent=silent,
+                    console=console,
+                )
+                result = outcome.result
+                rewritten = outcome.rewritten
+                rewrite_content = outcome.posted_content
                 action_verb = "Published"
             else:
-                # Update existing publication
+                # Update path: retained for completeness. Current crier never
+                # produces an "update" action here (change-detection was
+                # removed, so actionable items are always "publish"), but the
+                # branch is preserved so behavior does not change if it returns.
+                platform_cls = get_platform(platform)
+                plat = platform_cls(api_key)
+                publish_article = article
+                max_len = platform_cls.max_content_length
+                rewritten = False
+                rewrite_content = None
+
+                if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
+                    from .rewrite import auto_rewrite_for_platform
+
+                    rw = auto_rewrite_for_platform(
+                        article, platform, max_len, llm_provider,
+                        retry_count=auto_rewrite_retry or 0,
+                        truncate_fallback=bool(auto_rewrite_truncate),
+                        silent=silent, console=console,
+                    )
+                    if rw.success:
+                        publish_article = rw.article
+                        rewritten = True
+                        rewrite_content = rw.rewrite_text
+                    else:
+                        publish_results.append({
+                            "file": str(file_path),
+                            "platform": platform,
+                            "success": False,
+                            "error": rw.error,
+                            "action": action,
+                        })
+                        fail_count += 1
+                        continue
+
                 pub_info = get_publication_info(canonical_url, platform)
                 if not pub_info or not pub_info.get("article_id"):
                     if not silent:
