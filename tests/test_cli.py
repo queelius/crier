@@ -444,7 +444,7 @@ Content.
         result = runner.invoke(cli, ["publish", str(test_file), "--profile", "nonexistent"])
         assert "Unknown profile" in result.output
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_success(self, mock_get_platform, runner, mock_config_and_registry):
         """Successful publish records to registry."""
         # Mock successful publish
@@ -474,7 +474,7 @@ Content.
         assert result.exit_code == 0
         assert "Published" in result.output or "succeeded" in result.output.lower()
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_json_output(self, mock_get_platform, runner, mock_config_and_registry):
         """Publish with --json outputs JSON format."""
         import json
@@ -540,7 +540,7 @@ Content.
         assert len(output["skipped"]) == 1
         assert output["skipped"][0]["platform"] == "twitter"
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_batch_with_api_platform(self, mock_get_platform, runner, mock_config_and_registry):
         """Publish with --batch publishes to API platforms."""
         import json
@@ -2307,7 +2307,7 @@ class TestRegistryDeletionIntegration:
 class TestPublishErrorTracking:
     """Tests that verify error recording during publish."""
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_records_failure_on_exception(self, mock_get_platform, runner, mock_config_and_registry):
         """Mock platform.publish() to raise Exception, verify record_failure is called and exit code is correct."""
         mock_platform_cls = Mock()
@@ -2336,7 +2336,7 @@ Content here.
         assert call_kwargs[1]["platform"] == "devto"
         assert "Connection timeout" in call_kwargs[1]["error_msg"]
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_records_failure_on_api_error(self, mock_get_platform, runner, mock_config_and_registry):
         """Mock platform.publish() to return PublishResult(success=False), verify record_failure is called."""
         from crier.platforms.base import PublishResult
@@ -2370,7 +2370,7 @@ Content here.
         assert call_kwargs[1]["platform"] == "devto"
         assert "API error" in call_kwargs[1]["error_msg"]
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_partial_success_exit_code_2(self, mock_get_platform, runner, mock_config_and_registry):
         """Publish to 2 platforms, one succeeds and one fails, verify exit code 2 (partial)."""
         from crier.platforms.base import PublishResult
@@ -2410,7 +2410,7 @@ Content here.
         result = runner.invoke(cli, ["publish", str(test_file), "--to", "devto", "--to", "bluesky"])
         assert result.exit_code == 2
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_all_fail_exit_code_1(self, mock_get_platform, runner, mock_config_and_registry):
         """Publish to 2 platforms, both fail, verify exit code 1."""
         from crier.platforms.base import PublishResult
@@ -2807,7 +2807,7 @@ Content {i}.
 class TestExitCodes:
     """Tests for consistent exit codes."""
 
-    @patch("crier.cli.get_platform")
+    @patch("crier.publishing.get_platform")
     def test_publish_success_exit_0(self, mock_get_platform, runner, mock_config_and_registry):
         """Successful publish returns 0."""
         from crier.platforms.base import PublishResult

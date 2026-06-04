@@ -1081,9 +1081,23 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                     })
                     continue
                 else:
+                    from .publishing import publish_one
+
+                    effective_rewrite = (
+                        platform_rewrite_content if platform_rewritten
+                        else (rewrite_content if rewrite_content else None)
+                    )
                     if not silent:
                         console.print(f"[dim]Publishing to {platform_name}...[/dim]")
-                    result = platform.publish(publish_article)
+                    outcome = publish_one(
+                        file, platform_name,
+                        rewrite_content=effective_rewrite,
+                        rewrite_author=rewrite_author,
+                        auto_rewrite=False,
+                        silent=silent,
+                        console=console,
+                    )
+                    result = outcome.result
 
                 # Handle thread result
                 if thread_result is not None:
