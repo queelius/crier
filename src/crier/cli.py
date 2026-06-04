@@ -1094,6 +1094,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                         rewrite_content=effective_rewrite,
                         rewrite_author=rewrite_author,
                         auto_rewrite=False,
+                        draft=draft,
                         silent=silent,
                         console=console,
                     )
