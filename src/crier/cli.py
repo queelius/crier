@@ -1083,6 +1083,11 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 else:
                     from .publishing import publish_one
 
+                    # Auto-rewrite (if any) already ran in the outer block above,
+                    # because the thread path needs the rewritten article before
+                    # the thread/non-thread fork. Pass that output as an explicit
+                    # rewrite_content with auto_rewrite=False so publish_one does
+                    # not invoke the LLM a second time.
                     effective_rewrite = (
                         platform_rewrite_content if platform_rewritten
                         else (rewrite_content if rewrite_content else None)
