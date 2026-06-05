@@ -644,22 +644,22 @@ def _execute_publish(
 ) -> dict:
     """Run the platform publish call and record the outcome.
 
-    Records success via record_publication and any failure (exception or
-    PublishResult.success=False) via record_failure, mirroring CLI publish
-    semantics. Returns the MCP-shaped result dict.
+    Delegates the publish to crier.publishing.publish_one (the shared
+    orchestrator) and records the result here. The article/api_key/rewrite
+    inputs were already resolved by _prepare_publish; we pass the file path
+    and the explicit rewrite so publish_one re-derives the same Article.
     """
-    from .platforms import get_platform
+    from .publishing import publish_one
     from .registry import record_failure, record_publication
 
     canonical = article.canonical_url
 
-    try:
-        platform_obj = get_platform(platform)(api_key)
-        result = platform_obj.publish(article)
-    except Exception as e:
-        if canonical:
-            record_failure(canonical, platform, str(e), article.title, str(resolved))
-        return {"error": f"Publish failed: {e}"}
+    outcome = publish_one(
+        str(resolved), platform,
+        rewrite_content=posted_content if is_rewritten else None,
+        rewrite_author=rewrite_author,
+    )
+    result = outcome.result
 
     if not result.success:
         if canonical and result.error:
