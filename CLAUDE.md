@@ -46,6 +46,7 @@ ruff format --check src/
 - `config` — Manage API keys, profiles, and content paths (`set`, `get`, `show`, `profile`, `path`, `llm`)
 - `skill` — Manage Claude Code skill installation (deprecated -- use crier plugin from queelius-plugins marketplace)
 - `register` / `unregister` — Manual registry management
+- `reconcile`: Diff live platform state vs registry; backfill untracked, soft-delete gone (`--apply`, `--limit`, `--json`; dry-run by default)
 - `list` — List articles on a platform (default: registry; `--remote` for live API)
 - `mcp` — Start MCP server for Claude Code integration (`--http` for SSE mode)
 
@@ -154,8 +155,8 @@ llm:
 
 **MCP Server** (`mcp_server.py`, ~1100 lines): Full CLI parity for Claude Code via Model Context Protocol.
 - Started via `crier mcp` (stdio) or `crier mcp --http` (SSE)
-- **17 tools** in 4 categories:
-  - Registry: `crier_query`, `crier_missing`, `crier_article`, `crier_publications`, `crier_record`, `crier_failures`, `crier_summary`, `crier_sql`
+- **18 tools** in 4 categories:
+  - Registry: `crier_query`, `crier_missing`, `crier_article`, `crier_publications`, `crier_record`, `crier_failures`, `crier_summary`, `crier_sql`, `crier_reconcile`
   - Content: `crier_search`, `crier_check`
   - Actions: `crier_publish`, `crier_delete`, `crier_archive`
   - Platform: `crier_list_remote`, `crier_doctor`, `crier_stats`, `crier_stats_refresh`

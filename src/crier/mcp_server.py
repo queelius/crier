@@ -977,6 +977,51 @@ def crier_list_remote(platform: str, limit: int = 30) -> dict:
 
 
 @mcp.tool()
+def crier_reconcile(
+    platform: str | None = None, apply: bool = False, limit: int = 100
+) -> dict:
+    """Reconcile live platform state with the registry to fix drift.
+
+    Diffs each API platform's live posts against the registry and reports three
+    buckets: in_sync, untracked_live (on the platform but missing from the
+    registry), and gone_from_platform (registry says published but no longer
+    live). Dry-run by default; pass apply=True to backfill untracked
+    publications and soft-delete gone ones. Cures the published-but-untracked
+    drift where a post exists on a platform but the registry does not know.
+
+    Args:
+        platform: A single platform name, or None for all configured API platforms.
+        apply: When True, write the fixes (backfill + soft-delete). Default False.
+        limit: Max live posts to fetch per platform.
+
+    Examples:
+        crier_reconcile()                     # dry-run, all API platforms
+        crier_reconcile("devto")              # dry-run, one platform
+        crier_reconcile("devto", apply=True)  # backfill + soft-delete
+    """
+    from .reconcile import reconcile as run_reconcile
+
+    platforms = [platform] if platform else None
+    reports = run_reconcile(platforms, apply=apply, limit=limit)
+
+    out: dict = {"applied": apply, "platforms": {}}
+    for name, rep in reports.items():
+        out["platforms"][name] = {
+            "error": rep.error,
+            "in_sync": len(rep.in_both),
+            "untracked_live": [
+                {"title": e.title, "live_id": e.live_id, "live_url": e.live_url}
+                for e in rep.untracked_live
+            ],
+            "gone_from_platform": [
+                {"title": e.title, "canonical_url": e.canonical_url}
+                for e in rep.gone_from_platform
+            ],
+        }
+    return out
+
+
+@mcp.tool()
 def crier_doctor() -> dict:
     """Validate all configured platform API keys.
 

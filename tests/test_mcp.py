@@ -20,6 +20,7 @@ from crier.mcp_server import (
     crier_publications,
     crier_publish,
     crier_query,
+    crier_reconcile,
     crier_record,
     crier_search,
     crier_sql,
@@ -639,6 +640,40 @@ class TestCrierListRemote:
     def test_no_api_key(self, mcp_registry):
         result = crier_list_remote("ghost")
         assert "error" in result
+
+
+class TestCrierReconcile:
+    def test_reconcile_returns_per_platform_buckets(self, mcp_registry, monkeypatch):
+        from crier.reconcile import ReconcileEntry, ReconcileReport
+
+        rep = ReconcileReport(platform="devto")
+        rep.untracked_live.append(
+            ReconcileEntry(
+                platform="devto", bucket="untracked_live",
+                title="Ghost", live_id="999", live_url="https://dev.to/x/999",
+            )
+        )
+        monkeypatch.setattr(
+            "crier.reconcile.reconcile", lambda platforms=None, **kw: {"devto": rep}
+        )
+        result = crier_reconcile("devto")
+        assert result["applied"] is False
+        assert result["platforms"]["devto"]["untracked_live"][0]["live_id"] == "999"
+        assert result["platforms"]["devto"]["in_sync"] == 0
+
+    def test_reconcile_apply_passed_through(self, mcp_registry, monkeypatch):
+        from crier.reconcile import ReconcileReport
+
+        captured = {}
+
+        def fake(platforms=None, *, apply=False, limit=100):
+            captured["apply"] = apply
+            return {"devto": ReconcileReport(platform="devto")}
+
+        monkeypatch.setattr("crier.reconcile.reconcile", fake)
+        result = crier_reconcile("devto", apply=True)
+        assert result["applied"] is True
+        assert captured["apply"] is True
 
 
 class TestCrierStatsRefresh:
