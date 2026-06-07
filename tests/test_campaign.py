@@ -233,6 +233,62 @@ def test_run_records_failure(site, monkeypatch):
     assert cell["error"] == "boom"
 
 
+def test_run_dry_run_needs_rewrite_not_persisted(site, monkeypatch):
+    """A dry-run sets needs_rewrite in memory but must NOT persist it.
+
+    run_campaign mutates the cell status to needs_rewrite before the apply
+    gate; save_manifest only runs under apply, so the on-disk status must
+    stay 'pending' after a dry-run.
+    """
+    save_manifest("c", _manifest({"bluesky": {"status": "pending", "rewrite": ""}}))
+    monkeypatch.setattr(camp, "is_short_form_platform", lambda p: True)
+    summary = run_campaign("c", apply=False)
+    assert summary.needs_rewrite == 1
+    on_disk = load_manifest("c")["posts"][0]["targets"]["bluesky"]["status"]
+    assert on_disk == "pending"
+
+
+def test_run_failed_cell_is_retried(site, monkeypatch):
+    """A cell left in 'failed' status is re-attempted on the next run."""
+    save_manifest("c", _manifest({"devto": {"status": "failed", "error": "old"}}))
+    monkeypatch.setattr(camp, "is_short_form_platform", lambda p: False)
+    monkeypatch.setattr(camp, "record_publication", lambda **kw: None)
+    calls = {"n": 0}
+
+    def fake_publish_one(f, p, **kw):
+        calls["n"] += 1
+        return _outcome()
+
+    monkeypatch.setattr("crier.publishing.publish_one", fake_publish_one)
+    summary = run_campaign("c", apply=True)
+    assert calls["n"] == 1
+    assert summary.published == 1
+    assert load_manifest("c")["posts"][0]["targets"]["devto"]["status"] == "published"
+
+
+def test_run_multi_cell_mixed_outcomes(site, monkeypatch):
+    """One manifest with published/pending/needs_rewrite cells: all counters."""
+    save_manifest(
+        "c",
+        _manifest(
+            {
+                "devto": {"status": "published", "url": "u"},          # skipped
+                "hashnode": {"status": "pending"},                     # publishes
+                "bluesky": {"status": "pending", "rewrite": ""},       # needs_rewrite
+            }
+        ),
+    )
+    monkeypatch.setattr(camp, "is_short_form_platform", lambda p: p == "bluesky")
+    monkeypatch.setattr(camp, "record_publication", lambda **kw: None)
+    monkeypatch.setattr("crier.publishing.publish_one", lambda f, p, **kw: _outcome())
+
+    summary = run_campaign("c", apply=True)
+    assert summary.skipped == 1
+    assert summary.published == 1
+    assert summary.needs_rewrite == 1
+    assert summary.failed == 0
+
+
 def _spy_publish_one(monkeypatch_ctx):
     """Install a publish_one spy that must never be called; returns a counter."""
     state = {"calls": 0}

@@ -162,9 +162,10 @@ llm:
   - Actions: `crier_publish`, `crier_delete`, `crier_archive`, `crier_campaign_plan`, `crier_campaign_run`
   - Platform: `crier_list_remote`, `crier_doctor`, `crier_stats`, `crier_stats_refresh`
 - **3 resources**: `crier://schema`, `crier://config` (sanitized), `crier://platforms` (capabilities + modes)
-- **Two-step confirmation** for destructive ops (`crier_publish`, `crier_delete`):
+- **Two-step confirmation** for destructive ops (`crier_publish`, `crier_delete`, `crier_campaign_run`):
   - Step 1: call without `confirmation_token` to get a preview + token (5-min TTL)
   - Step 2: call with `confirmation_token` to execute
+  - `crier_campaign_run` step 2 reads the campaign `name` from the token (token-as-source-of-truth), so a bulk run cannot be redirected by caller args.
   - **Critical invariant: step 2 treats the token as source of truth.** All parameters (file, platform, rewrite_content, key, target_platforms) come from the token. Caller args on step 2 are ignored. This prevents a token-substitution bypass where a caller could get a token for operation A and use it to authorize operation B. See `_create_token` / `_consume_token` in `mcp_server.py`.
 - `crier_sql` runs queries inside a `SAVEPOINT crier_sql_guard` that is always rolled back, so even non-SELECT statements have no effect (defense in depth on top of `startswith("SELECT")`).
 - All tools return **dicts** (FastMCP serializes them); validation errors return `{"error": "..."}`.

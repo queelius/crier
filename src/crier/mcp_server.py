@@ -1065,31 +1065,54 @@ def crier_campaign_plan(
 
 
 @mcp.tool()
-def crier_campaign_run(name: str, apply: bool = False) -> dict:
-    """Run (or preview) a bulk-publish campaign.
+def crier_campaign_run(name: str, confirmation_token: str | None = None) -> dict:
+    """Run a bulk-publish campaign. Two-step confirmation (this is destructive).
 
-    Dry-run by default: reports how many cells would publish and how many still
-    need rewrites. Pass apply=True to publish each pending cell through the
-    shared publish path, record results, and write status back into the manifest
-    (resumable: already-published cells are skipped).
+    Step 1 (no token): returns a dry-run preview (cells that would publish and
+    how many still need rewrites) plus a confirmation_token. Step 2 (call again
+    with the token): publishes each pending cell through the shared publish path,
+    records results, and writes status back into the manifest (resumable;
+    already-published cells are skipped). The token is the source of truth: on
+    step 2 the campaign name comes from the token, not the caller args.
 
     Examples:
-        crier_campaign_run("spring-backlog")               # preview
-        crier_campaign_run("spring-backlog", apply=True)   # publish
+        crier_campaign_run("spring-backlog")                            # preview + token
+        crier_campaign_run("spring-backlog", confirmation_token="abc")  # execute
     """
     from .campaign import run_campaign
 
-    summary = run_campaign(name, apply=apply)
+    if confirmation_token:
+        details = _consume_token(confirmation_token, "campaign_run")
+        if details is None:
+            return {"error": "Invalid or expired confirmation token"}
+        summary = run_campaign(details["name"], apply=True)
+        if summary.error:
+            return {"error": summary.error}
+        return {
+            "name": summary.name,
+            "applied": True,
+            "published": summary.published,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "needs_rewrite": summary.needs_rewrite,
+        }
+
+    summary = run_campaign(name, apply=False)
     if summary.error:
         return {"error": summary.error}
+    token = _create_token("campaign_run", {"name": name})
     return {
         "name": summary.name,
-        "applied": summary.applied,
-        "published": summary.published,
-        "failed": summary.failed,
-        "skipped": summary.skipped,
-        "needs_rewrite": summary.needs_rewrite,
-        "pending": summary.pending,
+        "preview": {
+            "pending": summary.pending,
+            "needs_rewrite": summary.needs_rewrite,
+            "skipped": summary.skipped,
+        },
+        "confirmation_token": token,
+        "message": (
+            f"Call again with confirmation_token to publish {summary.pending} "
+            f"pending cell(s) for campaign '{name}'."
+        ),
     }
 
 
