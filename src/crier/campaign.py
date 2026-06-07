@@ -143,13 +143,21 @@ class CampaignRunSummary:
     error: str | None = None
 
 
-def run_campaign(name: str, *, apply: bool = False) -> CampaignRunSummary:
+def run_campaign(
+    name: str, *, apply: bool = False, max_cells: int | None = None
+) -> CampaignRunSummary:
     """Execute (or preview) a campaign's pending cells.
 
     Resumable and idempotent: cells already marked `published` are skipped.
     Short-form cells with an empty `rewrite` become `needs_rewrite` and are not
     published. Dry-run (apply=False) makes no publishes and no manifest writes.
     Recording is done here (publish_one does not touch the registry).
+
+    ``max_cells`` caps how many cells are actually published in this run (only
+    real publish attempts count, not skips or needs_rewrite). This is the drip
+    primitive: a daily ``--max N`` run ships at most N posts and leaves the rest
+    for the next run, so a large backlog rolls out gradually instead of
+    flooding feeds. ``None`` means no cap.
     """
     manifest = load_manifest(name)
     if manifest is None:
@@ -158,12 +166,16 @@ def run_campaign(name: str, *, apply: bool = False) -> CampaignRunSummary:
     from .publishing import publish_one
 
     summary = CampaignRunSummary(name=name, applied=apply)
+    attempted = 0  # real publish attempts this run (for max_cells)
 
     for post in manifest.get("posts", []):
         canonical = post.get("canonical_url")
         file = post.get("file")
         title = post.get("title")
         for platform, cell in post.get("targets", {}).items():
+            if apply and max_cells is not None and attempted >= max_cells:
+                save_manifest(name, manifest)
+                return summary
             if cell.get("status") == "published":
                 summary.skipped += 1
                 continue
@@ -191,6 +203,7 @@ def run_campaign(name: str, *, apply: bool = False) -> CampaignRunSummary:
                 continue
 
             outcome = publish_one(file, platform, rewrite_content=rewrite or None)
+            attempted += 1
             result = outcome.result
             if result.success:
                 if canonical:

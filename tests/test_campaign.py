@@ -318,6 +318,36 @@ def test_run_multi_cell_mixed_outcomes(site, monkeypatch):
     assert summary.failed == 0
 
 
+def test_run_max_cells_caps_publishes(site, monkeypatch):
+    """--max N publishes at most N cells and leaves the rest pending."""
+    manifest = {
+        "campaign": "c", "created": "x", "platforms": ["devto"],
+        "posts": [
+            {"canonical_url": f"https://x/p{i}/", "file": f"p{i}.md",
+             "title": f"P{i}", "targets": {"devto": {"status": "pending"}}}
+            for i in range(3)
+        ],
+    }
+    save_manifest("c", manifest)
+    monkeypatch.setattr(camp, "is_short_form_platform", lambda p: False)
+    monkeypatch.setattr(camp, "record_publication", lambda **kw: None)
+    calls = {"n": 0}
+
+    def fake_publish_one(f, p, **kw):
+        calls["n"] += 1
+        return _outcome()
+
+    monkeypatch.setattr("crier.publishing.publish_one", fake_publish_one)
+    summary = run_campaign("c", apply=True, max_cells=2)
+    assert summary.published == 2
+    assert calls["n"] == 2
+    # third cell left pending and persisted for the next run
+    saved = load_manifest("c")
+    statuses = [p["targets"]["devto"]["status"] for p in saved["posts"]]
+    assert statuses.count("published") == 2
+    assert statuses.count("pending") == 1
+
+
 def _spy_publish_one(monkeypatch_ctx):
     """Install a publish_one spy that must never be called; returns a counter."""
     state = {"calls": 0}
