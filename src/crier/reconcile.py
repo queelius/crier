@@ -118,6 +118,24 @@ def reconcile_platform(
         )
 
     registry_rows = get_platform_publications(platform_name)
+
+    # Safety guard: an empty live listing while the registry has publications is
+    # almost always a broken/limited listing (auth quirk, pagination cap,
+    # rate-limit), not a real mass-deletion. Marking everything "gone" here and
+    # soft-deleting on --apply would wipe valid history. The list_articles
+    # exception path covers a raised error; this covers an empty-but-200
+    # response (e.g. the old bluesky limit>100 bug). Refuse rather than guess.
+    if registry_rows and not live_posts:
+        return ReconcileReport(
+            platform=platform_name,
+            error=(
+                f"Live listing for {platform_name} returned 0 posts but the "
+                f"registry has {len(registry_rows)} publication(s); refusing to "
+                f"reconcile (would falsely mark all as gone). Check the "
+                f"platform's listing/auth before retrying."
+            ),
+        )
+
     report = ReconcileReport(platform=platform_name, applied=apply)
     matched_canonicals: set[str] = set()
 

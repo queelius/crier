@@ -123,13 +123,44 @@ def test_reconcile_in_both():
 
 
 def test_reconcile_gone_from_platform():
-    # Registry has a publication that is not in the live list.
-    registry = [_row(platform_id="42", canonical_url="https://x/gone/")]
-    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=[], registry=registry)
+    # Live listing is non-empty (so the empty-guard does not trip), but one
+    # registry row is not present in it -> gone.
+    live = [{"id": "present", "url": "https://dev/present", "title": "Present"}]
+    registry = [
+        _row(platform_id="present", canonical_url="https://x/ok/"),
+        _row(platform_id="42", canonical_url="https://x/gone/"),
+    ]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=live, registry=registry)
     with p_mode, p_key, p_plat, p_pubs:
         report = reconcile_platform("devto")
+    assert len(report.in_both) == 1
     assert len(report.gone_from_platform) == 1
     assert report.gone_from_platform[0].canonical_url == "https://x/gone/"
+
+
+def test_reconcile_empty_listing_guard_refuses():
+    """An empty live listing while the registry has rows must NOT mark gone.
+
+    Guards against the bluesky-returns-0 class of bug wiping valid history.
+    """
+    registry = [_row(platform_id="42", canonical_url="https://x/keep/")]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=[], registry=registry)
+    with p_mode, p_key, p_plat, p_pubs, \
+            patch("crier.reconcile.record_deletion") as rec_del:
+        report = reconcile_platform("devto", apply=True)
+    assert report.error is not None
+    assert "0 posts" in report.error
+    assert report.gone_from_platform == []
+    rec_del.assert_not_called()
+
+
+def test_reconcile_empty_listing_empty_registry_is_fine():
+    """Empty live + empty registry is not an error (nothing to do)."""
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=[], registry=[])
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("devto")
+    assert report.error is None
+    assert report.in_both == [] and report.gone_from_platform == []
 
 
 def test_reconcile_dry_run_makes_no_writes():
