@@ -29,6 +29,16 @@ def site(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _default_is_published(monkeypatch):
+    """Default: registry reports nothing published. Tests override as needed.
+
+    run_campaign now consults is_published at runtime (resume/dup-safety), so
+    every test needs a deterministic answer rather than hitting the real DB.
+    """
+    monkeypatch.setattr(camp, "is_published", lambda canonical, platform: False)
+
+
 # --- planning ---------------------------------------------------------------
 
 
@@ -182,6 +192,25 @@ def test_run_resumes_skipping_published(site, monkeypatch):
     assert summary.skipped == 1
     assert summary.published == 0
     assert pub["calls"] == 0
+
+
+def test_run_skips_registry_published_cell(site, monkeypatch):
+    """A cell pending in the manifest but already published per the registry is
+    skipped (no republish), and its status is updated to published on apply.
+
+    This is the resume / duplicate-safety guard: registry is the source of
+    truth, so an interrupted run or an out-of-band publish never double-posts.
+    """
+    save_manifest("c", _manifest({"devto": {"status": "pending"}}))
+    monkeypatch.setattr(camp, "is_short_form_platform", lambda p: False)
+    monkeypatch.setattr(camp, "is_published", lambda canonical, platform: True)
+    with monkeypatch.context() as m:
+        pub = _spy_publish_one(m)
+        summary = run_campaign("c", apply=True)
+    assert summary.skipped == 1
+    assert summary.published == 0
+    assert pub["calls"] == 0
+    assert load_manifest("c")["posts"][0]["targets"]["devto"]["status"] == "published"
 
 
 def test_run_short_form_empty_rewrite_needs_rewrite(site, monkeypatch):
