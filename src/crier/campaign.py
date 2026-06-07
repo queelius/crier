@@ -168,6 +168,18 @@ def run_campaign(name: str, *, apply: bool = False) -> CampaignRunSummary:
                 summary.skipped += 1
                 continue
 
+            # Resume/idempotency against the REGISTRY, not just the manifest.
+            # record_publication runs per-cell during a run, so the registry is
+            # the live source of truth: a cell already published (by a prior
+            # interrupted run, by an out-of-band publish, or by another tool)
+            # is skipped here even if the manifest still says pending. This is
+            # what makes a run crash-resumable and duplicate-safe.
+            if canonical and is_published(canonical, platform):
+                summary.skipped += 1
+                if apply:
+                    cell["status"] = "published"
+                continue
+
             rewrite = cell.get("rewrite")
             if is_short_form_platform(platform) and not rewrite:
                 cell["status"] = "needs_rewrite"
