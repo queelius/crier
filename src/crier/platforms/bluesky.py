@@ -157,32 +157,60 @@ class Bluesky(Platform):
             error="Bluesky does not support editing posts",
         )
 
+    # getAuthorFeed caps `limit` at 100 per request; larger values 400.
+    _FEED_PAGE_MAX = 100
+
     def list_articles(self, limit: int = 10) -> list[dict[str, Any]]:
-        """List recent posts."""
+        """List the account's own recent posts.
+
+        Paginates getAuthorFeed (which caps `limit` at 100 per call) via the
+        returned cursor until `limit` posts are collected or the feed is
+        exhausted. Reposts are skipped so the result is the user's own posts
+        (what reconcile matches against the registry); passing a `limit` above
+        100 previously returned a 400 and an empty list, which made reconcile
+        treat every tracked post as deleted.
+        """
         if not self._create_session():
             return []
 
-        resp = self.retry_request(
-            "get",
-            f"{self.base_url}/app.bsky.feed.getAuthorFeed",
-            headers=self._get_headers(),
-            params={"actor": self.did, "limit": limit},
-        )
+        results: list[dict[str, Any]] = []
+        cursor: str | None = None
 
-        if resp.status_code == 200:
+        while len(results) < limit:
+            page = min(self._FEED_PAGE_MAX, limit - len(results))
+            params: dict[str, Any] = {"actor": self.did, "limit": page}
+            if cursor:
+                params["cursor"] = cursor
+
+            resp = self.retry_request(
+                "get",
+                f"{self.base_url}/app.bsky.feed.getAuthorFeed",
+                headers=self._get_headers(),
+                params=params,
+            )
+            if resp.status_code != 200:
+                break
+
             data = resp.json()
-            results = []
-            for item in data.get("feed", []):
+            feed = data.get("feed", [])
+            if not feed:
+                break
+
+            for item in feed:
+                # Skip reposts (they carry a `reason`); we want the user's own posts.
+                if item.get("reason"):
+                    continue
                 post = item.get("post", {})
                 uri = post.get("uri", "")
-                # Convert AT URI to web URL
-                # at://did:plc:xxx/app.bsky.feed.post/yyy -> https://bsky.app/profile/handle/post/yyy
+                # at://did:plc:xxx/app.bsky.feed.post/yyy -> bsky.app/profile/handle/post/yyy
                 post_id = uri.split("/")[-1] if uri else ""
                 author_handle = post.get("author", {}).get("handle", self.handle)
-                url = f"https://bsky.app/profile/{author_handle}/post/{post_id}" if post_id else ""
+                url = (
+                    f"https://bsky.app/profile/{author_handle}/post/{post_id}"
+                    if post_id else ""
+                )
                 text = post.get("record", {}).get("text", "")
-                # Extract title: first line, capped at 100 chars
-                first_line = text.split('\n')[0].strip()
+                first_line = text.split("\n")[0].strip()
                 title = first_line[:100] if first_line else text[:100]
                 results.append({
                     "id": uri,
@@ -191,8 +219,12 @@ class Bluesky(Platform):
                     "published": True,
                     "url": url,
                 })
-            return results
-        return []
+
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+
+        return results[:limit]
 
     def get_article(self, article_id: str) -> dict[str, Any] | None:
         """Get a specific post by AT URI."""

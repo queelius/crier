@@ -257,6 +257,47 @@ class TestBluesky:
         assert platform.handle == "myhandle.bsky.social"
         assert platform.app_password == "app-password"
 
+    @patch("crier.platforms.base.requests.get")
+    @patch("crier.platforms.base.requests.post")
+    def test_list_articles_paginates_caps_page_and_skips_reposts(self, mock_post, mock_get):
+        """getAuthorFeed caps limit at 100/page; list_articles must paginate via
+        cursor (limit>100 used to 400 and return empty) and skip reposts."""
+        auth = Mock(status_code=200)
+        auth.json.return_value = {"accessJwt": "t", "did": "did:plc:me"}
+        mock_post.return_value = auth
+
+        page1 = Mock(status_code=200)
+        page1.json.return_value = {
+            "cursor": "c1",
+            "feed": [
+                {"post": {"uri": "at://did:plc:me/app.bsky.feed.post/p1",
+                          "author": {"handle": "me.bsky.social"},
+                          "record": {"text": "first post"}}},
+            ],
+        }
+        page2 = Mock(status_code=200)
+        page2.json.return_value = {
+            "feed": [
+                {"reason": {"$type": "app.bsky.feed.defs#reasonRepost"},
+                 "post": {"uri": "at://x/app.bsky.feed.post/rp",
+                          "record": {"text": "a repost"}}},
+                {"post": {"uri": "at://did:plc:me/app.bsky.feed.post/p2",
+                          "author": {"handle": "me.bsky.social"},
+                          "record": {"text": "second post"}}},
+            ],
+        }
+        mock_get.side_effect = [page1, page2]
+
+        b = Bluesky("me.bsky.social:pw")
+        out = b.list_articles(limit=150)  # >100 must not break
+        ids = [o["id"] for o in out]
+        assert "at://did:plc:me/app.bsky.feed.post/p1" in ids
+        assert "at://did:plc:me/app.bsky.feed.post/p2" in ids
+        assert "at://x/app.bsky.feed.post/rp" not in ids  # repost skipped
+        assert len(out) == 2
+        # first page request capped at 100, not 150
+        assert mock_get.call_args_list[0].kwargs["params"]["limit"] == 100
+
     @patch("crier.platforms.base.requests.post")
     def test_publish_success(self, mock_post, sample_article):
         # Mock successful authentication
