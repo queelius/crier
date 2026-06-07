@@ -1,0 +1,165 @@
+"""Tests for the reconcile engine (live platform state vs registry)."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from crier.reconcile import (
+    ReconcileReport,
+    match_live_to_registry,
+    reconcile_platform,
+)
+
+
+def _row(**kw):
+    base = {
+        "canonical_url": "https://x/p/",
+        "title": "T",
+        "platform_id": "1",
+        "platform_url": "https://dev/1",
+    }
+    base.update(kw)
+    return base
+
+
+# --- pure matcher -----------------------------------------------------------
+
+
+def test_match_by_platform_id():
+    rows = [_row(platform_id="abc", canonical_url="https://x/a/")]
+    live = {"id": "abc", "url": "https://dev/zzz", "title": "Different"}
+    assert match_live_to_registry(live, rows)["canonical_url"] == "https://x/a/"
+
+
+def test_match_by_url_when_id_differs():
+    rows = [_row(platform_id="abc", platform_url="https://dev/9", canonical_url="https://x/b/")]
+    live = {"id": "nomatch", "url": "https://dev/9", "title": "Z"}
+    assert match_live_to_registry(live, rows)["canonical_url"] == "https://x/b/"
+
+
+def test_match_by_slug_fallback():
+    rows = [_row(platform_id="abc", platform_url="https://dev/1", title="My Post", canonical_url="https://x/c/")]
+    live = {"id": "none", "url": "none-url", "title": "My Post"}
+    assert match_live_to_registry(live, rows)["canonical_url"] == "https://x/c/"
+
+
+def test_no_match_returns_none():
+    rows = [_row()]
+    assert match_live_to_registry({"id": "z", "url": "z2", "title": "Nope"}, rows) is None
+
+
+def test_id_precedence_over_slug():
+    rows = [
+        _row(platform_id="ID1", title="Same Title", canonical_url="https://x/right/"),
+        _row(platform_id="ID2", title="Same Title", canonical_url="https://x/wrong/"),
+    ]
+    live = {"id": "ID1", "url": "u", "title": "Same Title"}
+    assert match_live_to_registry(live, rows)["canonical_url"] == "https://x/right/"
+
+
+def test_match_handles_numeric_live_id():
+    """Mastodon returns numeric ids; registry stores them as strings."""
+    rows = [_row(platform_id="116522", canonical_url="https://x/m/")]
+    live = {"id": 116522, "url": "u", "title": "Toot"}
+    assert match_live_to_registry(live, rows)["canonical_url"] == "https://x/m/"
+
+
+# --- engine -----------------------------------------------------------------
+
+
+def _patch_engine(mode="api", api_key="real-key", live=None, registry=None):
+    """Helper: returns a context-manager stack of the 4 read-side patches."""
+    live = live or []
+    registry = registry or []
+    inst = MagicMock()
+    inst.list_articles.return_value = live
+    return (
+        patch("crier.reconcile.get_platform_mode", return_value=mode),
+        patch("crier.reconcile.get_api_key", return_value=api_key),
+        patch("crier.reconcile.get_platform", return_value=lambda _k: inst),
+        patch("crier.reconcile.get_platform_publications", return_value=registry),
+    )
+
+
+def test_reconcile_non_api_mode_errors():
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(mode="manual")
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("twitter")
+    assert isinstance(report, ReconcileReport)
+    assert report.error is not None
+    assert "manual" in report.error
+    assert report.untracked_live == []
+
+
+def test_reconcile_missing_key_errors():
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(api_key=None)
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("devto")
+    assert report.error is not None
+    assert "No API key" in report.error
+
+
+def test_reconcile_untracked_live():
+    live = [{"id": "999", "url": "https://dev.to/x/999", "title": "Ghost Post"}]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=live, registry=[])
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("devto")
+    assert len(report.untracked_live) == 1
+    assert report.untracked_live[0].live_id == "999"
+    assert report.in_both == []
+    assert report.gone_from_platform == []
+
+
+def test_reconcile_in_both():
+    live = [{"id": "1", "url": "https://dev/1", "title": "T"}]
+    registry = [_row(platform_id="1", canonical_url="https://x/p/")]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=live, registry=registry)
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("devto")
+    assert len(report.in_both) == 1
+    assert report.in_both[0].canonical_url == "https://x/p/"
+    assert report.untracked_live == []
+    assert report.gone_from_platform == []
+
+
+def test_reconcile_gone_from_platform():
+    # Registry has a publication that is not in the live list.
+    registry = [_row(platform_id="42", canonical_url="https://x/gone/")]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=[], registry=registry)
+    with p_mode, p_key, p_plat, p_pubs:
+        report = reconcile_platform("devto")
+    assert len(report.gone_from_platform) == 1
+    assert report.gone_from_platform[0].canonical_url == "https://x/gone/"
+
+
+def test_reconcile_dry_run_makes_no_writes():
+    live = [{"id": "999", "url": "u", "title": "Ghost"}]
+    registry = [_row(platform_id="42", canonical_url="https://x/gone/")]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=live, registry=registry)
+    with p_mode, p_key, p_plat, p_pubs, \
+            patch("crier.reconcile.record_publication") as rec_pub, \
+            patch("crier.reconcile.record_deletion") as rec_del:
+        report = reconcile_platform("devto", apply=False)
+    rec_pub.assert_not_called()
+    rec_del.assert_not_called()
+    assert report.applied is False
+    assert len(report.untracked_live) == 1
+    assert len(report.gone_from_platform) == 1
+
+
+def test_reconcile_apply_backfills_and_deletes():
+    live = [{"id": "999", "url": "https://dev/999", "title": "Ghost"}]
+    registry = [_row(platform_id="42", canonical_url="https://x/gone/")]
+    p_mode, p_key, p_plat, p_pubs = _patch_engine(live=live, registry=registry)
+    with p_mode, p_key, p_plat, p_pubs, \
+            patch("crier.reconcile.record_publication") as rec_pub, \
+            patch("crier.reconcile.record_deletion") as rec_del:
+        report = reconcile_platform("devto", apply=True)
+    rec_pub.assert_called_once()
+    # backfill uses canonical_url=None and the live id/url/title
+    _, kwargs = rec_pub.call_args
+    assert kwargs["platform"] == "devto"
+    assert kwargs["article_id"] == "999"
+    assert kwargs["canonical_url"] is None
+    rec_del.assert_called_once_with("https://x/gone/", "devto")
+    assert report.applied is True
