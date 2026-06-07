@@ -1022,6 +1022,78 @@ def crier_reconcile(
 
 
 @mcp.tool()
+def crier_campaign_plan(
+    name: str, path: str | None = None, platforms: list[str] | None = None
+) -> dict:
+    """Generate a bulk-publish campaign manifest of missing (post x platform) cells.
+
+    Scans content, checks the registry, and writes a YAML manifest under
+    <site_root>/.crier/campaigns/<name>.yaml listing each platform every post is
+    not yet published to. Short-form cells carry an empty rewrite field for you
+    to fill (edit the YAML) before running. Returns a summary plus the cells
+    that still need rewrites.
+
+    Args:
+        name: Campaign name (used as the manifest filename).
+        path: Optional content path to scan (default: configured content paths).
+        platforms: Optional target platforms (default: configured API platforms).
+
+    Examples:
+        crier_campaign_plan("spring-backlog")
+        crier_campaign_plan("cpp", path="content/post", platforms=["devto", "hashnode"])
+    """
+    from .campaign import campaign_path, plan_campaign
+
+    manifest = plan_campaign(name, path=path, platforms=platforms)
+    needs_rewrite = [
+        {
+            "canonical_url": post["canonical_url"],
+            "title": post["title"],
+            "platform": platform,
+        }
+        for post in manifest["posts"]
+        for platform, cell in post["targets"].items()
+        if "rewrite" in cell
+    ]
+    return {
+        "name": name,
+        "manifest": str(campaign_path(name)),
+        "posts": len(manifest["posts"]),
+        "cells": sum(len(p["targets"]) for p in manifest["posts"]),
+        "needs_rewrite": needs_rewrite,
+    }
+
+
+@mcp.tool()
+def crier_campaign_run(name: str, apply: bool = False) -> dict:
+    """Run (or preview) a bulk-publish campaign.
+
+    Dry-run by default: reports how many cells would publish and how many still
+    need rewrites. Pass apply=True to publish each pending cell through the
+    shared publish path, record results, and write status back into the manifest
+    (resumable: already-published cells are skipped).
+
+    Examples:
+        crier_campaign_run("spring-backlog")               # preview
+        crier_campaign_run("spring-backlog", apply=True)   # publish
+    """
+    from .campaign import run_campaign
+
+    summary = run_campaign(name, apply=apply)
+    if summary.error:
+        return {"error": summary.error}
+    return {
+        "name": summary.name,
+        "applied": summary.applied,
+        "published": summary.published,
+        "failed": summary.failed,
+        "skipped": summary.skipped,
+        "needs_rewrite": summary.needs_rewrite,
+        "pending": summary.pending,
+    }
+
+
+@mcp.tool()
 def crier_doctor() -> dict:
     """Validate all configured platform API keys.
 
