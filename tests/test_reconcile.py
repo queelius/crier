@@ -163,3 +163,54 @@ def test_reconcile_apply_backfills_and_deletes():
     assert kwargs["canonical_url"] is None
     rec_del.assert_called_once_with("https://x/gone/", "devto")
     assert report.applied is True
+
+
+def test_reconcile_default_selects_api_platforms_only(monkeypatch):
+    """reconcile(None) reconciles only configured API-mode platforms."""
+    import crier.reconcile as rec
+
+    monkeypatch.setattr(rec, "PLATFORMS", {"devto": object, "twitter": object, "ghost": object})
+    monkeypatch.setattr(rec, "get_api_key", lambda n: "k" if n in ("devto", "twitter") else None)
+    monkeypatch.setattr(rec, "get_platform_mode", lambda n: "manual" if n == "twitter" else "api")
+
+    called = []
+
+    def fake_reconcile_platform(name, **kw):
+        called.append(name)
+        return ReconcileReport(platform=name)
+
+    monkeypatch.setattr(rec, "reconcile_platform", fake_reconcile_platform)
+    rec.reconcile()
+    # devto: keyed + api -> in; twitter: keyed but manual -> out; ghost: no key -> out
+    assert called == ["devto"]
+
+
+def test_reconcile_list_failure_sets_error_and_makes_no_writes(monkeypatch):
+    """A platform API outage must NOT mass-soft-delete registry rows.
+
+    If list_articles raises, the report carries the error with empty buckets
+    and neither record_deletion nor record_publication is called, even with
+    apply=True. Guards against deleting the whole registry during an outage.
+    """
+    import crier.reconcile as rec
+
+    inst = MagicMock()
+    inst.list_articles.side_effect = RuntimeError("API down")
+    monkeypatch.setattr(rec, "get_platform_mode", lambda n: "api")
+    monkeypatch.setattr(rec, "get_api_key", lambda n: "k")
+    monkeypatch.setattr(rec, "get_platform", lambda n: (lambda _k: inst))
+    monkeypatch.setattr(
+        rec, "get_platform_publications",
+        lambda n: [_row(platform_id="1", canonical_url="https://x/g/")],
+    )
+    rec_del = MagicMock()
+    rec_pub = MagicMock()
+    monkeypatch.setattr(rec, "record_deletion", rec_del)
+    monkeypatch.setattr(rec, "record_publication", rec_pub)
+
+    report = rec.reconcile_platform("devto", apply=True)
+    assert report.error is not None
+    assert "API down" in report.error
+    assert report.gone_from_platform == []
+    rec_del.assert_not_called()
+    rec_pub.assert_not_called()
