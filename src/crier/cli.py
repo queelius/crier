@@ -4348,18 +4348,22 @@ def campaign_plan(name, path, platform_args, profile_name, json_output):
 @click.argument("name")
 @click.option("--apply", "apply_changes", is_flag=True,
               help="Publish pending cells. Default is a dry-run preview.")
+@click.option("--max", "max_cells", type=int, default=None,
+              help="Publish at most N cells this run (drip pacing). Leaves the "
+                   "rest for the next run. Resumable.")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
-def campaign_run(name, apply_changes, json_output):
+def campaign_run(name, apply_changes, max_cells, json_output):
     """Run (or preview) a campaign: publish each pending cell.
 
     Dry-run by default (shows what would publish). Pass --apply to execute.
-    Resumable: already-published cells are skipped.
+    Resumable: already-published cells are skipped. Use --max N to drip a large
+    backlog gradually (publish N per run, the rest on later runs).
     """
     import json as json_module
 
     from .campaign import run_campaign
 
-    summary = run_campaign(name, apply=apply_changes)
+    summary = run_campaign(name, apply=apply_changes, max_cells=max_cells)
 
     if summary.error:
         if json_output:
