@@ -1737,6 +1737,87 @@ def doctor(json_output: bool):
         console.print("[dim]Or for manual mode: crier config set <platform>.api_key manual[/dim]")
 
 
+@cli.command()
+@click.argument("platforms", nargs=-1)
+@click.option(
+    "--apply", "apply_changes", is_flag=True,
+    help="Apply changes (backfill untracked, soft-delete gone). Default is dry-run.",
+)
+@click.option("--limit", type=int, default=100, help="Max live posts to fetch per platform.")
+@click.option("--json", "json_output", is_flag=True, help="Output result as JSON.")
+def reconcile(platforms: tuple[str, ...], apply_changes: bool, limit: int, json_output: bool):
+    """Reconcile live platform state with the registry.
+
+    Diffs each API platform's live post list against the registry and reports
+    three buckets: in-sync, untracked-live (on the platform but missing from the
+    registry), and gone-from-platform (registry says published but no longer
+    live). Default is dry-run; pass --apply to backfill untracked publications
+    and soft-delete gone ones. With no platform arguments, reconciles all
+    configured API platforms.
+    """
+    import json as json_module
+
+    from .reconcile import reconcile as run_reconcile
+
+    plats = list(platforms) if platforms else None
+    reports = run_reconcile(plats, apply=apply_changes, limit=limit)
+
+    if json_output:
+        out: dict = {"command": "reconcile", "applied": apply_changes, "platforms": {}}
+        for name, rep in reports.items():
+            out["platforms"][name] = {
+                "error": rep.error,
+                "in_both": len(rep.in_both),
+                "untracked_live": [
+                    {"title": e.title, "live_id": e.live_id, "live_url": e.live_url}
+                    for e in rep.untracked_live
+                ],
+                "gone_from_platform": [
+                    {"title": e.title, "canonical_url": e.canonical_url}
+                    for e in rep.gone_from_platform
+                ],
+            }
+        print(json_module.dumps(out, indent=2))
+        return
+
+    total_untracked = 0
+    total_gone = 0
+    for name, rep in reports.items():
+        if rep.error:
+            console.print(f"[yellow]{name}: {rep.error}[/yellow]")
+            continue
+        total_untracked += len(rep.untracked_live)
+        total_gone += len(rep.gone_from_platform)
+        console.print(
+            f"\n[bold]{name}[/bold]: "
+            f"[green]{len(rep.in_both)} in sync[/green], "
+            f"[yellow]{len(rep.untracked_live)} untracked[/yellow], "
+            f"[red]{len(rep.gone_from_platform)} gone[/red]"
+        )
+        for e in rep.untracked_live:
+            console.print(
+                f"  [yellow]untracked[/yellow] {(e.title or '')[:50]} (id={e.live_id})"
+            )
+        for e in rep.gone_from_platform:
+            console.print(
+                f"  [red]gone[/red] {(e.title or '')[:50]} ({e.canonical_url})"
+            )
+
+    console.print()
+    if apply_changes:
+        console.print(
+            f"[green]Applied: backfilled {total_untracked}, "
+            f"soft-deleted {total_gone}.[/green]"
+        )
+    elif total_untracked or total_gone:
+        console.print(
+            f"[dim]{total_untracked} untracked + {total_gone} gone. "
+            f"Re-run with --apply to fix the registry.[/dim]"
+        )
+    else:
+        console.print("[green]Registry is in sync with all platforms.[/green]")
+
+
 @cli.command(name="platforms")
 def show_platforms():
     """Show all available platforms with their status and descriptions.

@@ -3155,3 +3155,66 @@ class TestLinkCommand:
         result = runner.invoke(cli, ["link", str(content_file)])
         assert result.exit_code != 0
         assert "No canonical URL" in result.output
+
+
+class TestReconcileCommand:
+    """Tests for the reconcile CLI command (engine mocked)."""
+
+    @patch("crier.reconcile.reconcile")
+    def test_reconcile_dry_run_reports_untracked(self, mock_reconcile, runner):
+        from crier.reconcile import ReconcileEntry, ReconcileReport
+
+        rep = ReconcileReport(platform="devto")
+        rep.untracked_live.append(
+            ReconcileEntry(
+                platform="devto", bucket="untracked_live",
+                title="Ghost Post", live_id="999",
+            )
+        )
+        mock_reconcile.return_value = {"devto": rep}
+
+        result = runner.invoke(cli, ["reconcile", "devto"])
+        assert result.exit_code == 0
+        assert "untracked" in result.output.lower()
+        _, kwargs = mock_reconcile.call_args
+        assert kwargs["apply"] is False
+
+    @patch("crier.reconcile.reconcile")
+    def test_reconcile_apply_flag_passed(self, mock_reconcile, runner):
+        from crier.reconcile import ReconcileReport
+
+        mock_reconcile.return_value = {"devto": ReconcileReport(platform="devto")}
+        result = runner.invoke(cli, ["reconcile", "devto", "--apply"])
+        assert result.exit_code == 0
+        _, kwargs = mock_reconcile.call_args
+        assert kwargs["apply"] is True
+
+    @patch("crier.reconcile.reconcile")
+    def test_reconcile_json_output(self, mock_reconcile, runner):
+        import json
+
+        from crier.reconcile import ReconcileEntry, ReconcileReport
+
+        rep = ReconcileReport(platform="devto")
+        rep.untracked_live.append(
+            ReconcileEntry(
+                platform="devto", bucket="untracked_live",
+                title="Ghost", live_id="999", live_url="https://dev.to/x/999",
+            )
+        )
+        mock_reconcile.return_value = {"devto": rep}
+
+        result = runner.invoke(cli, ["reconcile", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "reconcile"
+        assert data["platforms"]["devto"]["untracked_live"][0]["live_id"] == "999"
+
+    @patch("crier.reconcile.reconcile")
+    def test_reconcile_in_sync_message(self, mock_reconcile, runner):
+        from crier.reconcile import ReconcileReport
+
+        mock_reconcile.return_value = {"devto": ReconcileReport(platform="devto")}
+        result = runner.invoke(cli, ["reconcile"])
+        assert result.exit_code == 0
+        assert "in sync" in result.output.lower()
