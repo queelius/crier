@@ -4275,6 +4275,135 @@ def schedule_run(dry_run: bool, json_output: bool):
         raise SystemExit(1)
 
 
+@cli.group()
+def campaign():
+    """Manage manifest-driven bulk-publish campaigns."""
+    pass
+
+
+@campaign.command(name="plan")
+@click.argument("name")
+@click.argument("path", required=False)
+@click.option("--to", "platform_args", multiple=True,
+              help="Target platform(s). Default: configured API platforms.")
+@click.option("--profile", "-p", "profile_name", default=None,
+              help="Use a platform profile for the targets.")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+def campaign_plan(name, path, platform_args, profile_name, json_output):
+    """Generate a campaign manifest of missing (post x platform) cells.
+
+    Scans content, checks the registry, and writes a YAML manifest listing each
+    platform every post is not yet published to. Short-form cells get an empty
+    rewrite field to fill in before running.
+    """
+    import json as json_module
+
+    from .campaign import campaign_path, plan_campaign
+
+    platforms = list(platform_args) if platform_args else None
+    if profile_name and not platforms:
+        prof = get_profile(profile_name)
+        if prof is None:
+            console.print(f"[red]Unknown profile: {profile_name}[/red]")
+            raise SystemExit(1)
+        platforms = prof
+
+    manifest = plan_campaign(name, path=path, platforms=platforms)
+    n_posts = len(manifest["posts"])
+    n_cells = sum(len(p["targets"]) for p in manifest["posts"])
+    n_rewrites = sum(
+        1
+        for p in manifest["posts"]
+        for c in p["targets"].values()
+        if "rewrite" in c
+    )
+    path_str = str(campaign_path(name))
+
+    if json_output:
+        print(json_module.dumps({
+            "command": "campaign plan",
+            "name": name,
+            "manifest": path_str,
+            "posts": n_posts,
+            "cells": n_cells,
+            "needs_rewrite": n_rewrites,
+        }, indent=2))
+        return
+
+    console.print(
+        f"[green]Planned campaign '{name}'[/green]: "
+        f"{n_posts} posts, {n_cells} cells ({n_rewrites} need rewrites)"
+    )
+    console.print(f"[dim]Manifest: {path_str}[/dim]")
+    if n_rewrites:
+        console.print(
+            f"[dim]Fill the empty rewrite fields, then: "
+            f"crier campaign run {name} --apply[/dim]"
+        )
+    elif n_cells:
+        console.print(f"[dim]Then: crier campaign run {name} --apply[/dim]")
+
+
+@campaign.command(name="run")
+@click.argument("name")
+@click.option("--apply", "apply_changes", is_flag=True,
+              help="Publish pending cells. Default is a dry-run preview.")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+def campaign_run(name, apply_changes, json_output):
+    """Run (or preview) a campaign: publish each pending cell.
+
+    Dry-run by default (shows what would publish). Pass --apply to execute.
+    Resumable: already-published cells are skipped.
+    """
+    import json as json_module
+
+    from .campaign import run_campaign
+
+    summary = run_campaign(name, apply=apply_changes)
+
+    if summary.error:
+        if json_output:
+            print(json_module.dumps(
+                {"command": "campaign run", "error": summary.error}
+            ))
+        else:
+            console.print(f"[red]{summary.error}[/red]")
+        raise SystemExit(1)
+
+    if json_output:
+        print(json_module.dumps({
+            "command": "campaign run",
+            "name": name,
+            "applied": summary.applied,
+            "published": summary.published,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "needs_rewrite": summary.needs_rewrite,
+            "pending": summary.pending,
+        }, indent=2))
+    elif apply_changes:
+        console.print(
+            f"[green]Campaign '{name}': published {summary.published}, "
+            f"failed {summary.failed}, skipped {summary.skipped}, "
+            f"needs-rewrite {summary.needs_rewrite}.[/green]"
+        )
+    else:
+        console.print(
+            f"[bold]Dry run '{name}'[/bold]: {summary.pending} would publish, "
+            f"{summary.needs_rewrite} need rewrites, "
+            f"{summary.skipped} already done."
+        )
+        if summary.needs_rewrite:
+            console.print(
+                "[yellow]Fill empty rewrite fields in the manifest "
+                "before --apply.[/yellow]"
+            )
+        console.print("[dim]Run with --apply to publish.[/dim]")
+
+    if summary.failed > 0:
+        raise SystemExit(2 if summary.published > 0 else 1)
+
+
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--from", "-f", "platform_args", multiple=True,

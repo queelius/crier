@@ -1022,6 +1022,101 @@ def crier_reconcile(
 
 
 @mcp.tool()
+def crier_campaign_plan(
+    name: str, path: str | None = None, platforms: list[str] | None = None
+) -> dict:
+    """Generate a bulk-publish campaign manifest of missing (post x platform) cells.
+
+    Scans content, checks the registry, and writes a YAML manifest under
+    <site_root>/.crier/campaigns/<name>.yaml listing each platform every post is
+    not yet published to. Short-form cells carry an empty rewrite field for you
+    to fill (edit the YAML) before running. Returns a summary plus the cells
+    that still need rewrites.
+
+    Args:
+        name: Campaign name (used as the manifest filename).
+        path: Optional content path to scan (default: configured content paths).
+        platforms: Optional target platforms (default: configured API platforms).
+
+    Examples:
+        crier_campaign_plan("spring-backlog")
+        crier_campaign_plan("cpp", path="content/post", platforms=["devto", "hashnode"])
+    """
+    from .campaign import campaign_path, plan_campaign
+
+    manifest = plan_campaign(name, path=path, platforms=platforms)
+    needs_rewrite = [
+        {
+            "canonical_url": post["canonical_url"],
+            "title": post["title"],
+            "platform": platform,
+        }
+        for post in manifest["posts"]
+        for platform, cell in post["targets"].items()
+        if "rewrite" in cell
+    ]
+    return {
+        "name": name,
+        "manifest": str(campaign_path(name)),
+        "posts": len(manifest["posts"]),
+        "cells": sum(len(p["targets"]) for p in manifest["posts"]),
+        "needs_rewrite": needs_rewrite,
+    }
+
+
+@mcp.tool()
+def crier_campaign_run(name: str, confirmation_token: str | None = None) -> dict:
+    """Run a bulk-publish campaign. Two-step confirmation (this is destructive).
+
+    Step 1 (no token): returns a dry-run preview (cells that would publish and
+    how many still need rewrites) plus a confirmation_token. Step 2 (call again
+    with the token): publishes each pending cell through the shared publish path,
+    records results, and writes status back into the manifest (resumable;
+    already-published cells are skipped). The token is the source of truth: on
+    step 2 the campaign name comes from the token, not the caller args.
+
+    Examples:
+        crier_campaign_run("spring-backlog")                            # preview + token
+        crier_campaign_run("spring-backlog", confirmation_token="abc")  # execute
+    """
+    from .campaign import run_campaign
+
+    if confirmation_token:
+        details = _consume_token(confirmation_token, "campaign_run")
+        if details is None:
+            return {"error": "Invalid or expired confirmation token"}
+        summary = run_campaign(details["name"], apply=True)
+        if summary.error:
+            return {"error": summary.error}
+        return {
+            "name": summary.name,
+            "applied": True,
+            "published": summary.published,
+            "failed": summary.failed,
+            "skipped": summary.skipped,
+            "needs_rewrite": summary.needs_rewrite,
+        }
+
+    summary = run_campaign(name, apply=False)
+    if summary.error:
+        return {"error": summary.error}
+    token = _create_token("campaign_run", {"name": name})
+    return {
+        "name": summary.name,
+        "preview": {
+            "pending": summary.pending,
+            "needs_rewrite": summary.needs_rewrite,
+            "skipped": summary.skipped,
+        },
+        "confirmation_token": token,
+        "message": (
+            f"Call again with confirmation_token to publish {summary.pending} "
+            f"pending cell(s) for campaign '{name}'."
+        ),
+    }
+
+
+@mcp.tool()
 def crier_doctor() -> dict:
     """Validate all configured platform API keys.
 

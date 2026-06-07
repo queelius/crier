@@ -11,6 +11,8 @@ from crier.mcp_server import (
     _pending_ops,
     crier_archive,
     crier_article,
+    crier_campaign_plan,
+    crier_campaign_run,
     crier_check,
     crier_delete,
     crier_doctor,
@@ -674,6 +676,83 @@ class TestCrierReconcile:
         result = crier_reconcile("devto", apply=True)
         assert result["applied"] is True
         assert captured["apply"] is True
+
+
+class TestCrierCampaign:
+    def test_campaign_plan_returns_summary(self, mcp_registry, monkeypatch):
+        from pathlib import Path
+
+        manifest = {
+            "posts": [
+                {
+                    "canonical_url": "https://x/foo/",
+                    "title": "Foo",
+                    "targets": {
+                        "devto": {"status": "pending"},
+                        "bluesky": {"status": "pending", "rewrite": ""},
+                    },
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            "crier.campaign.plan_campaign", lambda name, **kw: manifest
+        )
+        monkeypatch.setattr(
+            "crier.campaign.campaign_path", lambda name: Path("/tmp/x.yaml")
+        )
+        result = crier_campaign_plan("spring")
+        assert result["posts"] == 1
+        assert result["cells"] == 2
+        assert len(result["needs_rewrite"]) == 1
+        assert result["needs_rewrite"][0]["platform"] == "bluesky"
+
+    def test_campaign_run_step1_returns_token_no_execute(self, mcp_registry, monkeypatch):
+        from crier.campaign import CampaignRunSummary
+
+        calls = []
+
+        def fake_run(name, *, apply=False):
+            calls.append((name, apply))
+            return CampaignRunSummary(name=name, pending=3)
+
+        monkeypatch.setattr("crier.campaign.run_campaign", fake_run)
+        result = crier_campaign_run("spring")
+        assert "confirmation_token" in result
+        assert result["preview"]["pending"] == 3
+        # step 1 is a dry-run only
+        assert calls == [("spring", False)]
+
+    def test_campaign_run_step2_executes_from_token(self, mcp_registry, monkeypatch):
+        from crier.campaign import CampaignRunSummary
+
+        calls = []
+
+        def fake_run(name, *, apply=False):
+            calls.append((name, apply))
+            return CampaignRunSummary(name=name, published=2, applied=True)
+
+        monkeypatch.setattr("crier.campaign.run_campaign", fake_run)
+        token = _create_token("campaign_run", {"name": "spring"})
+        # token-as-source-of-truth: caller name is ignored, token name wins
+        result = crier_campaign_run("DIFFERENT", confirmation_token=token)
+        assert result["applied"] is True
+        assert result["published"] == 2
+        assert calls == [("spring", True)]
+
+    def test_campaign_run_invalid_token(self, mcp_registry):
+        result = crier_campaign_run("spring", confirmation_token="bogus")
+        assert "error" in result
+
+    def test_campaign_run_step1_error(self, mcp_registry, monkeypatch):
+        from crier.campaign import CampaignRunSummary
+
+        monkeypatch.setattr(
+            "crier.campaign.run_campaign",
+            lambda name, **kw: CampaignRunSummary(name=name, error="Campaign not found: x"),
+        )
+        result = crier_campaign_run("x")
+        assert "error" in result
+        assert "confirmation_token" not in result
 
 
 class TestCrierStatsRefresh:

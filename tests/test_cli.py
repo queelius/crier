@@ -3218,3 +3218,69 @@ class TestReconcileCommand:
         result = runner.invoke(cli, ["reconcile"])
         assert result.exit_code == 0
         assert "in sync" in result.output.lower()
+
+
+class TestCampaignCommand:
+    """Tests for the campaign CLI group (engine mocked)."""
+
+    @patch("crier.campaign.campaign_path")
+    @patch("crier.campaign.plan_campaign")
+    def test_campaign_plan_summary(self, mock_plan, mock_path, runner):
+        from pathlib import Path
+
+        mock_plan.return_value = {
+            "posts": [
+                {"targets": {"devto": {"status": "pending"},
+                             "bluesky": {"status": "pending", "rewrite": ""}}}
+            ]
+        }
+        mock_path.return_value = Path("/tmp/spring.yaml")
+        result = runner.invoke(cli, ["campaign", "plan", "spring"])
+        assert result.exit_code == 0
+        assert "Planned campaign" in result.output
+        assert "spring.yaml" in result.output
+
+    @patch("crier.campaign.run_campaign")
+    def test_campaign_run_dry_run(self, mock_run, runner):
+        from crier.campaign import CampaignRunSummary
+
+        mock_run.return_value = CampaignRunSummary(name="spring", pending=3)
+        result = runner.invoke(cli, ["campaign", "run", "spring"])
+        assert result.exit_code == 0
+        assert "would publish" in result.output.lower()
+        _, kwargs = mock_run.call_args
+        assert kwargs["apply"] is False
+
+    @patch("crier.campaign.run_campaign")
+    def test_campaign_run_apply(self, mock_run, runner):
+        from crier.campaign import CampaignRunSummary
+
+        mock_run.return_value = CampaignRunSummary(
+            name="spring", published=2, applied=True
+        )
+        result = runner.invoke(cli, ["campaign", "run", "spring", "--apply"])
+        assert result.exit_code == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["apply"] is True
+        assert "published 2" in result.output
+
+    @patch("crier.campaign.run_campaign")
+    def test_campaign_run_missing_manifest(self, mock_run, runner):
+        from crier.campaign import CampaignRunSummary
+
+        mock_run.return_value = CampaignRunSummary(
+            name="nope", error="Campaign not found: nope"
+        )
+        result = runner.invoke(cli, ["campaign", "run", "nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    @patch("crier.campaign.run_campaign")
+    def test_campaign_run_partial_failure_exit_2(self, mock_run, runner):
+        from crier.campaign import CampaignRunSummary
+
+        mock_run.return_value = CampaignRunSummary(
+            name="spring", published=1, failed=1, applied=True
+        )
+        result = runner.invoke(cli, ["campaign", "run", "spring", "--apply"])
+        assert result.exit_code == 2
