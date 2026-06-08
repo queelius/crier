@@ -85,6 +85,19 @@ class Nostr(Platform):
             parts.append(" ".join(f"#{t.replace('-', '')}" for t in article.tags[:5]))
         return "\n\n".join(parts)
 
+    def _signed_event(self, content: str, kind: int, tags: list | None = None):
+        """Build and sign a Nostr event (lazy import; raises if extra missing)."""
+        try:
+            from pynostr.event import Event
+        except ImportError as e:  # pragma: no cover
+            raise ImportError(_IMPORT_HINT) from e
+        priv = self._load_key()
+        event = Event(
+            content=content, kind=kind, pubkey=priv.public_key.hex(), tags=tags or []
+        )
+        event.sign(priv.hex())
+        return event
+
     def _publish_event(self, event) -> None:
         """Broadcast a signed event to all configured relays."""
         try:
@@ -110,11 +123,7 @@ class Nostr(Platform):
         if error := self._check_content_length(text):
             return PublishResult(success=False, platform=self.name, error=error)
         try:
-            from pynostr.event import Event
-
-            priv = self._load_key()
-            event = Event(content=text, kind=1, pubkey=priv.public_key.hex())
-            event.sign(priv.hex())
+            event = self._signed_event(text, kind=1)
             self._publish_event(event)
         except Exception as e:
             return PublishResult(success=False, platform=self.name, error=str(e))
@@ -142,16 +151,7 @@ class Nostr(Platform):
     def delete(self, article_id: str) -> DeleteResult:
         """Best-effort NIP-09 deletion: publish a kind-5 event referencing the note."""
         try:
-            from pynostr.event import Event
-
-            priv = self._load_key()
-            event = Event(
-                content="",
-                kind=5,
-                pubkey=priv.public_key.hex(),
-                tags=[["e", article_id]],
-            )
-            event.sign(priv.hex())
+            event = self._signed_event("", kind=5, tags=[["e", article_id]])
             self._publish_event(event)
         except Exception as e:
             return DeleteResult(success=False, platform=self.name, error=str(e))
