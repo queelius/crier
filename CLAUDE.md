@@ -83,11 +83,13 @@ ruff format --check src/
 - `format_thread()` adds thread indicators (numbered, emoji, or simple style)
 - Used by Bluesky and Mastodon `publish_thread()` implementations
 
-**Platform Categories** (14 total):
+**Platform Categories** (15 total):
 - Blog: devto, hashnode, medium, ghost, wordpress
 - Newsletter: buttondown
-- Social: bluesky, mastodon, pleroma, linkedin, threads, twitter (copy-paste mode)
+- Social: bluesky, mastodon, pleroma, nostr, linkedin, threads, twitter (copy-paste mode)
 - Announcement: telegram, discord
+
+Nostr (`platforms/nostr.py`) publishes secp256k1/Schnorr-signed kind-1 notes to relays over websockets via the optional `[nostr]` extra (pynostr). The signing import is deferred to publish/delete so the platform stays importable without the extra. api_key is the private key (`nsec1...` or hex), optionally `nsec1...|wss://relay.a,wss://relay.b` for custom relays (default relays otherwise). Nostr has no authoritative cross-relay listing, so `list_articles`/`get_article` return empty/None (reconcile/stats do not apply); notes are immutable (no update); delete is best-effort NIP-09 (kind 5). It is a WebSocket platform, so it does not use `retry_request`.
 
 Mastodon and Pleroma both inherit from `FediversePlatform` (defined in `platforms/_fediverse.py`) which encapsulates the Mastodon-API-compatible REST protocol. The leading underscore on the module name keeps the base class out of platform auto-discovery; only its concrete subclasses (each with their own `name`, `default_instance`, and `max_content_length`) get registered. Adding Akkoma, GoToSocial, or another Mastodon-API-compatible server is a ~10-line subclass.
 
