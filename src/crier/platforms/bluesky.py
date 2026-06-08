@@ -175,6 +175,7 @@ class Bluesky(Platform):
 
         results: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
 
         while len(results) < limit:
             page = min(self._FEED_PAGE_MAX, limit - len(results))
@@ -221,8 +222,11 @@ class Bluesky(Platform):
                 })
 
             cursor = data.get("cursor")
-            if not cursor:
+            # Stop on no cursor or a repeated cursor (defensive against a relay
+            # that returns the same page forever, e.g. an all-reposts tail).
+            if not cursor or cursor in seen_cursors:
                 break
+            seen_cursors.add(cursor)
 
         return results[:limit]
 
