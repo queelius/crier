@@ -42,6 +42,9 @@ dependencies = [
 mcp = [
     "mcp>=1.0",
 ]
+nostr = [
+    "pynostr>=0.6",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
