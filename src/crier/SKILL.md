@@ -11,6 +11,30 @@ Crier cross-posts blog content to multiple platforms. The blog is the canonical 
 - **Crier** does mechanics: API calls, registry tracking, clipboard, browser
 - **Claude** does judgment: summaries, error handling, user interaction
 
+## Optional X/Twitter Source Evidence
+
+When a user provides public X/Twitter context, treat it as source
+evidence for the rewrite, not as approval to publish. A source packet
+can come from any reviewed workflow, including TweetClaw or the
+TweetClaw OpenClaw plugin.
+
+Use a compact packet shape:
+- Source URL
+- Public text or user-approved excerpt
+- Author handle and capture time
+- Visible metrics or reply/quote context when relevant
+- Media references and caveats
+
+Rules:
+- Do not request private messages, cookies, OAuth tokens, API keys, or
+  session data.
+- Do not call source collection tools unless the user configured them
+  and asked for that step.
+- Keep Crier responsible for audit, platform rewrite, confirmation,
+  posting, and registry updates.
+- For Twitter/X paste mode, still run `crier publish ... --to twitter
+  --yes` and ask the user to confirm before recording.
+
 ## Platform Reference
 
 | Platform   | Mode   | Limit  | Updates? | Notes                          |

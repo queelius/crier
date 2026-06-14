@@ -55,6 +55,21 @@ The MCP server (`crier mcp`) gives Claude direct query access to the
 registry, and the cross-poster agent can handle bulk publishing
 autonomously with rewrites for short-form platforms.
 
+### Optional X/Twitter Source Evidence
+
+When an announcement responds to a public X/Twitter thread, paste a
+reviewed source packet into Claude before running Crier. Tools such as
+[TweetClaw](https://github.com/Xquik-dev/tweetclaw), available as an
+OpenClaw plugin, can collect public posts, replies, metrics, and media
+references for that packet.
+
+Crier still owns the rewrite, confirmation, copy-paste flow, and
+registry update. Keep source packets public and minimal: source URL,
+public text or an approved excerpt, author handle, capture time,
+visible metrics, reply/quote context, media references, and caveats.
+Do not include private messages, cookies, OAuth tokens, API keys, or
+session data.
+
 ## Installation
 
 ```bash
@@ -623,7 +638,7 @@ crier config set twitter.api_key manual
 3. Use format: `https://yoursite.com:username:app_password`
 
 ### Buttondown
-1. Go to https://buttondown.email/settings/programming
+1. Go to https://buttondown.com/requests
 2. Copy your API key
 3. Use format: `api_key`
 
