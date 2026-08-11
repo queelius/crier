@@ -123,6 +123,7 @@ def test_prepare_publish_auto_rewrite_success(mode, key, parse, get_plat, auto_r
 
     inst = MagicMock()
     inst.max_content_length = 300
+    inst.rewrite_max_length.return_value = 300
     get_plat.return_value = lambda _k: inst
 
     llm_provider = MagicMock()
@@ -156,6 +157,7 @@ def test_publish_one_auto_rewrite_failure(mode, key, parse, get_plat, auto_rw):
 
     inst = MagicMock()
     inst.max_content_length = 300
+    inst.rewrite_max_length.return_value = 300
     get_plat.return_value = lambda _k: inst
 
     llm_provider = MagicMock()

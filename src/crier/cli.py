@@ -860,7 +860,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
             else:
                 platform_cls = get_platform(platform_name)
                 platform = platform_cls(api_key or "dry-run")
-                max_len = platform.max_content_length
+                max_len = platform.rewrite_max_length(article)
 
                 # Check if auto-rewrite would be triggered
                 if auto_rewrite and llm_provider and max_len and len(article.body) > max_len:
@@ -1052,7 +1052,7 @@ def publish(file: str, platform_args: tuple[str, ...], profile_name: str | None,
                 platform_rewrite_content = None
 
                 if auto_rewrite and llm_provider and platform.max_content_length:
-                    max_len = platform.max_content_length
+                    max_len = platform.rewrite_max_length(article)
                     if len(article.body) > max_len:
                         from .rewrite import auto_rewrite_for_platform
 
@@ -3168,7 +3168,7 @@ def audit(path: str | None, platform_filter: tuple[str, ...], profile_name: str 
                 platform_cls = get_platform(platform)
                 plat = platform_cls(api_key)
                 publish_article = article
-                max_len = platform_cls.max_content_length
+                max_len = plat.rewrite_max_length(article)
                 rewritten = False
                 rewrite_content = None
 
@@ -4299,7 +4299,7 @@ def schedule_run(dry_run: bool, json_output: bool):
                     )
 
                 platform_cls = get_platform(platform_name)
-                max_len = platform_cls(api_key).max_content_length
+                max_len = platform_cls(api_key).rewrite_max_length(article)
                 if max_len and len(article.body) > max_len:
                     retry = (
                         post.auto_rewrite_retry

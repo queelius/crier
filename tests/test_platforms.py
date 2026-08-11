@@ -142,6 +142,88 @@ class TestPlatformBase:
         assert "280" in error
 
 
+class TestRewriteMaxLength:
+    """Tests for Platform.rewrite_max_length URL headroom logic."""
+
+    def test_no_limit_returns_none(self, sample_article):
+        """Platforms without a character limit have no rewrite budget."""
+        platform = DevTo("k")
+        assert platform.max_content_length is None
+        assert platform.rewrite_max_length(sample_article) is None
+
+    def test_non_appending_platform_full_budget(self):
+        """Platforms that don't append the URL keep the full limit."""
+        platform = DevTo("k")  # long-form, appends_canonical_url=False
+        # DevTo has no limit; use a hypothetical limited non-appender instead
+        class Limited(Platform):
+            name = "limited"
+            max_content_length = 300
+
+            def publish(self, article): ...
+            def update(self, article_id, article): ...
+            def list_articles(self, limit=10): ...
+            def get_article(self, article_id): ...
+
+        p = Limited("k")
+        assert p.appends_canonical_url is False
+        article = Article(title="t", body="x",
+                          canonical_url="https://example.com/a")
+        assert p.rewrite_max_length(article) == 300
+
+    def test_appending_platform_reserves_url_room(self):
+        """Budget subtracts canonical URL + separator for URL-appenders."""
+        platform = Bluesky("handle:pw")
+        url = "https://example.com/blog/some-post"
+        article = Article(title="t", body="x", canonical_url=url)
+        budget = platform.rewrite_max_length(article)
+        assert budget == 300 - len(url) - 2
+        # Final post (budget + separator + URL) fits exactly within the limit.
+        assert budget + len(url) + 2 <= platform.max_content_length
+
+    def test_appending_platform_no_url_full_budget(self):
+        """Without a canonical URL nothing is reserved."""
+        platform = Bluesky("handle:pw")
+        assert platform.rewrite_max_length(
+            Article(title="t", body="x", canonical_url=None)
+        ) == 300
+
+    def test_url_already_in_body_not_double_counted(self):
+        """A rewrite that already contains the URL isn't penalised."""
+        platform = Bluesky("handle:pw")
+        url = "https://example.com/blog/some-post"
+        article = Article(title="t", body="x " + url, canonical_url=url)
+        assert platform.rewrite_max_length(article) == 300
+
+    def test_limit_smaller_than_url_floored_at_one(self):
+        """Even a tiny limit never yields a non-positive budget."""
+        class Tiny(Platform):
+            name = "tiny"
+            max_content_length = 5
+            appends_canonical_url = True
+
+            def publish(self, article): ...
+            def update(self, article_id, article): ...
+            def list_articles(self, limit=10): ...
+            def get_article(self, article_id): ...
+
+        p = Tiny("k")
+        url = "https://example.com/a-very-long-canonical-url"
+        assert p.rewrite_max_length(
+            Article(title="t", body="x", canonical_url=url)
+        ) == 1
+
+    @pytest.mark.parametrize("platform_cls", [Bluesky, Twitter, Mastodon])
+    def test_short_form_url_appenders_flag_set(self, platform_cls):
+        """URL-appending short-form platforms opt into the headroom logic."""
+        p = platform_cls("k")
+        assert p.appends_canonical_url is True
+
+    def test_threads_appends_canonical_url(self):
+        """Threads (user_id:token key) opts into the headroom logic too."""
+        p = Threads("12345:token")
+        assert p.appends_canonical_url is True
+
+
 class TestTwitterManualMode:
     """Tests for Twitter manual mode platform."""
 
