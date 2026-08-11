@@ -96,6 +96,9 @@ class Platform(ABC):
     supports_threads: bool = False
     # Maximum number of posts in a thread (if supports_threads)
     thread_max_posts: int = 25
+    #: Short-form platforms append the canonical URL to rewritten posts
+    #: (see ``_append_canonical_url``). Auto-rewrites must reserve room for it.
+    appends_canonical_url: bool = False
     # Request timeout in seconds
     timeout: int = 30
     # Max retries for transient failures (429, 502, 503, 504, ConnectionError)
@@ -118,6 +121,34 @@ class Platform(ABC):
         Default: returns full body for long-form platforms.
         """
         return article.body
+
+    def rewrite_max_length(self, article: Article) -> int | None:
+        """Return the max output length for an auto-rewrite of ``article``.
+
+        Short-form platforms append the canonical URL to rewritten content
+        (see ``_append_canonical_url``). If the LLM is told to write up to
+        ``max_content_length`` characters and the URL is appended afterwards,
+        the final post exceeds the platform limit and the content-length check
+        fails. Returning a reduced budget lets the rewrite leave room for the
+        URL.
+
+        Subclasses that append the URL should set ``appends_canonical_url``.
+        Returns ``None`` when the platform has no character limit.
+        """
+        if self.max_content_length is None:
+            return None
+
+        budget = self.max_content_length
+        if (
+            self.appends_canonical_url
+            and article.canonical_url
+            and article.canonical_url not in (article.body or "")
+        ):
+            # Reserve room for the "\n\n" separator plus the URL itself.
+            budget -= len(article.canonical_url) + 2
+
+        # Guard against limits smaller than a canonical URL.
+        return max(budget, 1)
 
     def _check_content_length(self, content: str) -> str | None:
         """Check if content exceeds platform limit.

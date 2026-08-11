@@ -28,3 +28,4 @@ class Mastodon(FediversePlatform):
     description = "Short posts (500 chars)"
     max_content_length = 500
     default_instance = "mastodon.social"
+    appends_canonical_url = True

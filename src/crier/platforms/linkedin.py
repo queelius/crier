@@ -25,6 +25,7 @@ class LinkedIn(Platform):
     base_url = "https://api.linkedin.com/v2"
     compose_url = "https://www.linkedin.com/feed/?shareActive=true"
     max_content_length = 3000
+    appends_canonical_url = True
     supports_stats = True
     api_key_url = None  # Requires OAuth app setup
 

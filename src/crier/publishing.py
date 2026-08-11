@@ -113,7 +113,7 @@ def prepare_publish(
         posted_content = rewrite_content
     elif auto_rewrite and llm_provider:
         platform_obj = get_platform(platform)(api_key)
-        max_len = platform_obj.max_content_length
+        max_len = platform_obj.rewrite_max_length(article)
         if max_len and len(article.body) > max_len:
             rw = auto_rewrite_for_platform(
                 article, platform, max_len, llm_provider,
